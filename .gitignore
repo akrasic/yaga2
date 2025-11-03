@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+anomaly_state.db
+alerts/
+smartbox_models/
+bak-*
+11*
+.python-version
