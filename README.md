@@ -1,336 +1,282 @@
 # Smartbox ML Anomaly Detection Pipeline
 
-A production-grade machine learning pipeline for real-time anomaly detection in microservices, using Isolation Forest models with time-aware period separation and enhanced explainability features.
+A production-grade machine learning pipeline for real-time anomaly detection in microservices, using Isolation Forest models with time-aware period separation, calibrated thresholds, drift detection, and enhanced explainability.
 
-## Features
+## Key Features
 
 - **Time-Aware Detection**: 5 behavioral periods (business hours, evening, night, weekend day/night)
+- **Calibrated Thresholds**: Per-model severity thresholds from validation data percentiles
+- **Empirical Contamination**: Automatic contamination estimation using knee/gap detection
+- **Drift Detection**: Z-score and Mahalanobis distance for distribution drift monitoring
+- **Robust Statistics**: Trimmed mean and IQR-based standard deviation
+- **Input Validation**: Metrics sanitization at inference boundary
 - **Anomaly Fingerprinting**: Incident lifecycle tracking with two-level identity system
 - **Explainable AI**: Feature contributions, business impact analysis, and recommendations
 - **Lazy Loading**: Memory-efficient model loading (only loads needed time period)
-- **Circuit Breaker**: Fault-tolerant metrics collection from VictoriaMetrics
-- **SQLite Persistence**: Stateful incident tracking across runs
+- **Cascade Detection**: Dependency-aware anomaly correlation
+
+## Quick Start
+
+```bash
+# Install
+uv pip install -e .
+
+# Train models (requires VictoriaMetrics access)
+python main.py
+
+# Run inference
+python inference.py --verbose
+```
+
+## Documentation
+
+Comprehensive documentation is available in the `docs/` directory:
+
+| Document | Description |
+|----------|-------------|
+| [MACHINE_LEARNING.md](docs/MACHINE_LEARNING.md) | ML concepts, algorithms, and how detection works |
+| [ML_TRAINING.md](docs/ML_TRAINING.md) | Technical deep-dive for ML engineers |
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | All configuration options and tuning |
+| [INFERENCE_API_PAYLOAD.md](docs/INFERENCE_API_PAYLOAD.md) | JSON output format specification |
+| [OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day operations and troubleshooting |
+| [FINGERPRINTING.md](docs/FINGERPRINTING.md) | Incident tracking system |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker and Kubernetes deployment |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    INFERENCE EXECUTION                           │
+│                         TRAINING                                 │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+     │
+     ▼
 ┌──────────────────────────────┐
-│   VictoriaMetrics Client     │  ← Collects real-time metrics
-│   (vmclient.py)              │
+│  VictoriaMetrics (30 days)   │  → Historical metrics
 └──────────────────────────────┘
-                              │
-                              ▼
+     │
+     ▼
 ┌──────────────────────────────┐
-│  TimeAwareAnomalyDetector    │  ← Routes to period-specific model
-│  (time_aware_anomaly_        │
-│   detection.py)              │
+│  Feature Engineering         │  → Rolling stats, temporal split (80/20)
 └──────────────────────────────┘
-                              │
-                              ▼
+     │
+     ▼
 ┌──────────────────────────────┐
-│  SmartboxAnomalyDetector     │  ← Isolation Forest detection
-│  (anomaly_models.py)         │
+│  Contamination Estimation    │  → Knee/gap detection
 └──────────────────────────────┘
-                              │
-                              ▼
+     │
+     ▼
 ┌──────────────────────────────┐
-│  AnomalyFingerprinter        │  ← Incident lifecycle management
-│  (anomaly_fingerprinter.py)  │
+│  Isolation Forest Training   │  → Per metric + multivariate
 └──────────────────────────────┘
-                              │
-                              ▼
+     │
+     ▼
 ┌──────────────────────────────┐
-│  Observability Service       │  ← API output
+│  Threshold Calibration       │  → Percentile-based severity
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Drift Baseline Storage      │  → Mean, covariance for Mahalanobis
+└──────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────┐
+│                         INFERENCE                                │
+└─────────────────────────────────────────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Input Validation            │  → Sanitize NaN, inf, outliers
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Time Period Routing         │  → Select appropriate model
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Anomaly Detection           │  → IF scoring with calibrated thresholds
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Drift Detection             │  → Z-score + Mahalanobis (optional)
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  Fingerprinting              │  → Incident lifecycle management
+└──────────────────────────────┘
+     │
+     ▼
+┌──────────────────────────────┐
+│  API Output                  │  → JSON with explanations
 └──────────────────────────────┘
 ```
 
-## Project Structure
+## Time Periods
 
-```
-yaga2/
-├── main.py                         # Training pipeline entry point
-├── inference.py                    # Inference pipeline entry point
-├── anomaly_models.py               # ML model implementation
-├── anomaly_fingerprinter.py        # Incident tracking
-├── time_aware_anomaly_detection.py # Time-period routing
-├── vmclient.py                     # VictoriaMetrics client
-├── pyproject.toml                  # Project configuration
-│
-├── smartbox_anomaly/               # Core package
-│   ├── __init__.py                 # Package exports
-│   ├── compat.py                   # Backward compatibility
-│   ├── core/                       # Core infrastructure
-│   │   ├── config.py               # Centralized configuration
-│   │   ├── constants.py            # Enums and constants
-│   │   ├── exceptions.py           # Custom exception hierarchy
-│   │   ├── logging.py              # Structured logging
-│   │   └── protocols.py            # Interfaces/protocols
-│   ├── metrics/                    # Metrics collection
-│   │   ├── client.py               # VictoriaMetrics client
-│   │   └── validation.py           # Input validation
-│   ├── detection/                  # Anomaly detection
-│   │   └── detector.py             # ML detector implementation
-│   ├── fingerprinting/             # Incident tracking
-│   │   └── fingerprinter.py        # Anomaly fingerprinter
-│   └── api/                        # API models
-│       └── models.py               # Pydantic response models
-│
-├── tests/                          # Test suite (210+ tests)
-│   ├── conftest.py                 # Pytest fixtures
-│   ├── fixtures.py                 # Shared test fixtures
-│   ├── test_*.py                   # Unit tests
-│   └── test_integration.py         # Integration tests
-│
-├── smartbox_models/                # Trained models (generated)
-├── smartbox_training_data/         # Training data (generated)
-└── alerts/                         # Alert output storage (generated)
-```
+| Period | Hours | Days | Confidence |
+|--------|-------|------|------------|
+| `business_hours` | 08:00-18:00 | Mon-Fri | 0.9 |
+| `evening_hours` | 18:00-22:00 | Mon-Fri | 0.8 |
+| `night_hours` | 22:00-06:00 | Mon-Fri | 0.95 |
+| `weekend_day` | 08:00-22:00 | Sat-Sun | 0.7 |
+| `weekend_night` | 22:00-08:00 | Sat-Sun | 0.6 |
+
+## ML Improvements
+
+### Temporal Train/Validation Split
+
+Data is split chronologically (80% train, 20% validation) to prevent data leakage. Rolling features are computed separately for each split.
+
+### Calibrated Severity Thresholds
+
+Instead of hardcoded thresholds, severity levels are calibrated per model from validation data:
+
+| Severity | Percentile | Description |
+|----------|------------|-------------|
+| Critical | Bottom 0.1% | Extreme outliers |
+| High | Bottom 1% | Significant anomalies |
+| Medium | Bottom 5% | Moderate deviations |
+| Low | Bottom 10% | Minor anomalies |
+
+### Contamination Estimation
+
+Optimal contamination is estimated automatically using knee detection in the IF score distribution, bounded by service category limits.
+
+### Drift Detection
+
+When enabled (`check_drift: true`), the system monitors for distribution drift:
+
+- **Univariate**: Z-score comparison against training statistics
+- **Multivariate**: Mahalanobis distance using inverse covariance matrix
+
+| Drift Score | Confidence Penalty |
+|-------------|-------------------|
+| < 3 | 0% (normal) |
+| 3-5 | 15% (moderate) |
+| > 5 | 30% (severe) |
+
+### Minimum Sample Requirements
+
+| Model Type | Minimum Samples |
+|------------|-----------------|
+| Univariate | 500 |
+| Multivariate | 1000 |
 
 ## Installation
 
 ```bash
-# Clone the repository
+# Clone and enter directory
 cd yaga2
 
 # Create virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
-# Install dependencies (using uv for faster installs)
+# Install with uv (recommended)
 uv pip install -e .
 
 # Or with pip
 pip install -e .
 
-# Install dev dependencies for testing
+# Dev dependencies
 uv pip install -e ".[dev]"
 ```
 
-## Quick Start Guide
+## Usage
 
-The pipeline has three main phases: **Data Collection** → **Training** → **Inference**
-
-### Step 1: Verify VictoriaMetrics Connectivity
-
-Before training, ensure you have access to VictoriaMetrics:
+### Training
 
 ```bash
-# Test connectivity (replace with your endpoint)
-curl -s "https://otel-metrics.production.smartbox.com/api/v1/query?query=up" | head -c 200
-```
-
-### Step 2: Train Models
-
-Training collects historical metrics from VictoriaMetrics and builds time-aware Isolation Forest models:
-
-```bash
-# Train models for all configured services (30 days of data)
+# Train all configured services
 python main.py
 
-# Or use the installed entry point
-smartbox-train
+# Training fetches 30 days of data, splits 80/20, and:
+# - Estimates contamination empirically
+# - Calibrates severity thresholds
+# - Stores drift detection baselines
 ```
 
-**What happens during training:**
-1. Connects to VictoriaMetrics and discovers available services
-2. Extracts 30 days of metrics (request_rate, latencies, error_rate)
-3. Engineers features (rolling statistics, time-based features)
-4. Trains 5 time-period models per service:
-   - `business_hours` (Mon-Fri 08:00-18:00)
-   - `evening_hours` (Mon-Fri 18:00-22:00)
-   - `night_hours` (Mon-Fri 22:00-06:00)
-   - `weekend_day` (Sat-Sun 08:00-22:00)
-   - `weekend_night` (Sat-Sun 22:00-08:00)
-5. Validates models and saves to `./smartbox_models/`
-6. Saves training data to `./smartbox_training_data/`
-
-**Training output structure:**
-```
-smartbox_models/
-├── booking_business_hours/
-│   └── model_data.json
-├── booking_evening_hours/
-│   └── model_data.json
-├── booking_night_hours/
-│   └── model_data.json
-├── booking_weekend_day/
-│   └── model_data.json
-└── booking_weekend_night/
-    └── model_data.json
-```
-
-### Step 3: Run Inference
-
-Once models are trained, run real-time anomaly detection:
+### Inference
 
 ```bash
-# Production mode (JSON output only)
+# Basic inference
 python inference.py
 
-# Verbose mode with detailed logging and explanations
+# Verbose mode
 python inference.py --verbose
 
-# Custom fingerprinting database location
-python inference.py --fingerprint-db ./custom_state.db
-
-# Or use the installed entry point
-smartbox-inference
-smartbox-inference --verbose
+# With drift detection
+# (requires check_drift: true in config.json)
+python inference.py --verbose
 ```
 
-**Inference process:**
-1. Loads trained models (lazy loading - only loads needed time period)
-2. Collects current metrics from VictoriaMetrics
-3. Routes to appropriate time-period model based on current time
-4. Runs Isolation Forest anomaly detection
-5. Applies fingerprinting for incident lifecycle tracking
-6. Outputs JSON alerts and sends to observability service
-
-## Usage Examples
-
-### Basic Production Usage
-
-```bash
-# Run inference and pipe output
-python inference.py | jq '.[] | select(.alert_type == "anomaly_detected")'
-
-# Run on a schedule (e.g., every 5 minutes via cron)
-*/5 * * * * cd /path/to/yaga2 && .venv/bin/python inference.py >> /var/log/smartbox-anomaly.log 2>&1
-```
-
-### Training Specific Services
-
-Edit `main.py` to customize the service list:
-
-```python
-# In main.py, modify the specific_services list:
-specific_services = ["booking", "friday", "search", "fa5", "gambit"]
-results = training_pipeline.train_all_services_time_aware(specific_services)
-```
-
-### Custom Training Configuration
-
-```python
-from main import EnhancedSmartboxTrainingPipeline
-
-# Custom VictoriaMetrics endpoint
-pipeline = EnhancedSmartboxTrainingPipeline(
-    vm_endpoint="https://your-vm-endpoint.com"
-)
-
-# Train with custom lookback period (default is 30 days)
-result = pipeline.train_service_model_time_aware("booking", lookback_days=60)
-```
-
-### Programmatic Inference
+### Programmatic Usage
 
 ```python
 from inference import SmartboxMLInferencePipeline
 
-# Initialize pipeline
 pipeline = SmartboxMLInferencePipeline(
     vm_endpoint="https://otel-metrics.production.smartbox.com",
     models_directory="./smartbox_models/",
-    alerts_directory="./alerts/",
     verbose=True
 )
 
-# Check system status
-status = pipeline.get_system_status()
-print(f"Available services: {status['available_services']}")
-
-# Run inference for specific services
+# Run inference with drift detection
 results = pipeline.run_enhanced_time_aware_inference(
     service_names=["booking", "search"]
 )
 
-# Process results
 for service, result in results.items():
+    # Check for anomalies
     if result.get('anomaly_count', 0) > 0:
-        print(f"Anomalies detected in {service}: {result['anomalies']}")
-```
+        print(f"Anomalies in {service}: {result['anomalies']}")
 
-## Running Tests
+    # Check for drift warnings
+    if 'drift_warning' in result:
+        print(f"Drift detected: {result['drift_warning']}")
 
-```bash
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pytest tests/ --cov=smartbox_anomaly --cov-report=html
-
-# Run specific test file
-pytest tests/test_validation.py -v
-
-# Run only unit tests
-pytest tests/ -m unit
-
-# Run integration tests
-pytest tests/ -m integration
-```
-
-## Code Quality
-
-```bash
-# Run linter
-ruff check .
-
-# Run type checker
-mypy smartbox_anomaly/
-
-# Format code
-ruff format .
+    # Check for validation issues
+    if result.get('validation_warnings'):
+        print(f"Validation issues: {result['validation_warnings']}")
 ```
 
 ## Configuration
 
-Configuration can be set via environment variables:
+### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VM_ENDPOINT` | VictoriaMetrics endpoint | `https://otel-metrics.production.smartbox.com` |
-| `VM_TIMEOUT` | Query timeout (seconds) | `10` |
-| `VM_MAX_RETRIES` | Max retry attempts | `3` |
-| `MODELS_DIR` | Models directory path | `./smartbox_models/` |
-| `ALERTS_DIR` | Alerts output directory | `./alerts/` |
-| `FINGERPRINT_DB` | SQLite database path | `./anomaly_state.db` |
-| `OBSERVABILITY_URL` | Observability service URL | `http://localhost:8000` |
+| `MODELS_DIR` | Models directory | `./smartbox_models/` |
+| `ALERTS_DIR` | Alerts output | `./alerts/` |
+| `FINGERPRINT_DB` | SQLite database | `./anomaly_state.db` |
+| `OBSERVABILITY_URL` | API server URL | `http://localhost:8000` |
 
-## Time Periods
+### config.json
 
-The pipeline uses 5 behavioral periods:
+```json
+{
+  "model": {
+    "min_training_samples": 500,
+    "min_multivariate_samples": 1000
+  },
+  "training": {
+    "validation_fraction": 0.2,
+    "contamination_estimation": {
+      "method": "knee"
+    }
+  },
+  "inference": {
+    "check_drift": false
+  }
+}
+```
 
-| Period | Hours | Days |
-|--------|-------|------|
-| `business_hours` | 08:00-18:00 | Mon-Fri |
-| `evening_hours` | 18:00-22:00 | Mon-Fri |
-| `night_hours` | 22:00-06:00 | Mon-Fri |
-| `weekend_day` | 08:00-22:00 | Sat-Sun |
-| `weekend_night` | 22:00-08:00 | Sat-Sun |
-
-## Anomaly Severity Levels
-
-| Severity | IF Score | Description |
-|----------|----------|-------------|
-| Critical | < -0.6 | Immediate attention required |
-| High | -0.6 to -0.3 | Significant deviation |
-| Medium | -0.3 to -0.1 | Moderate deviation |
-| Low | ≥ -0.1 | Minor deviation |
-
-## Fingerprinting
-
-The fingerprinting system provides:
-
-- **Fingerprint ID**: Deterministic hash for pattern tracking
-- **Incident ID**: Unique identifier for each occurrence
-- **State Machine**: CREATE → CONTINUE → RESOLVE → CLOSED
-
-See `docs/FINGERPRINTING.md` for detailed documentation.
+See [CONFIGURATION.md](docs/CONFIGURATION.md) for full options.
 
 ## API Output
 
@@ -339,66 +285,108 @@ See `docs/FINGERPRINTING.md` for detailed documentation.
 ```json
 {
   "alert_type": "anomaly_detected",
-  "service": "booking",
-  "timestamp": "2024-01-15T10:30:00",
+  "service_name": "booking",
+  "timestamp": "2025-12-23T10:30:00",
+  "time_period": "business_hours",
   "overall_severity": "high",
   "anomaly_count": 1,
-  "anomalies": [
-    {
-      "type": "multivariate_enhanced_isolation_forest",
+
+  "anomalies": {
+    "recent_degradation": {
+      "type": "consolidated",
       "severity": "high",
-      "confidence_score": 0.85,
-      "description": "Application latency significantly elevated",
-      "metadata": {
-        "fingerprint_id": "anomaly_abc123",
-        "incident_id": "incident_xyz789",
-        "occurrence_count": 3
-      }
+      "confidence": 0.85,
+      "description": "Latency degradation: 636ms (92nd percentile)",
+      "recommended_actions": ["Check recent deployments", "Review dependencies"]
     }
-  ]
-}
-```
+  },
 
-### Incident Resolution Response
+  "drift_warning": {
+    "type": "model_drift",
+    "overall_drift_score": 3.5,
+    "confidence_penalty_applied": 0.15,
+    "affected_metrics": ["request_rate"]
+  },
 
-```json
-{
-  "alert_type": "incident_resolved",
-  "service": "booking",
-  "incident_id": "incident_xyz789",
-  "fingerprint_id": "anomaly_abc123",
-  "resolution_details": {
-    "final_severity": "high",
-    "total_occurrences": 5,
-    "incident_duration_minutes": 45
+  "validation_warnings": [],
+
+  "performance_info": {
+    "drift_check_enabled": true,
+    "drift_penalty_applied": 0.15
   }
 }
 ```
 
-## Development
+See [INFERENCE_API_PAYLOAD.md](docs/INFERENCE_API_PAYLOAD.md) for full specification.
 
-### Code Quality Standards
+## Project Structure
 
-- Type hints throughout the codebase
-- Centralized configuration management
-- Custom exception hierarchy
-- Protocol-based interfaces for testability
-- Input validation at system boundaries
+```
+yaga2/
+├── main.py                         # Training pipeline
+├── inference.py                    # Inference pipeline
+├── config.json                     # Configuration
+│
+├── smartbox_anomaly/               # Core package
+│   ├── core/                       # Config, logging, constants
+│   ├── detection/                  # ML detector, time-aware, service config
+│   ├── metrics/                    # VictoriaMetrics client
+│   ├── fingerprinting/             # Incident tracking
+│   └── api/                        # Pydantic models
+│
+├── docs/                           # Documentation
+│   ├── MACHINE_LEARNING.md
+│   ├── ML_TRAINING.md
+│   ├── CONFIGURATION.md
+│   ├── INFERENCE_API_PAYLOAD.md
+│   ├── OPERATIONS.md
+│   └── ...
+│
+├── tests/                          # Test suite (214 tests)
+│
+├── smartbox_models/                # Trained models (generated)
+└── alerts/                         # Alert output (generated)
+```
 
-### Adding New Services
+## Testing
 
-1. Add service to known services in `config.py` → `ServiceConfig`
-2. Or let the auto-detection categorize based on naming patterns
+```bash
+# Run all tests
+uv run pytest tests/
 
-### Adding New Metrics
+# With coverage
+uv run pytest tests/ --cov=smartbox_anomaly
 
-1. Add metric name to `constants.py` → `MetricName`
-2. Add PromQL query to `vmclient.py` → `VictoriaMetricsClient.QUERIES`
-3. Update validation in `validation.py` if needed
+# Specific tests
+uv run pytest tests/test_detector.py -v
+```
+
+## Operations
+
+### Enabling Drift Detection
+
+1. Set `check_drift: true` in config.json
+2. Retrain models: `python main.py`
+3. Run inference: `python inference.py --verbose`
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Too many false positives | Increase contamination for service |
+| Missing anomalies | Decrease contamination |
+| Drift warnings | Retrain models with recent data |
+| Validation warnings | Check upstream data quality |
+
+See [OPERATIONS.md](docs/OPERATIONS.md) for detailed runbooks.
+
+## License
+
+Proprietary - Smartbox Group
 
 ## Contributing
 
-1. Follow the existing code style
+1. Follow existing code style
 2. Add tests for new functionality
-3. Update documentation as needed
-4. Run `pytest` before submitting changes
+3. Update documentation
+4. Run `pytest` and `ruff check` before submitting
