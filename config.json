@@ -1,0 +1,341 @@
+{
+  "$schema": "./config.schema.json",
+  "_comment": "Smartbox Anomaly Detection Configuration - All values can be overridden by environment variables",
+  "victoria_metrics": {
+    "endpoint": "https://otel-metrics.production.smartbox.com",
+    "timeout_seconds": 10,
+    "max_retries": 3,
+    "pool_connections": 20,
+    "pool_maxsize": 20,
+    "circuit_breaker_threshold": 5,
+    "circuit_breaker_timeout_seconds": 300,
+    "retry_backoff_factor": 0.3,
+    "retry_status_forcelist": [
+      500,
+      502,
+      503,
+      504
+    ]
+  },
+  "observability_api": {
+    "base_url": "http://localhost:8000",
+    "anomalies_endpoint": "/api/anomalies/batch",
+    "resolutions_endpoint": "/api/incidents/resolve",
+    "request_timeout_seconds": 5,
+    "enabled": true
+  },
+  "model": {
+    "models_directory": "./smartbox_models/",
+    "min_training_samples": 500,
+    "min_multivariate_samples": 1000,
+    "default_contamination": 0.05,
+    "default_n_estimators": 200,
+    "random_state": 42,
+    "contamination_by_category": {
+      "critical": 0.03,
+      "standard": 0.05,
+      "micro": 0.08,
+      "admin": 0.06,
+      "core": 0.04,
+      "background": 0.08
+    },
+    "contamination_by_service": {
+      "booking": 0.02,
+      "search": 0.04,
+      "mobile-api": 0.03,
+      "shire-api": 0.03,
+      "vms": 0.03,
+      "friday": 0.05,
+      "gambit": 0.05,
+      "titan": 0.05,
+      "r2d2": 0.05,
+      "catalog": 0.05,
+      "tc14": 0.05,
+      "fa5": 0.08,
+      "m2-fr-adm": 0.06,
+      "m2-it-adm": 0.06,
+      "m2-bb-adm": 0.06,
+      "m2-bn-adm": 0.06,
+      "m2-cb-adm": 0.06,
+      "m2-ch-adm": 0.06,
+      "m2-es-adm": 0.06,
+      "m2-ez-adm": 0.06,
+      "m2-lv-adm": 0.06,
+      "m2-df-adm": 0.06,
+      "m2-dk-adm": 0.06,
+      "m2-se-adm": 0.06,
+      "m2-bb": 0.04,
+      "m2-bn": 0.04,
+      "m2-cb": 0.04,
+      "m2-ch": 0.04,
+      "m2-ez": 0.04,
+      "m2-fr": 0.04,
+      "m2-it": 0.04,
+      "m2-es": 0.04,
+      "m2-df": 0.04,
+      "m2-dk": 0.04,
+      "m2-ds": 0.04,
+      "m2-se": 0.04,
+      "m2-lv": 0.04
+    },
+    "n_estimators_by_complexity": {
+      "high": {
+        "default": 250,
+        "above_5k": 300,
+        "above_10k": 400
+      },
+      "medium": {
+        "default": 150,
+        "above_3k": 200,
+        "above_8k": 250
+      },
+      "low": {
+        "default": 100,
+        "above_5k": 150
+      }
+    }
+  },
+  "training": {
+    "lookback_days": 30,
+    "min_data_points": 2000,
+    "validation_fraction": 0.2,
+    "contamination_estimation": {
+      "method": "knee",
+      "min_samples": 100,
+      "fallback": 0.05
+    },
+    "threshold_calibration": {
+      "enabled": true,
+      "percentiles": {
+        "critical": 0.1,
+        "high": 1,
+        "medium": 5,
+        "low": 10
+      }
+    },
+    "drift_detection": {
+      "enabled": false,
+      "z_score_warning": 3,
+      "z_score_critical": 5
+    }
+  },
+  "inference": {
+    "alerts_directory": "./alerts/",
+    "max_workers": 3,
+    "inter_service_delay_seconds": 0.2,
+    "check_drift": false
+  },
+  "fingerprinting": {
+    "db_path": "./anomaly_state.db",
+    "cleanup_max_age_hours": 72,
+    "incident_separation_minutes": 30
+  },
+  "time_periods": {
+    "business_hours": {
+      "start": 8,
+      "end": 18,
+      "weekdays_only": true
+    },
+    "evening_hours": {
+      "start": 18,
+      "end": 22,
+      "weekdays_only": true
+    },
+    "night_hours": {
+      "start": 22,
+      "end": 6,
+      "weekdays_only": true
+    },
+    "weekend_day": {
+      "start": 8,
+      "end": 22,
+      "weekends_only": true
+    },
+    "weekend_night": {
+      "start": 22,
+      "end": 8,
+      "weekends_only": true
+    },
+    "min_samples": {
+      "weekday": {
+        "critical": 200,
+        "standard": 200,
+        "admin": 150,
+        "micro": 100
+      },
+      "weekend": {
+        "critical": 100,
+        "standard": 100,
+        "admin": 75,
+        "micro": 50
+      }
+    },
+    "confidence_scores": {
+      "business_hours": 0.9,
+      "evening_hours": 0.8,
+      "night_hours": 0.95,
+      "weekend_day": 0.7,
+      "weekend_night": 0.6
+    },
+    "validation_thresholds": {
+      "business_hours": 0.18,
+      "evening_hours": 0.20,
+      "night_hours": 0.12,
+      "weekend_day": 0.28,
+      "weekend_night": 0.32
+    }
+  },
+  "detection_thresholds": {
+    "severity_scores": {
+      "critical": -0.6,
+      "high": -0.3,
+      "medium": -0.1
+    },
+    "error_rates": {
+      "critical": 0.05,
+      "high": 0.02,
+      "very_high": 0.20
+    },
+    "latency_ms": {
+      "critical": 2000,
+      "high": 1000
+    },
+    "ratios": {
+      "client_latency_bottleneck": 0.6,
+      "database_latency_bottleneck": 0.7,
+      "traffic_cliff_threshold": 0.3
+    },
+    "outlier_percentiles": {
+      "lower": 0.001,
+      "upper": 0.999
+    },
+    "validation": {
+      "max_request_rate": 1000000.0,
+      "max_latency_ms": 300000.0,
+      "constant_value_threshold": 1e-10
+    }
+  },
+  "services": {
+    "critical": [
+      "booking",
+      "search",
+      "mobile-api",
+      "shire-api",
+      "vms"
+    ],
+    "standard": [
+      "friday",
+      "gambit",
+      "titan",
+      "r2d2",
+      "catalog",
+      "tc14"
+    ],
+    "micro": [
+      "fa5"
+    ],
+    "admin": [
+      "m2-fr-adm",
+      "m2-it-adm",
+      "m2-bb-adm",
+      "m2-bn-adm",
+      "m2-cb-adm",
+      "m2-ch-adm",
+      "m2-es-adm",
+      "m2-ez-adm",
+      "m2-lv-adm",
+      "m2-df-adm",
+      "m2-dk-adm",
+      "m2-se-adm"
+    ],
+    "core": [
+      "m2-bb",
+      "m2-bn",
+      "m2-cb",
+      "m2-ch",
+      "m2-ez",
+      "m2-fr",
+      "m2-it",
+      "m2-es",
+      "m2-df",
+      "m2-dk",
+      "m2-ds",
+      "m2-se",
+      "m2-lv"
+    ],
+    "pattern_detection": {
+      "api_patterns": [
+        "api",
+        "gateway",
+        "proxy"
+      ],
+      "admin_patterns": [
+        "admin",
+        "adm",
+        "mgmt"
+      ],
+      "background_patterns": [
+        "worker",
+        "job",
+        "task",
+        "queue"
+      ],
+      "micro_patterns": [
+        "micro",
+        "util",
+        "helper"
+      ],
+      "core_patterns": [
+        "m2-",
+        "core",
+        "platform"
+      ]
+    }
+  },
+  "dependencies": {
+    "_comment": "Service dependency graph for cascade detection. Each service lists the services it calls.",
+    "graph": {
+      "mobile-api": [
+        "vms"
+      ],
+      "booking": [
+        "search",
+        "vms",
+        "r2d2",
+        "friday"
+      ],
+      "search": [
+        "catalog",
+        "r2d2"
+      ],
+      "shire-api": [
+        "vms"
+      ],
+      "vms": [],
+      "gambit": [
+        "vms"
+      ],
+      "friday": [],
+      "titan": [],
+      "r2d2": [
+        "catalog"
+      ],
+      "catalog": [],
+      "fa5": [],
+      "tc14": [
+        "r2d2"
+      ]
+    },
+    "cascade_detection": {
+      "enabled": true,
+      "max_depth": 5,
+      "latency_propagation_threshold": 0.6,
+      "require_temporal_correlation": true,
+      "correlation_window_minutes": 5
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}

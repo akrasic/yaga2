@@ -1,0 +1,64 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+.venv2
+venv
+env
+*.egg-info
+.eggs
+dist
+build
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+
+# Type checking
+.mypy_cache
+
+# Linting
+.ruff_cache
+
+# Claude
+.claude
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Development files
+.pre-commit-config.yaml
+.python-version
+
+# Backup files
+backup_files/
+bak-*.py
+
+# Local data (mapped as bind mounts)
+smartbox_training_data/
+alerts/
+output.json
+
+# Minimal config (not needed in production)
+config.minimal.json
+
+# Tests (not needed in production)
+tests/

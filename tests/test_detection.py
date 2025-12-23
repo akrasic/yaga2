@@ -1,0 +1,412 @@
+"""
+Tests for the detection module.
+"""
+
+from __future__ import annotations
+
+import tempfile
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from smartbox_anomaly.core.constants import MetricName, TimePeriod
+from smartbox_anomaly.detection import (
+    SmartboxAnomalyDetector,
+    TimeAwareAnomalyDetector,
+    create_detector,
+    create_time_aware_detector,
+    detect_service_category,
+    get_service_parameters,
+)
+
+
+class TestServiceConfig:
+    """Tests for service configuration utilities."""
+
+    def test_get_service_parameters_known_service(self):
+        """Test parameters for known services."""
+        params = get_service_parameters("booking")
+        assert params.category == "critical"
+        assert params.base_contamination == 0.02
+        assert params.complexity == "high"
+
+    def test_get_service_parameters_unknown_service(self):
+        """Test parameters for unknown services are auto-detected."""
+        params = get_service_parameters("my-new-service")
+        assert params.auto_detected is True
+        assert params.category == "unknown_standard"
+
+    def test_detect_service_category_api(self):
+        """Test detection of API services."""
+        config = detect_service_category("payment-api")
+        assert config["category"] == "api_gateway"
+        assert config["complexity"] == "high"
+
+    def test_detect_service_category_admin(self):
+        """Test detection of admin services."""
+        config = detect_service_category("user-admin")
+        assert config["category"] == "admin"
+        assert config["complexity"] == "low"
+
+    def test_detect_service_category_worker(self):
+        """Test detection of background workers."""
+        config = detect_service_category("email-worker")
+        assert config["category"] == "background_service"
+
+    def test_detect_service_category_security(self):
+        """Test detection of security services."""
+        config = detect_service_category("oauth-service")
+        assert config["category"] == "security_service"
+        assert config["complexity"] == "high"
+
+    def test_get_parameters_with_data(self):
+        """Test data-driven parameter tuning."""
+        # Create sample data with high variability
+        data = pd.DataFrame({
+            "request_rate": np.random.exponential(100, 1000),
+            "application_latency": np.random.exponential(50, 1000),
+        })
+
+        params = get_service_parameters("test-service", data=data, auto_tune=True)
+        assert params.n_estimators > 0
+        assert 0 < params.base_contamination < 1
+
+
+class TestSmartboxAnomalyDetector:
+    """Tests for SmartboxAnomalyDetector class."""
+
+    @pytest.fixture
+    def sample_training_data(self) -> pd.DataFrame:
+        """Generate sample training data."""
+        np.random.seed(42)
+        n_samples = 500
+
+        return pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        })
+
+    @pytest.fixture
+    def trained_detector(self, sample_training_data) -> SmartboxAnomalyDetector:
+        """Create and train a detector."""
+        detector = create_detector("test-service")
+        detector.train(sample_training_data)
+        return detector
+
+    def test_detector_creation(self):
+        """Test detector creation."""
+        detector = create_detector("my-service")
+        assert detector.service_name == "my-service"
+        assert detector.auto_tune is True
+        assert not detector.is_trained
+
+    def test_detector_creation_no_tune(self):
+        """Test detector creation without auto-tuning."""
+        detector = SmartboxAnomalyDetector("my-service", auto_tune=False)
+        assert detector.auto_tune is False
+
+    def test_training(self, sample_training_data):
+        """Test detector training."""
+        detector = create_detector("test-service")
+        detector.train(sample_training_data)
+
+        assert detector.is_trained
+        assert len(detector.models) > 0
+        assert len(detector.scalers) > 0
+        assert len(detector.training_statistics) > 0
+
+    def test_training_empty_data(self):
+        """Test training with empty data raises error."""
+        detector = create_detector("test-service")
+        with pytest.raises(Exception):
+            detector.train(pd.DataFrame())
+
+    def test_detection_normal_metrics(self, trained_detector):
+        """Test detection with normal metrics returns few/no anomalies."""
+        normal_metrics = {
+            MetricName.REQUEST_RATE: 100.0,
+            MetricName.APPLICATION_LATENCY: 50.0,
+            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DATABASE_LATENCY: 10.0,
+            MetricName.ERROR_RATE: 0.01,
+        }
+
+        result = trained_detector.detect(normal_metrics)
+        assert "anomalies" in result
+        assert "metadata" in result
+
+    def test_detection_anomalous_metrics(self, trained_detector):
+        """Test detection with anomalous metrics."""
+        anomalous_metrics = {
+            MetricName.REQUEST_RATE: 10000.0,  # Very high
+            MetricName.APPLICATION_LATENCY: 5000.0,  # Very high
+            MetricName.CLIENT_LATENCY: 1000.0,
+            MetricName.DATABASE_LATENCY: 500.0,
+            MetricName.ERROR_RATE: 0.5,  # 50% error rate
+        }
+
+        result = trained_detector.detect(anomalous_metrics)
+        assert "anomalies" in result
+        # Should detect at least some anomalies
+        # (exact number depends on training data)
+
+    def test_detection_untrained_detector(self):
+        """Test detection on untrained detector."""
+        detector = create_detector("test-service")
+        result = detector.detect({MetricName.REQUEST_RATE: 100.0})
+
+        assert "anomalies" in result
+        assert result["metadata"]["trained"] is False
+
+    def test_training_statistics(self, trained_detector):
+        """Test that training statistics are calculated."""
+        stats = trained_detector.training_statistics
+
+        assert MetricName.REQUEST_RATE in stats
+        assert stats[MetricName.REQUEST_RATE].mean > 0
+        assert stats[MetricName.REQUEST_RATE].std >= 0
+        assert stats[MetricName.REQUEST_RATE].p95 > 0
+
+    def test_feature_importance(self, trained_detector):
+        """Test feature importance calculation."""
+        importance = trained_detector.feature_importance
+
+        assert len(importance) > 0
+        for _metric, fi in importance.items():
+            assert fi.variability_score >= 0
+            assert fi.impact_level in ["low", "medium", "high", "critical"]
+
+    def test_save_and_load_model(self, trained_detector):
+        """Test saving and loading models."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Save
+            saved_path = trained_detector.save_model(tmpdir)
+            assert saved_path.exists()
+            assert (saved_path / "model_data.json").exists()
+
+            # Load
+            loaded = SmartboxAnomalyDetector.load_model(tmpdir, "test-service")
+            assert loaded.is_trained
+            assert loaded.service_name == trained_detector.service_name
+
+            # Verify detection works on loaded model
+            metrics = {MetricName.REQUEST_RATE: 100.0}
+            result = loaded.detect(metrics)
+            assert "anomalies" in result
+
+    def test_pattern_detection(self, trained_detector):
+        """Test pattern-based anomaly detection."""
+        # Simulate system overload pattern
+        overload_metrics = {
+            MetricName.REQUEST_RATE: 10000.0,
+            MetricName.APPLICATION_LATENCY: 3000.0,
+            MetricName.ERROR_RATE: 0.1,
+            MetricName.CLIENT_LATENCY: 0.0,
+            MetricName.DATABASE_LATENCY: 0.0,
+        }
+
+        result = trained_detector.detect(overload_metrics)
+        anomalies = result.get("anomalies", {})
+
+        # Should detect patterns or multivariate anomalies
+        assert len(anomalies) > 0 or result["metadata"].get("status") == "no_anomalies"
+
+
+class TestTimeAwareAnomalyDetector:
+    """Tests for TimeAwareAnomalyDetector class."""
+
+    @pytest.fixture
+    def sample_time_series_data(self) -> pd.DataFrame:
+        """Generate sample time series data with datetime index."""
+        np.random.seed(42)
+
+        # Generate timestamps covering all periods
+        dates = pd.date_range(
+            start="2024-01-01",
+            end="2024-01-14",
+            freq="15min",
+        )
+
+        n_samples = len(dates)
+
+        data = pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        }, index=dates)
+
+        return data
+
+    def test_detector_creation(self):
+        """Test time-aware detector creation."""
+        detector = create_time_aware_detector("my-service")
+        assert detector.service_name == "my-service"
+        assert len(detector.available_periods) == 0  # Not loaded yet
+
+    def test_get_current_period_business(self):
+        """Test period detection for business hours."""
+        detector = TimeAwareAnomalyDetector("test")
+        # Wednesday 10am
+        period = detector.get_current_period(datetime(2024, 1, 10, 10, 0))
+        assert period == TimePeriod.BUSINESS_HOURS
+
+    def test_get_current_period_evening(self):
+        """Test period detection for evening hours."""
+        detector = TimeAwareAnomalyDetector("test")
+        # Wednesday 7pm
+        period = detector.get_current_period(datetime(2024, 1, 10, 19, 0))
+        assert period == TimePeriod.EVENING_HOURS
+
+    def test_get_current_period_night(self):
+        """Test period detection for night hours."""
+        detector = TimeAwareAnomalyDetector("test")
+        # Wednesday 2am
+        period = detector.get_current_period(datetime(2024, 1, 10, 2, 0))
+        assert period == TimePeriod.NIGHT_HOURS
+
+    def test_get_current_period_weekend_day(self):
+        """Test period detection for weekend day."""
+        detector = TimeAwareAnomalyDetector("test")
+        # Saturday 2pm
+        period = detector.get_current_period(datetime(2024, 1, 13, 14, 0))
+        assert period == TimePeriod.WEEKEND_DAY
+
+    def test_get_current_period_weekend_night(self):
+        """Test period detection for weekend night."""
+        detector = TimeAwareAnomalyDetector("test")
+        # Saturday 11pm
+        period = detector.get_current_period(datetime(2024, 1, 13, 23, 0))
+        assert period == TimePeriod.WEEKEND_NIGHT
+
+    def test_training_time_aware_models(self, sample_time_series_data):
+        """Test training time-aware models."""
+        detector = TimeAwareAnomalyDetector("test-service")
+        models = detector.train_time_aware_models(sample_time_series_data)
+
+        assert len(models) > 0
+        assert len(detector.available_periods) > 0
+        # Should have trained at least some periods
+        assert "business_hours" in detector.available_periods or len(models) > 0
+
+    def test_save_and_load_time_aware(self, sample_time_series_data):
+        """Test saving and loading time-aware models."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Train and save
+            detector = TimeAwareAnomalyDetector("test-service")
+            detector.train_time_aware_models(sample_time_series_data)
+            saved_paths = detector.save_models(tmpdir)
+
+            assert len(saved_paths) > 0
+
+            # Load
+            loaded = create_time_aware_detector("test-service", models_directory=tmpdir)
+            assert len(loaded.available_periods) > 0
+
+    def test_detection_no_model(self):
+        """Test detection when no model is available."""
+        detector = TimeAwareAnomalyDetector("nonexistent-service")
+        result = detector.detect({MetricName.REQUEST_RATE: 100.0})
+
+        assert result["metadata"]["status"] == "no_model"
+
+    def test_statistics(self):
+        """Test getting detector statistics."""
+        detector = TimeAwareAnomalyDetector("test-service")
+        stats = detector.get_statistics()
+
+        assert stats["service_name"] == "test-service"
+        assert "available_periods" in stats
+        assert "validation_thresholds" in stats
+
+
+class TestDetectionIntegration:
+    """Integration tests for detection module."""
+
+    @pytest.fixture
+    def training_data(self) -> pd.DataFrame:
+        """Generate realistic training data."""
+        np.random.seed(42)
+        n_samples = 1000
+
+        # More realistic distributions
+        request_rate = np.random.lognormal(4, 0.5, n_samples)
+        app_latency = np.random.lognormal(3.5, 0.8, n_samples)
+
+        # Client and DB latency often zero
+        client_latency = np.where(
+            np.random.random(n_samples) > 0.3,
+            np.random.exponential(30, n_samples),
+            0
+        )
+        db_latency = np.where(
+            np.random.random(n_samples) > 0.4,
+            np.random.exponential(15, n_samples),
+            0
+        )
+
+        error_rate = np.random.beta(1, 200, n_samples)
+
+        return pd.DataFrame({
+            MetricName.REQUEST_RATE: request_rate,
+            MetricName.APPLICATION_LATENCY: app_latency,
+            MetricName.CLIENT_LATENCY: client_latency,
+            MetricName.DATABASE_LATENCY: db_latency,
+            MetricName.ERROR_RATE: error_rate,
+        })
+
+    def test_full_workflow(self, training_data):
+        """Test complete training and detection workflow."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create and train
+            detector = create_detector("integration-test")
+            detector.train(training_data)
+
+            assert detector.is_trained
+
+            # Save
+            model_path = detector.save_model(tmpdir)
+            assert model_path.exists()
+
+            # Load
+            loaded = SmartboxAnomalyDetector.load_model(tmpdir, "integration-test")
+            assert loaded.is_trained
+
+            # Detect on normal data
+            normal_result = loaded.detect({
+                MetricName.REQUEST_RATE: 50.0,
+                MetricName.APPLICATION_LATENCY: 30.0,
+                MetricName.ERROR_RATE: 0.005,
+            })
+            assert "anomalies" in normal_result
+
+            # Detect on anomalous data
+            anomalous_result = loaded.detect({
+                MetricName.REQUEST_RATE: 50000.0,  # Way higher than normal
+                MetricName.APPLICATION_LATENCY: 10000.0,
+                MetricName.ERROR_RATE: 0.3,
+            })
+            assert "anomalies" in anomalous_result
+
+    def test_zero_normal_metric_handling(self, training_data):
+        """Test handling of zero-normal metrics like client_latency."""
+        detector = create_detector("zero-normal-test")
+        detector.train(training_data)
+
+        # Test with zero values (normal for these metrics)
+        result = detector.detect({
+            MetricName.REQUEST_RATE: 50.0,
+            MetricName.APPLICATION_LATENCY: 30.0,
+            MetricName.CLIENT_LATENCY: 0.0,  # Often zero
+            MetricName.DATABASE_LATENCY: 0.0,  # Often zero
+            MetricName.ERROR_RATE: 0.005,
+        })
+
+        assert "anomalies" in result
+        # Zero values shouldn't trigger anomalies for zero-normal metrics

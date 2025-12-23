@@ -6,20 +6,44 @@ Now supports explainable anomaly detection with rich context and recommendations
 import json
 import logging
 import argparse
+import math
 import requests
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
-from enum import Enum
 import time
 import urllib3
 
-# Import shared model class with explainability features
-from anomaly_models import SmartboxAnomalyDetector
-from vmclient import VictoriaMetricsClient, InferenceMetrics, MetricsCollectionError
-from time_aware_anomaly_detection import TimeAwareAnomalyDetector
-from anomaly_fingerprinter import AnomalyFingerprinter 
+# Import from smartbox_anomaly package (primary source)
+from smartbox_anomaly.core import (
+    AnomalySeverity,
+    ModelLoadError,
+    MetricsCollectionError,
+    get_config,
+    ObservabilityConfig,
+    DependencyContext,
+    DependencyStatus,
+)
+from smartbox_anomaly.detection import (
+    SmartboxAnomalyDetector,
+    TimeAwareAnomalyDetector,
+)
+from smartbox_anomaly.fingerprinting import AnomalyFingerprinter
+from smartbox_anomaly.api import (
+    AlertType,
+    AnomalyDetectedPayload,
+    Anomaly,
+    CascadeInfo,
+    CurrentMetrics,
+    DetectionSignal,
+    FingerprintingMetadata,
+    PayloadMetadata,
+    Severity,
+)
+
+# Import VictoriaMetrics client (still uses root-level stub for backward compatibility)
+from vmclient import VictoriaMetricsClient, InferenceMetrics
 
 # Disable urllib3 warnings for cleaner output
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -33,14 +57,6 @@ logger = logging.getLogger(__name__)
 
 # Reduce urllib3 logging level to avoid connection pool warnings
 logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
-
-
-class AnomalySeverity(Enum):
-    """Anomaly severity levels"""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
 
 
 @dataclass
@@ -89,21 +105,63 @@ class ServiceInferenceResult:
         return max((a.severity for a in self.anomalies), key=lambda x: severity_order.index(x))
 
 
-class ModelLoadError(Exception):
-    """Custom exception for model loading failures"""
-    pass
-
-
 class EnhancedModelManager:
     """Enhanced model management - UPDATED to not interfere with lazy loading"""
-    
+
     def __init__(self, models_directory: str = "./smartbox_models/"):
         self.models_directory = Path(models_directory)
         self._model_cache = {}
         self._model_metadata = {}
         self._load_times = {}
         self._model_validators = {}
-    
+
+    def load_services_from_config(self, config_path: str = "./config.json") -> List[str]:
+        """Load services list from config.json.
+
+        Combines all service categories: critical, standard, micro, admin, core.
+        Returns empty list if config not found or invalid.
+        """
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+
+            services_config = config.get("services", {})
+            all_services = []
+
+            # Collect services from all categories
+            for category in ["critical", "standard", "micro", "admin", "core", "background"]:
+                category_services = services_config.get(category, [])
+                if isinstance(category_services, list):
+                    all_services.extend(category_services)
+
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_services = []
+            for svc in all_services:
+                if svc not in seen:
+                    seen.add(svc)
+                    unique_services.append(svc)
+
+            return unique_services
+
+        except (FileNotFoundError, json.JSONDecodeError, Exception) as e:
+            logger.debug(f"Could not load services from config: {e}")
+            return []
+
+    def get_services_with_models(self, config_services: List[str]) -> Tuple[List[str], List[str]]:
+        """Check which config services have trained models.
+
+        Args:
+            config_services: List of services from config.json
+
+        Returns:
+            Tuple of (services_with_models, services_missing_models)
+        """
+        available = set(self.get_base_services())
+        with_models = [s for s in config_services if s in available]
+        missing = [s for s in config_services if s not in available]
+        return with_models, missing
+
     def get_base_services(self) -> List[str]:
         """Get list of base service names (without time period suffixes) - FIXED for 5-period"""
         all_services = self.get_available_services()
@@ -406,48 +464,312 @@ class EnhancedResultsProcessor:
         return base_alert
     
     def _format_time_aware_alert_json(self, result: dict) -> dict:
-        """Format time-aware anomaly as structured JSON"""
-        anomalies = result.get('anomalies', {})
-        
-        # Determine overall severity
-        severity_order = ['low', 'medium', 'high', 'critical']
-        max_severity = 'low'
-        for anomaly_data in anomalies.values():
+        """Format time-aware anomaly as structured JSON matching API specification.
+
+        Produces payload format documented in docs/INFERENCE_API_PAYLOAD.md
+        Uses Pydantic models for validation and consistency.
+        """
+        # Handle both dict and list formats for anomalies
+        anomalies_raw = result.get('anomalies', {})
+        if isinstance(anomalies_raw, list):
+            # Convert list to dict format keyed by anomaly name
+            anomalies_dict = {}
+            for i, anomaly in enumerate(anomalies_raw):
+                if isinstance(anomaly, dict):
+                    anomaly_name = (
+                        anomaly.get('anomaly_name') or
+                        anomaly.get('pattern_name') or
+                        anomaly.get('type') or
+                        f'anomaly_{i}'
+                    )
+                    anomalies_dict[anomaly_name] = anomaly
+            anomalies_raw = anomalies_dict
+
+        # Format anomalies using Pydantic models
+        formatted_anomalies: Dict[str, Anomaly] = {}
+        severities: List[Severity] = []
+
+        for anomaly_name, anomaly_data in anomalies_raw.items():
             if isinstance(anomaly_data, dict):
-                anomaly_severity = anomaly_data.get('severity', 'medium')
-                if severity_order.index(anomaly_severity) > severity_order.index(max_severity):
-                    max_severity = anomaly_severity
-        
-        # Format anomalies array
-        formatted_anomalies = []
-        for anomaly_name, anomaly_data in anomalies.items():
-            if isinstance(anomaly_data, dict):
-                formatted_anomalies.append({
-                    "type": anomaly_name,
-                    "severity": anomaly_data.get('severity', 'medium'),
-                    "confidence_score": anomaly_data.get('score', 0.0),
-                    "description": anomaly_data.get('description', anomaly_name.replace('_', ' ').title()),
-                    "detection_method": anomaly_data.get('type', 'unknown'),
-                    "threshold_value": anomaly_data.get('threshold'),
-                    "actual_value": anomaly_data.get('value'),
-                    "metadata": {
-                        key: value for key, value in anomaly_data.items() 
-                        if key not in ['severity', 'score', 'description', 'type', 'threshold', 'value']
-                    }
-                })
-        
-        return {
-            "alert_type": "anomaly_detected",
-            "service": result['service'],
-            "time_period": result.get('time_period', 'unknown'),
-            "model_type": result.get('model_type', 'time_aware'),
-            "timestamp": result.get('timestamp', datetime.now().isoformat()),
-            "overall_severity": max_severity,
-            "anomaly_count": len(formatted_anomalies),
-            "current_metrics": result.get('metrics', {}),
-            "anomalies": formatted_anomalies
+                anomaly_model = self._build_anomaly_model(anomaly_name, anomaly_data)
+                formatted_anomalies[anomaly_name] = anomaly_model
+                severities.append(anomaly_model.severity)
+
+        # Extract time period and model info
+        time_period = result.get('time_period', 'unknown')
+        model_name = result.get('model_name', time_period)
+        service_name = result.get('service', result.get('service_name', 'unknown'))
+        timestamp = result.get('timestamp', datetime.now().isoformat())
+
+        # Determine alert type and overall severity
+        alert_type = AlertType.ANOMALY_DETECTED if formatted_anomalies else AlertType.NO_ANOMALY
+        overall_severity = Severity.max_severity(severities) if severities else Severity.NONE
+
+        # Build current metrics model
+        metrics_data = result.get('metrics', result.get('current_metrics', {}))
+        current_metrics = CurrentMetrics(**metrics_data) if metrics_data else CurrentMetrics()
+
+        # Build fingerprinting metadata if present
+        fingerprinting = None
+        if 'fingerprinting' in result and result['fingerprinting']:
+            try:
+                fingerprinting = FingerprintingMetadata(**result['fingerprinting'])
+            except Exception:
+                # Fall back to dict if validation fails
+                fingerprinting = result['fingerprinting']
+
+        # Build payload metadata
+        models_used = self._extract_models_used({k: v.model_dump() for k, v in formatted_anomalies.items()})
+        metadata = PayloadMetadata(
+            service_name=service_name,
+            detection_timestamp=timestamp,
+            models_used=models_used,
+            enhanced_messaging=True,
+            features={
+                "contextual_severity": True,
+                "named_patterns": True,
+                "recommendations": True,
+                "interpretations": True,
+                "anomaly_correlation": True
+            }
+        )
+
+        # Build the AnomalyDetectedPayload using Pydantic model
+        payload = AnomalyDetectedPayload(
+            alert_type=alert_type,
+            service_name=service_name,
+            timestamp=timestamp,
+            time_period=time_period,
+            model_name=model_name,
+            model_type=result.get('model_type', 'time_aware_5period'),
+            anomalies=formatted_anomalies,
+            anomaly_count=len(formatted_anomalies),
+            overall_severity=overall_severity,
+            current_metrics=current_metrics,
+            fingerprinting=fingerprinting if isinstance(fingerprinting, FingerprintingMetadata) else None,
+            performance_info=result.get('performance_info'),
+            metadata=metadata,
+        )
+
+        # Convert to dict and add fingerprinting as dict if it wasn't a valid model
+        response = payload.model_dump(mode='json', exclude_none=True)
+        if fingerprinting and not isinstance(fingerprinting, FingerprintingMetadata):
+            response['fingerprinting'] = fingerprinting
+
+        return response
+
+    def _format_single_anomaly(self, anomaly_name: str, anomaly_data: dict) -> dict:
+        """Format a single anomaly to match API specification."""
+        # Determine if this is a consolidated anomaly (multiple detection signals)
+        detection_signals = anomaly_data.get('detection_signals', [])
+        is_consolidated = len(detection_signals) > 1 or anomaly_data.get('type') == 'consolidated'
+
+        # Build base anomaly structure
+        formatted = {
+            "type": "consolidated" if is_consolidated else anomaly_data.get('type', 'ml_isolation'),
+            "severity": anomaly_data.get('severity', 'medium'),
+            "confidence": float(anomaly_data.get('confidence', anomaly_data.get('score', 0.5))),
+            "score": float(anomaly_data.get('score', anomaly_data.get('confidence', 0.0))),
+            "description": anomaly_data.get('description', anomaly_name.replace('_', ' ').title()),
         }
-    
+
+        # Add root metric if available
+        if anomaly_data.get('root_metric'):
+            formatted['root_metric'] = anomaly_data['root_metric']
+        elif 'latency' in anomaly_name.lower():
+            formatted['root_metric'] = 'application_latency'
+        elif 'error' in anomaly_name.lower():
+            formatted['root_metric'] = 'error_rate'
+        elif 'traffic' in anomaly_name.lower() or 'request' in anomaly_name.lower():
+            formatted['root_metric'] = 'request_rate'
+
+        # Add signal count for consolidated anomalies
+        if is_consolidated:
+            formatted['signal_count'] = len(detection_signals) if detection_signals else anomaly_data.get('signal_count', 1)
+
+        # Add pattern name if present
+        if anomaly_data.get('pattern_name'):
+            formatted['pattern_name'] = anomaly_data['pattern_name']
+
+        # Add interpretation if present
+        if anomaly_data.get('interpretation'):
+            formatted['interpretation'] = anomaly_data['interpretation']
+
+        # Add current value
+        if anomaly_data.get('value') is not None:
+            formatted['value'] = anomaly_data['value']
+        elif anomaly_data.get('actual_value') is not None:
+            formatted['value'] = anomaly_data['actual_value']
+
+        # Add detection signals array
+        if detection_signals:
+            formatted['detection_signals'] = detection_signals
+        else:
+            # Create a single detection signal from the anomaly data
+            signal = {
+                "method": anomaly_data.get('detection_method', 'isolation_forest'),
+                "type": anomaly_data.get('type', 'ml_isolation'),
+                "severity": anomaly_data.get('severity', 'medium'),
+                "score": float(anomaly_data.get('score', 0.0)),
+            }
+            if anomaly_data.get('direction'):
+                signal['direction'] = anomaly_data['direction']
+            if anomaly_data.get('percentile_position') is not None:
+                signal['percentile'] = anomaly_data['percentile_position']
+            if anomaly_data.get('pattern_name'):
+                signal['pattern'] = anomaly_data['pattern_name']
+            formatted['detection_signals'] = [signal]
+
+        # Add actionable information
+        if anomaly_data.get('possible_causes'):
+            formatted['possible_causes'] = anomaly_data['possible_causes']
+        if anomaly_data.get('recommended_actions'):
+            formatted['recommended_actions'] = anomaly_data['recommended_actions']
+        if anomaly_data.get('checks'):
+            formatted['checks'] = anomaly_data['checks']
+
+        # Add comparison data
+        if anomaly_data.get('comparison_data'):
+            formatted['comparison_data'] = anomaly_data['comparison_data']
+
+        # Add business impact
+        if anomaly_data.get('business_impact'):
+            formatted['business_impact'] = anomaly_data['business_impact']
+
+        # Add fingerprinting fields at anomaly level
+        fingerprint_fields = [
+            'fingerprint_id', 'fingerprint_action', 'incident_id', 'incident_action',
+            'incident_duration_minutes', 'first_seen', 'last_updated', 'occurrence_count',
+            'time_confidence', 'detected_by_model'
+        ]
+        for field in fingerprint_fields:
+            if anomaly_data.get(field) is not None:
+                formatted[field] = anomaly_data[field]
+
+        return formatted
+
+    def _extract_models_used(self, anomalies: dict) -> list:
+        """Extract list of detection models used from anomalies."""
+        models = set()
+        for anomaly in anomalies.values():
+            if isinstance(anomaly, dict):
+                signals = anomaly.get('detection_signals', [])
+                for signal in signals:
+                    if isinstance(signal, dict) and signal.get('method'):
+                        models.add(signal['method'])
+        return list(models) if models else []
+
+    def _build_anomaly_model(self, anomaly_name: str, anomaly_data: dict) -> Anomaly:
+        """Build an Anomaly Pydantic model from raw anomaly data.
+
+        Handles detection_signals array format from the sequential IF → Pattern pipeline.
+        """
+        # Get detection signals
+        detection_signals_raw = anomaly_data.get('detection_signals', [])
+        anomaly_type = anomaly_data.get('type', 'unknown')
+        is_consolidated = anomaly_type == 'consolidated' or len(detection_signals_raw) > 1
+
+        # Build detection signals from array format
+        detection_signals = []
+        if detection_signals_raw:
+            for signal in detection_signals_raw:
+                if isinstance(signal, dict):
+                    try:
+                        detection_signals.append(DetectionSignal(
+                            method=signal.get('method', 'unknown'),
+                            type=signal.get('type', 'ml_isolation'),
+                            severity=Severity(signal.get('severity', 'medium')),
+                            score=float(signal.get('score', 0.0)),
+                            direction=signal.get('direction'),
+                            percentile=signal.get('percentile'),
+                            pattern=signal.get('pattern'),
+                        ))
+                    except Exception:
+                        pass
+
+        # Fallback: create a single detection signal from the anomaly data
+        if not detection_signals:
+            detection_signals.append(DetectionSignal(
+                method=anomaly_data.get('detection_method', 'isolation_forest'),
+                type=anomaly_data.get('type', 'ml_isolation'),
+                severity=Severity(anomaly_data.get('severity', 'medium')),
+                score=float(anomaly_data.get('score', 0.0)),
+                direction=anomaly_data.get('direction'),
+                percentile=anomaly_data.get('percentile_position') or anomaly_data.get('percentile'),
+                pattern=anomaly_data.get('pattern_name'),
+            ))
+
+        # Determine root metric from various sources
+        root_metric = anomaly_data.get('root_metric')
+        if not root_metric:
+            # Try to get from contributing_metrics
+            contributing = anomaly_data.get('contributing_metrics', [])
+            if contributing:
+                # Prioritize latency > error_rate > request_rate
+                priority = ['application_latency', 'error_rate', 'request_rate',
+                           'database_latency', 'client_latency']
+                for metric in priority:
+                    if metric in contributing:
+                        root_metric = metric
+                        break
+                if not root_metric:
+                    root_metric = contributing[0]
+
+            # Fallback: infer from anomaly name
+            elif 'latency' in anomaly_name.lower():
+                root_metric = 'application_latency'
+            elif 'error' in anomaly_name.lower():
+                root_metric = 'error_rate'
+            elif 'traffic' in anomaly_name.lower() or 'request' in anomaly_name.lower():
+                root_metric = 'request_rate'
+
+        # Use type directly (already API-compatible from detector)
+        output_type = anomaly_data.get('type', 'ml_isolation')
+
+        # Build cascade info if present
+        cascade_info = None
+        if anomaly_data.get('cascade_analysis'):
+            ca = anomaly_data['cascade_analysis']
+            cascade_info = CascadeInfo(
+                is_cascade=ca.get('is_cascade', False),
+                root_cause_service=ca.get('root_cause_service'),
+                affected_chain=ca.get('affected_chain', []),
+                cascade_type=ca.get('cascade_type', 'none'),
+                confidence=ca.get('confidence', 0.0),
+                propagation_path=ca.get('propagation_path'),
+            )
+
+        # Build the Anomaly model
+        return Anomaly(
+            type=output_type,
+            severity=Severity(anomaly_data.get('severity', 'medium')),
+            confidence=float(anomaly_data.get('confidence', anomaly_data.get('score', 0.5))),
+            score=float(anomaly_data.get('score', anomaly_data.get('confidence', 0.0))),
+            description=anomaly_data.get('description', anomaly_name.replace('_', ' ').title()),
+            root_metric=root_metric,
+            signal_count=anomaly_data.get('signal_count'),
+            pattern_name=anomaly_data.get('pattern_name'),
+            interpretation=anomaly_data.get('interpretation'),
+            value=anomaly_data.get('value') or anomaly_data.get('actual_value'),
+            detection_signals=detection_signals,
+            possible_causes=anomaly_data.get('possible_causes'),
+            recommended_actions=anomaly_data.get('recommended_actions'),
+            checks=anomaly_data.get('checks'),
+            comparison_data=anomaly_data.get('comparison_data'),
+            business_impact=anomaly_data.get('business_impact'),
+            cascade_analysis=cascade_info,
+            fingerprint_id=anomaly_data.get('fingerprint_id'),
+            fingerprint_action=anomaly_data.get('fingerprint_action'),
+            incident_id=anomaly_data.get('incident_id'),
+            incident_action=anomaly_data.get('incident_action'),
+            incident_duration_minutes=anomaly_data.get('incident_duration_minutes'),
+            first_seen=anomaly_data.get('first_seen'),
+            last_updated=anomaly_data.get('last_updated'),
+            occurrence_count=anomaly_data.get('occurrence_count'),
+            time_confidence=anomaly_data.get('time_confidence'),
+            detected_by_model=anomaly_data.get('detected_by_model'),
+        )
+
     def _format_alert_json(self, result: ServiceInferenceResult) -> dict:
         """Format regular ServiceInferenceResult as structured JSON"""
         formatted_anomalies = []
@@ -554,11 +876,87 @@ class EnhancedResultsProcessor:
 
 class EnhancedTimeAwareDetector:
     """Enhanced time-aware detector with efficient lazy loading - FIXED for performance"""
-    
+
     def __init__(self, models_directory: str):
         self.models_directory = models_directory
         self._detector_cache = {}
         self._load_times = {}
+
+    def _calculate_drift_penalty(self, drift_score: float) -> float:
+        """Calculate confidence penalty based on drift severity.
+
+        Args:
+            drift_score: The overall drift score (z-score based)
+
+        Returns:
+            Confidence penalty factor (0.0 to 0.3)
+        """
+        if drift_score > 5:
+            return 0.3  # 30% confidence reduction for severe drift
+        elif drift_score > 3:
+            return 0.15  # 15% reduction for moderate drift
+        return 0.0
+
+    def _apply_drift_adjustments(
+        self,
+        result: Dict[str, Any],
+        drift_analysis: Dict[str, Any],
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """Apply drift-based adjustments to detection results.
+
+        When drift is detected, this method:
+        1. Adds a warning to the result
+        2. Adjusts confidence scores downward
+        3. Marks affected anomalies with drift_warning flag
+
+        Args:
+            result: The detection result dict
+            drift_analysis: Drift analysis from the detector
+            verbose: Whether to log adjustments
+
+        Returns:
+            Modified result dict with drift adjustments
+        """
+        if not drift_analysis.get('has_drift', False):
+            return result
+
+        drift_score = drift_analysis.get('overall_drift_score', 0.0)
+        penalty = self._calculate_drift_penalty(drift_score)
+
+        if penalty == 0:
+            return result
+
+        # Add drift warning to result
+        result['drift_warning'] = {
+            'type': 'model_drift',
+            'overall_drift_score': drift_score,
+            'recommendation': drift_analysis.get('recommendation', 'Monitor closely'),
+            'affected_metrics': list(drift_analysis.get('drift_metrics', {}).keys()),
+            'confidence_penalty_applied': penalty,
+            'multivariate_drift': drift_analysis.get('multivariate_drift', False),
+        }
+
+        if verbose:
+            logger.warning(
+                f"Drift detected (score={drift_score:.2f}), applying {penalty*100:.0f}% confidence penalty"
+            )
+
+        # Adjust confidence scores in anomalies
+        anomalies = result.get('anomalies', {})
+        for anomaly_name, anomaly_data in anomalies.items():
+            if isinstance(anomaly_data, dict) and 'confidence' in anomaly_data:
+                original_confidence = anomaly_data['confidence']
+                anomaly_data['original_confidence'] = original_confidence
+                anomaly_data['confidence'] = original_confidence * (1 - penalty)
+                anomaly_data['drift_warning'] = True
+
+                if verbose:
+                    logger.info(
+                        f"  {anomaly_name}: confidence {original_confidence:.2f} → {anomaly_data['confidence']:.2f}"
+                    )
+
+        return result
     
     def load_time_aware_detector(self, service_name: str, verbose: bool = False) -> 'TimeAwareAnomalyDetector':
         """Load time-aware detector with lazy loading discovery - no models loaded yet"""
@@ -592,8 +990,8 @@ class EnhancedTimeAwareDetector:
             
             try:
                 # Import the efficient TimeAwareAnomalyDetector class
-                from time_aware_anomaly_detection import TimeAwareAnomalyDetector
-                
+                from smartbox_anomaly.detection.time_aware import TimeAwareAnomalyDetector
+
                 # Create detector with lazy loading (NO models loaded yet)
                 detector = TimeAwareAnomalyDetector(service_name)
                 detector._models_directory = self.models_directory
@@ -619,13 +1017,20 @@ class EnhancedTimeAwareDetector:
         
         return self._detector_cache.get(cache_key)
     
-    def detect_with_explainability(self, service_name: str, metrics: Dict[str, Any], 
-                                 timestamp: datetime, verbose: bool = False) -> Dict[str, Any]:
+    def detect_with_explainability(
+        self,
+        service_name: str,
+        metrics: Dict[str, Any],
+        timestamp: datetime,
+        verbose: bool = False,
+        dependency_context: Optional[DependencyContext] = None,
+        check_drift: bool = False,
+    ) -> Dict[str, Any]:
         """Enhanced time-aware detection with explainability - EFFICIENT with lazy loading"""
-        
+
         try:
             detector = self.load_time_aware_detector(service_name, verbose)
-            
+
             if not detector:
                 raise ModelLoadError(f"Could not initialize time-aware detector for {service_name}")
             
@@ -654,21 +1059,33 @@ class EnhancedTimeAwareDetector:
             if hasattr(detector, 'detect_anomalies_with_context'):
                 if verbose:
                     logger.info(f"Using explainable detection with lazy loading for {current_period}")
-                
+
                 try:
                     # This will lazy load only the current period model
                     enhanced_result = detector.detect_anomalies_with_context(
-                        metrics, timestamp, self.models_directory, verbose
+                        metrics, timestamp, self.models_directory, verbose,
+                        dependency_context=dependency_context,
+                        check_drift=check_drift
                     )
-                    
+
+                    # Apply drift adjustments if drift was detected
+                    if check_drift and 'drift_analysis' in enhanced_result:
+                        enhanced_result = self._apply_drift_adjustments(
+                            enhanced_result,
+                            enhanced_result['drift_analysis'],
+                            verbose
+                        )
+
                     # Add efficiency info
                     enhanced_result['performance_info'] = {
                         'lazy_loaded': True,
                         'models_loaded': list(detector.models.keys()),
                         'period_used': current_period,
-                        'total_available': len(detector._available_periods)
+                        'total_available': len(detector._available_periods),
+                        'drift_check_enabled': check_drift,
+                        'drift_penalty_applied': enhanced_result.get('drift_warning', {}).get('confidence_penalty_applied', 0.0)
                     }
-                    
+
                     return enhanced_result
                     
                 except Exception as e:
@@ -679,19 +1096,20 @@ class EnhancedTimeAwareDetector:
             # Fallback to standard detection with lazy loading
             if verbose:
                 logger.info(f"Using standard detection with lazy loading for {current_period}")
-            
+
             # This will also lazy load only the needed model
             anomalies = detector.detect_anomalies(
-                metrics, timestamp, self.models_directory, verbose
+                metrics, timestamp, self.models_directory, verbose,
+                check_drift=check_drift
             )
-            
+
             # Handle both dict and other formats properly
             if isinstance(anomalies, dict):
                 anomaly_count = len(anomalies)
             else:
                 anomaly_count = len(anomalies) if hasattr(anomalies, '__len__') else 0
                 anomalies = anomalies if isinstance(anomalies, dict) else {}
-            
+
             return {
                 'service': service_name,
                 'time_period': current_period,
@@ -705,7 +1123,8 @@ class EnhancedTimeAwareDetector:
                     'lazy_loaded': True,
                     'models_loaded': list(detector.models.keys()),
                     'period_used': current_period,
-                    'total_available': len(detector._available_periods)
+                    'total_available': len(detector._available_periods),
+                    'drift_check_enabled': check_drift
                 }
             }
             
@@ -746,14 +1165,25 @@ class EnhancedTimeAwareDetector:
 
 class SmartboxMLInferencePipeline:
     """Enhanced production-grade ML inference pipeline with explainability"""
-    
-    def __init__(self, 
-                 vm_endpoint: str = "https://otel-metrics.production.smartbox.com",
-                 models_directory: str = "./smartbox_models/",
-                 alerts_directory: str = "./alerts/",
-                 max_workers: int = 3,
-                 verbose: bool = False):
-        
+
+    def __init__(self,
+                 vm_endpoint: str | None = None,
+                 models_directory: str | None = None,
+                 alerts_directory: str | None = None,
+                 max_workers: int | None = None,
+                 verbose: bool = False,
+                 check_drift: bool | None = None):
+
+        # Load configuration
+        config = get_config()
+
+        # Use config values as defaults, allow overrides
+        vm_endpoint = vm_endpoint or config.victoria_metrics.endpoint
+        models_directory = models_directory or config.model.models_directory
+        alerts_directory = alerts_directory or config.inference.alerts_directory
+        max_workers = max_workers if max_workers is not None else config.inference.max_workers
+        self.check_drift = check_drift if check_drift is not None else config.inference.check_drift
+
         self.vm_client = VictoriaMetricsClient(vm_endpoint)
         self.model_manager = EnhancedModelManager(models_directory)
         self.detection_engine = EnhancedAnomalyDetectionEngine(self.model_manager)
@@ -761,131 +1191,439 @@ class SmartboxMLInferencePipeline:
         self.time_aware_detector = EnhancedTimeAwareDetector(models_directory)
         self.max_workers = max_workers
         self.verbose = verbose
-        
+
+        # Load dependency graph from config
+        self.dependency_graph = self._load_dependency_graph()
+
         logger.info("Enhanced Smartbox ML Inference Pipeline initialized with explainability")
-    
+        if verbose:
+            logger.info(f"  VM Endpoint: {vm_endpoint}")
+            logger.info(f"  Models Directory: {models_directory}")
+            logger.info(f"  Observability API: {config.observability.base_url}")
+            if self.dependency_graph:
+                logger.info(f"  Dependency graph loaded: {len(self.dependency_graph)} services")
+
+    def _load_dependency_graph(self) -> Dict[str, List[str]]:
+        """Load dependency graph from config.json."""
+        try:
+            config_path = Path("config.json")
+            if config_path.exists():
+                with open(config_path) as f:
+                    config_data = json.load(f)
+                deps = config_data.get("dependencies", {})
+                return deps.get("graph", {})
+        except Exception as e:
+            logger.warning(f"Failed to load dependency graph: {e}")
+        return {}
+
+    def _validate_metrics(
+        self,
+        metrics_dict: Dict[str, float],
+        service_name: str,
+    ) -> Tuple[Dict[str, float], List[str]]:
+        """Validate and sanitize metrics before inference.
+
+        Checks for:
+        - NaN, inf, None values
+        - Negative rates and latencies
+        - Extreme outliers beyond reasonable bounds
+
+        Args:
+            metrics_dict: Raw metrics from VictoriaMetrics
+            service_name: Name of the service (for logging)
+
+        Returns:
+            Tuple of (cleaned_metrics, validation_warnings)
+        """
+        warnings = []
+        cleaned = {}
+
+        # Validation bounds from config
+        max_request_rate = 1_000_000.0  # 1M req/s
+        max_latency_ms = 300_000.0  # 5 minutes
+        max_error_rate = 1.0  # 100%
+
+        for metric_name, value in metrics_dict.items():
+            # Skip non-numeric values
+            if not isinstance(value, (int, float)):
+                warnings.append(f"{metric_name}: non-numeric value {type(value).__name__}, skipping")
+                continue
+
+            # Check for invalid values (NaN, inf, None)
+            if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
+                warnings.append(f"{metric_name}: invalid value {value}, using 0.0")
+                cleaned[metric_name] = 0.0
+                continue
+
+            # Semantic validation based on metric type
+            metric_lower = metric_name.lower()
+
+            # Rate metrics should not be negative
+            if 'rate' in metric_lower and value < 0:
+                warnings.append(f"{metric_name}: negative rate {value}, using 0.0")
+                cleaned[metric_name] = 0.0
+                continue
+
+            # Latency metrics should not be negative
+            if 'latency' in metric_lower and value < 0:
+                warnings.append(f"{metric_name}: negative latency {value}, using 0.0")
+                cleaned[metric_name] = 0.0
+                continue
+
+            # Cap extreme request rates
+            if 'request' in metric_lower and 'rate' in metric_lower and value > max_request_rate:
+                warnings.append(f"{metric_name}: extreme rate {value}, capping at {max_request_rate}")
+                cleaned[metric_name] = max_request_rate
+                continue
+
+            # Cap extreme latencies
+            if 'latency' in metric_lower and value > max_latency_ms:
+                warnings.append(f"{metric_name}: extreme latency {value}ms, capping at {max_latency_ms}ms")
+                cleaned[metric_name] = max_latency_ms
+                continue
+
+            # Error rate should be between 0 and 1
+            if 'error' in metric_lower and 'rate' in metric_lower:
+                if value < 0:
+                    warnings.append(f"{metric_name}: negative error rate {value}, using 0.0")
+                    cleaned[metric_name] = 0.0
+                    continue
+                elif value > max_error_rate:
+                    warnings.append(f"{metric_name}: error rate {value} > 1.0, capping at 1.0")
+                    cleaned[metric_name] = max_error_rate
+                    continue
+
+            # Value is valid
+            cleaned[metric_name] = value
+
+        # Log warnings if any
+        if warnings and self.verbose:
+            logger.warning(f"Metrics validation for {service_name}: {len(warnings)} issues")
+            for warning in warnings[:5]:  # Show first 5 warnings
+                logger.warning(f"  {warning}")
+            if len(warnings) > 5:
+                logger.warning(f"  ... and {len(warnings) - 5} more")
+
+        return cleaned, warnings
+
+    def _has_latency_anomaly(self, result: Dict) -> bool:
+        """Check if a result contains latency-related anomalies."""
+        if "error" in result:
+            return False
+        anomalies = result.get("anomalies", {})
+        for anomaly_name, anomaly_data in anomalies.items():
+            # Check if it's a latency-related anomaly
+            root_metric = anomaly_data.get("root_metric", "")
+            if "latency" in root_metric.lower() or "latency" in anomaly_name.lower():
+                return True
+            # Check contributing metrics
+            for metric in anomaly_data.get("contributing_metrics", []):
+                if "latency" in metric.lower():
+                    return True
+        return False
+
+    def _build_dependency_context(
+        self,
+        service_name: str,
+        all_results: Dict[str, Dict],
+    ) -> Optional[DependencyContext]:
+        """Build dependency context from Pass 1 results.
+
+        Args:
+            service_name: The service to build context for
+            all_results: Results from Pass 1 for all services
+
+        Returns:
+            DependencyContext if dependencies exist, None otherwise
+        """
+        if not self.dependency_graph:
+            return None
+
+        service_deps = self.dependency_graph.get(service_name, [])
+        if not service_deps:
+            return None
+
+        dependencies = {}
+        for dep_service in service_deps:
+            if dep_service in all_results:
+                result = all_results[dep_service]
+                if "error" not in result:
+                    anomalies = result.get("anomalies", {})
+                    has_anomaly = len(anomalies) > 0
+
+                    # Get primary anomaly info
+                    primary_anomaly_type = None
+                    severity = None
+                    latency_percentile = None
+
+                    if anomalies:
+                        first_anomaly = list(anomalies.values())[0]
+                        primary_anomaly_type = first_anomaly.get("pattern_name", list(anomalies.keys())[0])
+                        severity = first_anomaly.get("severity")
+
+                        # Try to extract latency percentile
+                        for signal in first_anomaly.get("detection_signals", []):
+                            if "latency" in signal.get("method", "").lower():
+                                latency_percentile = signal.get("percentile")
+                                break
+
+                        # Fallback: check comparison_data
+                        if latency_percentile is None:
+                            comp_data = first_anomaly.get("comparison_data", {})
+                            lat_data = comp_data.get("application_latency", {})
+                            latency_percentile = lat_data.get("percentile_estimate")
+
+                    dependencies[dep_service] = DependencyStatus(
+                        service_name=dep_service,
+                        has_anomaly=has_anomaly,
+                        anomaly_type=primary_anomaly_type,
+                        severity=severity,
+                        latency_percentile=latency_percentile,
+                        timestamp=result.get("timestamp"),
+                    )
+
+        if not dependencies:
+            return None
+
+        return DependencyContext(
+            dependencies=dependencies,
+            graph=self.dependency_graph,
+            detection_timestamp=datetime.now().isoformat(),
+        )
+
     def run_enhanced_time_aware_inference(self, service_names: Optional[List[str]] = None) -> Dict[str, Dict]:
-        """Run inference with enhanced time-aware anomaly detection and explainability"""
+        """Run inference with enhanced time-aware anomaly detection and explainability.
+
+        Uses two-pass detection for dependency-aware cascade analysis:
+        - Pass 1: Detect anomalies for all services (no dependency context)
+        - Pass 2: Re-run detection for services with latency anomalies, using
+                  dependency context built from Pass 1 results
+
+        If service_names is None, loads services from config.json and filters
+        to those with available models.
+        """
         start_time = datetime.now()
-    
-        # Get base service names (without time period suffixes)
+
+        # Get services to run inference on
         if service_names is None:
-            service_names = self.model_manager.get_base_services()
-        
+            # Try to load from config.json first
+            config_services = self.model_manager.load_services_from_config()
+
+            if config_services:
+                # Check which config services have models
+                service_names, missing_services = self.model_manager.get_services_with_models(config_services)
+
+                if missing_services and self.verbose:
+                    logger.warning(
+                        f"Services in config.json missing trained models: {missing_services}"
+                    )
+                    logger.info("Run main.py to train models for these services")
+
+                if service_names:
+                    logger.info(f"Loaded {len(service_names)} services from config.json (with models)")
+            else:
+                # Fall back to discovering from models directory
+                service_names = self.model_manager.get_base_services()
+                if service_names:
+                    logger.info(f"Discovered {len(service_names)} services from models directory")
+
         if not service_names:
             logger.error("No services available for inference")
             return {}
-    
+
         logger.info(f"Running enhanced time-aware inference for {len(service_names)} services: {service_names}")
-    
-        results = {}
-    
+
+        # Collect metrics for all services first
+        metrics_cache: Dict[str, Any] = {}
         for service_name in service_names:
-            if self.verbose:
-                logger.info(f"Analyzing {service_name}")
-                
             try:
-                # Collect current metrics
                 if self.verbose:
                     logger.info(f"Collecting metrics from VictoriaMetrics for {service_name}")
-                metrics = self.vm_client.collect_service_metrics(service_name)
-            
-                # Try enhanced time-aware detection first
-                try:
-                    if self.verbose:
-                        logger.info(f"Loading enhanced time-aware models for {service_name}")
-                    
-                    enhanced_result = self.time_aware_detector.detect_with_explainability(
-                        service_name, metrics.to_dict(), start_time, self.verbose
-                    )
-                    
-                    results[service_name] = enhanced_result
-                    
-                except Exception as model_error:
-                    # Fallback to standard time-aware detection
-                    if self.verbose:
-                        logger.warning(f"Enhanced detection failed for {service_name}: {str(model_error)[:50]}...")
-                        logger.info("Falling back to standard time-aware detection")
-                    
-                    logger.warning(f"Enhanced time-aware detection failed for {service_name}: {model_error}")
-                    
-                    try:
-                        detector = TimeAwareAnomalyDetector.load_models(
-                            str(self.model_manager.models_directory), service_name, False
-                        )
-                        
-                        anomalies = detector.detect_anomalies(metrics.to_dict(), start_time)
-                        period = detector.get_time_period(start_time)
-                        
-                        # Handle both dict and list formats
-                        if isinstance(anomalies, dict):
-                            anomaly_count = len(anomalies)
-                        else:
-                            anomaly_count = len(anomalies) if hasattr(anomalies, '__len__') else 0
-                            anomalies = {}
-                        
-                        results[service_name] = {
-                            'service': service_name,
-                            'time_period': period,
-                            'model_type': 'time_aware_fallback',
-                            'anomaly_count': anomaly_count,
-                            'anomalies': anomalies,
-                            'metrics': metrics.to_dict(),
-                            'timestamp': start_time.isoformat(),
-                            'explainable': False
-                        }
-                        
-                    except Exception as fallback_error:
-                        if self.verbose:
-                            logger.error(f"Both enhanced and standard models failed for {service_name}")
-                        
-                        logger.error(f"Both enhanced and standard time-aware models failed for {service_name}: {fallback_error}")
-                        results[service_name] = {'service': service_name, 'error': str(fallback_error)}
-                        continue
-            
-                # Process results for storage and batching
-                self.results_processor.process_result(results[service_name])
-            
-                # Enhanced logging with explainability info
-                result = results[service_name]
-                if 'error' not in result:
-                    anomaly_count = result.get('anomaly_count', len(result.get('anomalies', {})))
-                    period = result.get('time_period', 'unknown')
-                    model_type = result.get('model_type', 'unknown')
-                    is_explainable = result.get('explainable', model_type.endswith('explainable'))
-                    
-                    if anomaly_count > 0:
-                        explainable_indicator = "explainable" if is_explainable else "standard"
-                        if self.verbose:
-                            logger.info(f"ANOMALIES DETECTED for {service_name}: {anomaly_count} anomalies found ({explainable_indicator})")
-                            
-                            # Show explanation summary if available
-                            if 'explanation' in result:
-                                explanation = result['explanation']
-                                if 'detailed_explanations' in explanation:
-                                    logger.info(f"Explanation: {explanation['detailed_explanations'][0]}")
-                                    
-                            # Show top recommendation if available
-                            if 'recommended_actions' in result and result['recommended_actions']:
-                                logger.info(f"Recommendation: {result['recommended_actions'][0]}")
-                        
-                        logger.info(f"ANOMALY_DETECTED - {service_name} [{period}] {explainable_indicator}: {anomaly_count} anomalies detected")
-                    else:
-                        if self.verbose:
-                            logger.info(f"No anomalies detected for {service_name}")
-                        logger.info(f"NO_ANOMALIES - {service_name} [{period}]: No anomalies detected")
-            
-                time.sleep(0.2)  # Small delay
-            
+                metrics_cache[service_name] = self.vm_client.collect_service_metrics(service_name)
             except Exception as e:
+                logger.error(f"Failed to collect metrics for {service_name}: {e}")
+
+        # ===== PASS 1: Detect anomalies without dependency context =====
+        if self.verbose:
+            logger.info("Pass 1: Running initial detection for all services")
+
+        pass1_results: Dict[str, Dict] = {}
+        validation_warnings_by_service: Dict[str, List[str]] = {}
+
+        for service_name in service_names:
+            if service_name not in metrics_cache:
+                pass1_results[service_name] = {'service': service_name, 'error': 'No metrics collected'}
+                continue
+
+            # Use fresh timestamp per service to avoid period mismatch
+            service_timestamp = datetime.now()
+
+            if self.verbose:
+                logger.info(f"Pass 1: Analyzing {service_name}")
+
+            try:
+                metrics = metrics_cache[service_name]
+                metrics_dict = metrics.to_dict()
+
+                # Validate metrics at inference boundary
+                validated_metrics, validation_warnings = self._validate_metrics(metrics_dict, service_name)
+                if validation_warnings:
+                    validation_warnings_by_service[service_name] = validation_warnings
+
+                enhanced_result = self.time_aware_detector.detect_with_explainability(
+                    service_name, validated_metrics, service_timestamp, self.verbose,
+                    check_drift=self.check_drift
+                )
+
+                # Add validation info to result
+                if validation_warnings:
+                    enhanced_result['validation_warnings'] = validation_warnings
+
+                pass1_results[service_name] = enhanced_result
+
+            except Exception as model_error:
+                # Fallback to standard time-aware detection
                 if self.verbose:
-                    logger.error(f"Error processing {service_name}: {str(e)}")
-                logger.error(f"Enhanced time-aware inference failed for {service_name}: {e}")
-                results[service_name] = {'service': service_name, 'error': str(e)}
-    
+                    logger.warning(f"Enhanced detection failed for {service_name}: {str(model_error)[:50]}...")
+
+                try:
+                    metrics = metrics_cache[service_name]
+                    metrics_dict = metrics.to_dict()
+
+                    # Validate metrics for fallback path too
+                    validated_metrics, validation_warnings = self._validate_metrics(metrics_dict, service_name)
+
+                    detector = TimeAwareAnomalyDetector.load_models(
+                        str(self.model_manager.models_directory), service_name, False
+                    )
+                    anomalies = detector.detect_anomalies(validated_metrics, service_timestamp)
+                    period = detector.get_time_period(service_timestamp)
+
+                    if isinstance(anomalies, dict):
+                        anomaly_count = len(anomalies)
+                    else:
+                        anomaly_count = len(anomalies) if hasattr(anomalies, '__len__') else 0
+                        anomalies = {}
+
+                    fallback_result = {
+                        'service': service_name,
+                        'time_period': period,
+                        'model_type': 'time_aware_fallback',
+                        'anomaly_count': anomaly_count,
+                        'anomalies': anomalies,
+                        'metrics': validated_metrics,
+                        'timestamp': service_timestamp.isoformat(),
+                        'explainable': False
+                    }
+
+                    # Add validation warnings to fallback result
+                    if validation_warnings:
+                        fallback_result['validation_warnings'] = validation_warnings
+
+                    pass1_results[service_name] = fallback_result
+                except Exception as fallback_error:
+                    logger.error(f"Both enhanced and standard models failed for {service_name}: {fallback_error}")
+                    pass1_results[service_name] = {'service': service_name, 'error': str(fallback_error)}
+
+            time.sleep(0.1)  # Small delay between services
+
+        # ===== PASS 2: Re-run detection with dependency context for latency anomalies =====
+        results = dict(pass1_results)  # Start with Pass 1 results
+
+        if self.dependency_graph:
+            # Find services that have latency anomalies and have dependencies
+            services_for_pass2 = [
+                svc for svc in service_names
+                if svc in pass1_results
+                and 'error' not in pass1_results[svc]
+                and self._has_latency_anomaly(pass1_results[svc])
+                and svc in self.dependency_graph
+            ]
+
+            if services_for_pass2:
+                if self.verbose:
+                    logger.info(f"Pass 2: Re-analyzing {len(services_for_pass2)} services with dependency context")
+
+                for service_name in services_for_pass2:
+                    # Use fresh timestamp for Pass 2 as well
+                    pass2_timestamp = datetime.now()
+
+                    if self.verbose:
+                        logger.info(f"Pass 2: Re-analyzing {service_name} with dependency context")
+
+                    try:
+                        # Build dependency context from Pass 1 results
+                        dep_context = self._build_dependency_context(service_name, pass1_results)
+
+                        if dep_context and any(
+                            status.has_anomaly for status in dep_context.dependencies.values()
+                        ):
+                            # Re-run detection with dependency context
+                            metrics = metrics_cache[service_name]
+                            metrics_dict = metrics.to_dict()
+
+                            # Re-validate metrics (use cached warnings if available)
+                            validated_metrics, _ = self._validate_metrics(metrics_dict, service_name)
+
+                            enhanced_result = self.time_aware_detector.detect_with_explainability(
+                                service_name, validated_metrics, pass2_timestamp, self.verbose,
+                                dependency_context=dep_context,
+                                check_drift=self.check_drift
+                            )
+
+                            # Check if cascade pattern was detected
+                            anomalies = enhanced_result.get('anomalies', {})
+                            cascade_detected = any(
+                                'cascade' in name.lower() or
+                                anomaly.get('cascade_analysis', {}).get('is_cascade', False)
+                                for name, anomaly in anomalies.items()
+                            )
+
+                            if cascade_detected:
+                                if self.verbose:
+                                    logger.info(f"Cascade detected for {service_name}")
+                                # Preserve validation warnings from Pass 1
+                                if service_name in validation_warnings_by_service:
+                                    enhanced_result['validation_warnings'] = validation_warnings_by_service[service_name]
+                                results[service_name] = enhanced_result
+
+                    except Exception as e:
+                        if self.verbose:
+                            logger.warning(f"Pass 2 failed for {service_name}: {e}")
+                        # Keep Pass 1 result on failure
+
+        # Process final results and log
+        for service_name, result in results.items():
+            if 'error' not in result:
+                self.results_processor.process_result(result)
+
+                anomaly_count = result.get('anomaly_count', len(result.get('anomalies', {})))
+                period = result.get('time_period', 'unknown')
+                model_type = result.get('model_type', 'unknown')
+                is_explainable = result.get('explainable', model_type.endswith('explainable'))
+
+                if anomaly_count > 0:
+                    explainable_indicator = "explainable" if is_explainable else "standard"
+                    if self.verbose:
+                        logger.info(f"ANOMALIES DETECTED for {service_name}: {anomaly_count} anomalies found ({explainable_indicator})")
+
+                        if 'explanation' in result:
+                            explanation = result['explanation']
+                            if 'detailed_explanations' in explanation:
+                                logger.info(f"Explanation: {explanation['detailed_explanations'][0]}")
+
+                        if 'recommended_actions' in result and result['recommended_actions']:
+                            logger.info(f"Recommendation: {result['recommended_actions'][0]}")
+
+                    logger.info(f"ANOMALY_DETECTED - {service_name} [{period}] {explainable_indicator}: {anomaly_count} anomalies detected")
+                else:
+                    if self.verbose:
+                        logger.info(f"No anomalies detected for {service_name}")
+                    logger.info(f"NO_ANOMALIES - {service_name} [{period}]: No anomalies detected")
+
         execution_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"Enhanced time-aware inference completed in {execution_time:.2f}s")
-    
+
         return results
     
     def run_time_aware_inference(self, service_names: Optional[List[str]] = None) -> Dict[str, Dict]:
@@ -1168,15 +1906,19 @@ def main():
         # Initialize pipeline and fingerprinting
         pipeline = SmartboxMLInferencePipeline(verbose=args.verbose)
         fingerprinter = _initialize_fingerprinting(args.fingerprint_db, args.verbose)
-        
+
+        # Health check VictoriaMetrics before proceeding
+        if not _check_victoria_metrics_health(pipeline, args.verbose):
+            return
+
         # Get and display system status
         status = pipeline.get_system_status()
         _display_system_status(status, fingerprinter, args.verbose)
-        
+
         if status['status'] == 'no_models':
             _handle_no_models_error(args.verbose)
             return
-        
+
         # Run inference with fingerprinting
         if args.verbose:
             logger.info("Starting Enhanced ML Inference...")
@@ -1220,6 +1962,59 @@ def _initialize_fingerprinting(db_path: str, verbose: bool) -> Optional['Anomaly
         if verbose:
             logger.warning(f"Failed to initialize fingerprinting: {e}")
         return None
+
+
+def _check_victoria_metrics_health(
+    pipeline: 'SmartboxMLInferencePipeline',
+    verbose: bool,
+    max_latency_ms: float = 5000
+) -> bool:
+    """Check VictoriaMetrics health before running inference.
+
+    Args:
+        pipeline: The inference pipeline with vm_client.
+        verbose: Whether to log detailed output.
+        max_latency_ms: Maximum acceptable response time in milliseconds.
+
+    Returns:
+        True if healthy and inference should proceed, False to skip inference.
+    """
+    if not hasattr(pipeline, 'vm_client') or pipeline.vm_client is None:
+        if verbose:
+            logger.warning("VictoriaMetrics client not available - skipping health check")
+        return True  # Proceed anyway if no client
+
+    try:
+        is_healthy, details = pipeline.vm_client.health_check(max_latency_ms)
+
+        if is_healthy:
+            if verbose:
+                logger.info(f"VictoriaMetrics health check passed (latency: {details['latency_ms']}ms)")
+            return True
+
+        # Health check failed
+        error_msg = details.get('error', 'Unknown error')
+
+        if details.get('circuit_breaker_open'):
+            logger.warning(f"VictoriaMetrics circuit breaker is open - skipping inference")
+            logger.warning("Too many recent failures. Will retry after circuit breaker timeout.")
+        elif details.get('latency_ms') and details['latency_ms'] > max_latency_ms:
+            logger.warning(
+                f"VictoriaMetrics responding slowly ({details['latency_ms']:.0f}ms > {max_latency_ms:.0f}ms threshold) - skipping inference"
+            )
+            logger.warning("High latency may cause timeouts during metrics collection.")
+        else:
+            logger.warning(f"VictoriaMetrics health check failed: {error_msg} - skipping inference")
+
+        if verbose:
+            logger.info("Inference skipped to avoid incomplete or stale results.")
+            logger.info("Next scheduled run will retry automatically.")
+
+        return False
+
+    except Exception as e:
+        logger.error(f"VictoriaMetrics health check error: {e} - skipping inference")
+        return False
 
 
 def _display_fingerprinting_stats(fingerprinter: 'AnomalyFingerprinter') -> None:
@@ -1388,25 +2183,32 @@ def _determine_full_service_name(service_name: str, result: Dict) -> str:
 
 
 def _update_results_processor(pipeline: 'SmartboxMLInferencePipeline', results: Dict, fp_stats: Dict) -> None:
-    """Update the results processor with both active anomalies and resolved incidents"""
-    enhanced_anomalies = []
-    
-    # Add ACTIVE anomalies (ongoing + new)
+    """Update the results processor with both active anomalies and resolved incidents.
+
+    Formats results using the API payload specification before storing.
+    """
+    formatted_payloads = []
+
+    # Add ACTIVE anomalies (ongoing + new) - format them properly
     for service_name, result in results.items():
         if isinstance(result, dict) and 'error' not in result:
             anomalies = result.get('anomalies', [])
             if isinstance(anomalies, dict):
-                anomalies = list(anomalies.values())
-            
-            if anomalies:  # This service has active incidents
-                enhanced_anomalies.append(result)
-    
+                has_anomalies = len(anomalies) > 0
+            else:
+                has_anomalies = len(anomalies) > 0 if anomalies else False
+
+            if has_anomalies:  # This service has active incidents
+                # Format using the API spec formatter
+                formatted_payload = pipeline.results_processor._format_time_aware_alert_json(result)
+                formatted_payloads.append(formatted_payload)
+
     # Add RESOLVED incidents as special payloads
     resolved_incidents = fp_stats.get('resolved_incidents', [])
     for resolved_incident in resolved_incidents:
         resolution_payload = {
             "alert_type": "incident_resolved",
-            "service": resolved_incident['service_name'],
+            "service_name": resolved_incident['service_name'],
             "timestamp": resolved_incident['resolved_at'],
             "incident_id": resolved_incident['incident_id'],
             "fingerprint_id": resolved_incident['fingerprint_id'],
@@ -1420,9 +2222,9 @@ def _update_results_processor(pipeline: 'SmartboxMLInferencePipeline', results: 
             },
             "model_type": "incident_resolution"
         }
-        enhanced_anomalies.append(resolution_payload)
-    
-    pipeline.results_processor.detected_anomalies = enhanced_anomalies
+        formatted_payloads.append(resolution_payload)
+
+    pipeline.results_processor.detected_anomalies = formatted_payloads
 
 
 def _display_execution_summary(results: Dict, fp_stats: Dict, verbose: bool) -> None:
@@ -1488,22 +2290,32 @@ def _display_execution_summary(results: Dict, fp_stats: Dict, verbose: bool) -> 
 
 def _send_to_observability_service(detected_anomalies: List[Dict], fp_stats: Dict, verbose: bool) -> None:
     """Send anomalies and resolutions to appropriate observability service endpoints"""
-    
+
+    # Load observability config
+    config = get_config()
+    obs_config = config.observability
+
+    # Check if API integration is enabled
+    if not obs_config.enabled:
+        if verbose:
+            logger.info("Observability API integration is disabled in config")
+        return
+
     # Separate current anomalies from resolved incidents
-    active_anomalies = [item for item in detected_anomalies 
+    active_anomalies = [item for item in detected_anomalies
                        if item.get('alert_type') != 'incident_resolved']
-    
-    resolved_incidents = [item for item in detected_anomalies 
+
+    resolved_incidents = [item for item in detected_anomalies
                          if item.get('alert_type') == 'incident_resolved']
-    
+
     # Send active anomalies to the main anomalies endpoint
     if active_anomalies:
-        _send_active_anomalies(active_anomalies, verbose)
-    
+        _send_active_anomalies(active_anomalies, obs_config, verbose)
+
     # Send resolved incidents to a dedicated resolutions endpoint
     if resolved_incidents:
-        _send_resolved_incidents(resolved_incidents, verbose)
-    
+        _send_resolved_incidents(resolved_incidents, obs_config, verbose)
+
     # Summary logging
     if active_anomalies or resolved_incidents:
         if verbose:
@@ -1514,40 +2326,40 @@ def _send_to_observability_service(detected_anomalies: List[Dict], fp_stats: Dic
         logger.info("No anomalies or resolutions to send to observability service")
 
 
-def _send_active_anomalies(anomalies: List[Dict], verbose: bool) -> None:
+def _send_active_anomalies(anomalies: List[Dict], obs_config: ObservabilityConfig, verbose: bool) -> None:
     """Send active anomalies to the main anomalies endpoint"""
     try:
         r = requests.post(
-            "http://localhost:8000/api/anomalies/batch",  # Original endpoint
+            obs_config.anomalies_url,
             json=anomalies,
-            timeout=5
+            timeout=obs_config.request_timeout_seconds
         )
         r.raise_for_status()
-        
+
         if verbose:
             fingerprinted_count = len([a for a in anomalies if 'fingerprinting' in a])
-            logger.info(f"Sent {len(anomalies)} active anomalies to /api/anomalies/batch — status {r.status_code}")
+            logger.info(f"Sent {len(anomalies)} active anomalies to {obs_config.anomalies_endpoint} — status {r.status_code}")
             if fingerprinted_count > 0:
                 logger.info(f"  {fingerprinted_count} with fingerprinting data")
         else:
             logger.info(f"Sent {len(anomalies)} active anomalies — status {r.status_code}")
-            
+
     except Exception as e:
-        logger.error(f"Failed to send active anomalies to /api/anomalies/batch: {e}")
+        logger.error(f"Failed to send active anomalies to {obs_config.anomalies_url}: {e}")
 
 
-def _send_resolved_incidents(resolutions: List[Dict], verbose: bool) -> None:
+def _send_resolved_incidents(resolutions: List[Dict], obs_config: ObservabilityConfig, verbose: bool) -> None:
     """Send resolved incidents to the dedicated resolutions endpoint"""
     try:
         r = requests.post(
-            "http://localhost:8000/api/incidents/resolve",  # NEW dedicated endpoint
+            obs_config.resolutions_url,
             json=resolutions,
-            timeout=5
+            timeout=obs_config.request_timeout_seconds
         )
         r.raise_for_status()
-        
+
         if verbose:
-            logger.info(f"Sent {len(resolutions)} incident resolutions to /api/incidents/resolve — status {r.status_code}")
+            logger.info(f"Sent {len(resolutions)} incident resolutions to {obs_config.resolutions_endpoint} — status {r.status_code}")
             # Log some details about what was resolved
             for resolution in resolutions[:3]:  # Show first 3
                 service = resolution['service']
@@ -1558,9 +2370,9 @@ def _send_resolved_incidents(resolutions: List[Dict], verbose: bool) -> None:
                 logger.info(f"  ... and {len(resolutions) - 3} more")
         else:
             logger.info(f"Sent {len(resolutions)} incident resolutions — status {r.status_code}")
-            
+
     except Exception as e:
-        logger.error(f"Failed to send incident resolutions to /api/incidents/resolve: {e}")
+        logger.error(f"Failed to send incident resolutions to {obs_config.resolutions_url}: {e}")
 
 
 def _display_tips(status: Dict, fp_stats: Dict) -> None:

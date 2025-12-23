@@ -1,0 +1,24 @@
+{
+  "_comment": "Minimal config - only values that typically need customization",
+
+  "victoria_metrics": {
+    "endpoint": "https://otel-metrics.production.smartbox.com"
+  },
+
+  "observability_api": {
+    "base_url": "http://localhost:8000",
+    "enabled": true
+  },
+
+  "model": {
+    "models_directory": "./smartbox_models/"
+  },
+
+  "inference": {
+    "alerts_directory": "./alerts/"
+  },
+
+  "fingerprinting": {
+    "db_path": "./anomaly_state.db"
+  }
+}

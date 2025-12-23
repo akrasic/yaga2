@@ -53,47 +53,142 @@ Data is segmented into **behavioral periods**:
 
 Each segment yields a **separate submodel**, improving specificity and reducing false positives.
 
-### 3.2 Model classes
+### 3.2 Temporal train/validation split
+
+**Critical for proper evaluation**: Data is split chronologically, not randomly.
+
+* **Training set**: First 80% of data (chronologically)
+* **Validation set**: Last 20% of data (chronologically)
+
+This prevents **data leakage** where future information contaminates training.
+
+#### Rolling Feature Leakage Prevention
+
+Rolling window features (mean, std over past N hours) are computed **separately** for each split:
+
+1. Compute base features on full dataset
+2. Split into train/validation chronologically
+3. Add rolling features to train set using only train data
+4. Add rolling features to validation set using only validation data
+5. Drop warm-up rows from validation (first 12 rows = 1 hour at 5-min granularity)
+
+### 3.3 Model classes
 
 #### Univariate detectors
 
 For each metric `m`:
 
+* Minimum samples: **500** (increased from 50 for statistical significance)
 * Train `IsolationForest(IF_m)` on feature vector `[m_t]` across time.
 * Scaling: `RobustScaler_m`.
-* Training distribution statistics captured: mean, std, quantiles (p25–p99).
+* Training distribution statistics captured using **robust estimates**:
+  - Trimmed mean (1% trim) instead of standard mean
+  - IQR-based std (IQR/1.349) instead of standard deviation
+  - Quantiles (p25–p99)
 
 #### Multivariate detector
 
 On subset of available metrics `M ⊆ {request_rate, latencies, error_rate}`:
 
+* Minimum samples: **1000** (increased from 100 for reliable cross-metric patterns)
 * Train `IsolationForest(IF_multi)` on `[m1_t, m2_t, …]`.
 * Scaling: `RobustScaler_multi`.
+* **Correlation analysis** performed to identify highly correlated features (r > 0.8).
 
 Multivariate IF provides **contextual anomaly scoring** across correlated metrics.
 
-### 3.3 Auto-tuning & service-aware priors
+### 3.4 Contamination estimation
 
-* **Contamination rate (ρ)** adapted by service category (high-variance vs low-variance services).
+Instead of using fixed contamination rates, the system **estimates optimal contamination** from the data:
+
+#### Knee Detection Method (Default)
+```python
+# 1. Fit preliminary model
+preliminary_model = IsolationForest(contamination="auto")
+preliminary_model.fit(scaled_data)
+
+# 2. Get sorted scores
+scores = preliminary_model.decision_function(scaled_data)
+sorted_scores = np.sort(scores)
+
+# 3. Find knee point (second derivative maximum)
+knee_idx = find_knee_point(sorted_scores)
+
+# 4. Contamination = proportion of points beyond knee
+estimated_contamination = (len(scores) - knee_idx) / len(scores)
+```
+
+#### Gap Detection Method (Fallback)
+Finds the largest gap in the sorted score distribution.
+
+Estimated contamination is **bounded** by service category limits:
+* Minimum: 50% of category base
+* Maximum: 300% of category base (capped at 15%)
+
+### 3.5 Threshold calibration
+
+Severity thresholds are **calibrated per model** from validation data percentiles:
+
+| Severity | Percentile | Interpretation |
+|----------|------------|----------------|
+| Critical | 0.1% | Extreme outliers (1 in 1000) |
+| High | 1% | Significant anomalies |
+| Medium | 5% | Moderate deviations |
+| Low | 10% | Minor anomalies |
+
+```python
+scores = model.decision_function(validation_data)
+calibrated_thresholds = {
+    "critical": float(np.percentile(scores, 0.1)),
+    "high": float(np.percentile(scores, 1)),
+    "medium": float(np.percentile(scores, 5)),
+    "low": float(np.percentile(scores, 10)),
+}
+```
+
+### 3.6 Auto-tuning & service-aware priors
+
+* **Contamination rate (ρ)** estimated from data, bounded by service category.
 * **n\_estimators** tuned upward for complex services (e.g., booking) vs leaner microservices.
 * Bootstrap sampling enabled for robustness on long histories.
 
-### 3.4 Validation
+### 3.7 Drift detection baseline
+
+For each trained model, drift detection baselines are stored:
+
+* **Univariate**: Mean and std for each metric (for z-score calculation)
+* **Multivariate**: Mean vector and inverse covariance matrix (for Mahalanobis distance)
+
+```python
+# Multivariate drift baseline
+self.multivariate_mean = np.mean(scaled_data, axis=0)
+self.multivariate_cov_inv = np.linalg.inv(np.cov(scaled_data.T) + 1e-6 * np.eye(p))
+```
+
+### 3.8 Validation
 
 Each trained model is validated using:
 
-* **Anomaly rate sanity check:** proportion of flagged points must fall below threshold.
-* **Sample sufficiency:** enough points per period to generalize.
+* **Anomaly rate sanity check:** proportion of flagged points on validation set must fall below threshold.
+* **Sample sufficiency:** minimum 500 (univariate) or 1000 (multivariate) points per period.
 * **Explainability completeness:** must record per-feature statistics.
+* **Correlation analysis:** warnings logged for highly correlated feature pairs (r > 0.8).
 
 Models failing checks are skipped or flagged for retraining.
 
-### 3.5 Persistence
+### 3.9 Persistence
 
 Artifacts stored per `(service, period)`:
 
 * Scaler(s) + Isolation Forest(s) serialized with `joblib`.
-* Metadata JSON: feature columns, quantiles, zero-distribution stats, feature importances, tuned parameters.
+* Metadata JSON containing:
+  - Feature columns
+  - Robust statistics (trimmed mean, IQR-based std, quantiles)
+  - **Calibrated severity thresholds**
+  - **Estimated contamination**
+  - **Drift detection baselines** (mean, covariance inverse)
+  - **Correlation analysis results**
+  - Tuned parameters
 
 ---
 
@@ -148,57 +243,104 @@ s(x, n) = 2^(-E[h(x)] / c(n))
 
 ## 5. Inference Pipeline
 
-### 5.1 Input
+### 5.1 Input validation
+
+Before processing, metrics are validated at the inference boundary:
+
+| Check | Action |
+|-------|--------|
+| NaN/Inf values | Replaced with 0.0 |
+| Negative rates/latencies | Capped at 0.0 |
+| Extreme latencies (>5 min) | Capped at 300,000ms |
+| Extreme request rates (>1M/s) | Capped at 1,000,000 |
+| Error rates > 100% | Capped at 1.0 |
+
+Validation issues are captured in `validation_warnings` array.
+
+### 5.2 Input
 
 * Current metrics snapshot `x_t` (dict or dataclass).
-* Timestamp `t`.
+* Timestamp `t` (per-service to avoid time period mismatch).
 
-### 5.2 Period routing
+### 5.3 Period routing
 
 * Map `t` → behavioral period P via deterministic function.
 * Load `{service, P}` model set lazily (cached in memory).
 
-### 5.3 Scoring
+### 5.4 Scoring
 
 For each detector:
 
 * Scale input `x_t` via trained `RobustScaler`.
 * Compute IF anomaly score `s ∈ [-1, 1]`.
 
-### 5.4 Thresholds and severity mapping
+### 5.5 Thresholds and severity mapping
 
-The decision function of Isolation Forest returns a **score** where higher means more normal, lower means more abnormal. In Smartbox we interpret scores with the following bands:
+Severity thresholds are now **calibrated per model** based on validation data percentiles:
+
+| Severity | How determined |
+|----------|---------------|
+| Critical | Score below 0.1th percentile of validation scores |
+| High | Score below 1st percentile |
+| Medium | Score below 5th percentile |
+| Low | Score below 10th percentile |
+
+#### Fallback thresholds
+
+If calibrated thresholds unavailable:
 
 * **Critical:** `s < -0.6`
 * **High:** `-0.6 ≤ s < -0.3`
 * **Medium:** `-0.3 ≤ s < -0.1`
 * **Low:** `s ≥ -0.1`
 
-#### Why these thresholds?
+### 5.6 Drift detection at inference
 
-* The scale of IF scores is **relative** to the training data distribution. In practice, values closer to 0 indicate the point is near the learned “normal” cluster boundary, while increasingly negative values indicate deeper isolation (i.e., easier to separate, hence more anomalous).
-* **-0.1 boundary**: marks the start of mild deviation. Anything above this is considered low‑severity noise.
-* **-0.3 boundary**: empirically found to correspond to the point where anomalies occur consistently outside 1–2 standard deviations of baseline. These often correspond to moderate operational issues.
-* **-0.6 boundary**: much deeper outliers, often corresponding to events several standard deviations away from normal. Historically, such cases correlated strongly with user-visible incidents (e.g., spikes in latency >3× baseline or error rate surges).
+When `check_drift: true` in config, each inference checks for distribution drift:
 
-Thus, -0.3 and -0.6 are “bad” because they indicate increasingly **confident anomalies** under the Isolation Forest: the more negative the score, the more the tree ensemble agrees that the point is isolated from the bulk of the distribution.
+#### Univariate drift (z-score)
+```python
+z_score = abs((current_value - training_mean) / (training_std + 1e-8))
+```
 
-These boundaries were chosen through **empirical calibration** on historical service incidents, aligning model scores with known severities.
+| Z-Score | Meaning | Confidence Penalty |
+|---------|---------|-------------------|
+| < 3 | Normal | 0% |
+| 3-5 | Moderate drift | 15% |
+| > 5 | Severe drift | 30% |
 
-### 5.5 Rule-based overrides
+#### Multivariate drift (Mahalanobis distance)
+```python
+diff = current_vector - multivariate_mean
+mahalanobis = sqrt(diff @ multivariate_cov_inv @ diff)
+threshold = p + 3 * sqrt(2 * p) + 3  # p = feature count
+```
+
+If Mahalanobis distance exceeds threshold, multivariate drift is flagged.
+
+#### Drift impact
+
+When drift is detected:
+1. `drift_warning` added to output
+2. Confidence scores on anomalies reduced by penalty
+3. Anomalies marked with `drift_warning: true`
+
+### 5.7 Rule-based overrides
 
 Independent thresholds enforce domain knowledge:
 
 * `error_rate > 5%` ⇒ Critical anomaly regardless of IF score.
 * Latency spikes beyond 3σ from baseline trigger medium/high.
 
-### 5.6 Explainability
+### 5.8 Explainability
 
 Alongside severity, the system outputs:
 
 * Feature contributions: which metrics shifted most.
 * Percentile context: how unusual current values are (p90, p95, p99 reference).
 * Business impact hints based on service category.
+* **Drift analysis**: when enabled, per-metric drift scores and recommendations.
+* **Validation warnings**: any input sanitization that was performed.
 
 Result is an **anomaly report object** containing structured JSON for downstream alerting.
 

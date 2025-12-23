@@ -1,16 +1,18 @@
 """
-Backward compatibility stub for vmclient.
+Metrics module - metric collection and validation.
 
-This module redirects imports to the new package structure.
-New code should import from smartbox_anomaly.metrics instead.
+This module contains:
+    - client: VictoriaMetrics client with circuit breaker
+    - validation: Metric validation utilities
 """
 
-from smartbox_anomaly.core.exceptions import MetricsCollectionError
-from smartbox_anomaly.metrics import (
+from smartbox_anomaly.metrics.client import (
     CircuitBreakerState,
     InferenceMetrics,
-    ValidationResult,
     VictoriaMetricsClient,
+)
+from smartbox_anomaly.metrics.validation import (
+    ValidationResult,
     sanitize_metric_value,
     sanitize_metrics,
     validate_error_rate,
@@ -22,11 +24,12 @@ from smartbox_anomaly.metrics import (
 )
 
 __all__ = [
+    # Client
     "VictoriaMetricsClient",
     "InferenceMetrics",
     "CircuitBreakerState",
+    # Validation
     "ValidationResult",
-    "MetricsCollectionError",
     "validate_metrics",
     "validate_request_rate",
     "validate_latency",

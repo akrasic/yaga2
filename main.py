@@ -1,8 +1,8 @@
 # Enhanced Training Pipeline with Explainability Support
 # Now uses the enhanced SmartboxAnomalyDetector automatically
 
-from anomaly_models import SmartboxAnomalyDetector  # This now has explainability built-in
-from time_aware_anomaly_detection import TimeAwareAnomalyDetector
+from smartbox_anomaly.detection.detector import SmartboxAnomalyDetector
+from smartbox_anomaly.detection.time_aware import TimeAwareAnomalyDetector
 from vmclient import VictoriaMetricsClient
 import pandas as pd
 import numpy as np
@@ -225,74 +225,51 @@ class SmartboxMetricsExtractor:
 class SmartboxFeatureEngineer:
     def __init__(self):
         self.feature_windows = ['5T', '15T', '1H']  # 5min, 15min, 1hour
-    
-    def engineer_features(self, metrics_df: pd.DataFrame) -> pd.DataFrame:
-        """Create ML features from raw metrics with robust data handling"""
+        self.base_metrics = ['request_rate', 'application_latency', 'client_latency', 'database_latency', 'error_rate']
+
+    def engineer_features(self, metrics_df: pd.DataFrame, include_rolling: bool = True) -> pd.DataFrame:
+        """Create ML features from raw metrics with robust data handling.
+
+        Args:
+            metrics_df: Raw metrics DataFrame with timestamp index.
+            include_rolling: If True, compute rolling features (may cause leakage if used
+                           before train/validation split). Set to False and use
+                           engineer_features_split() for proper temporal splitting.
+
+        Returns:
+            DataFrame with engineered features.
+        """
         if metrics_df.empty:
             return metrics_df
-        
+
         print(f"   🔧 Engineering features...")
-        
+
         features = metrics_df.copy()
-        
+
         # Clean infinite and extreme values before feature engineering
         features = features.replace([np.inf, -np.inf], np.nan)
-        
-        # Time-based features
+
+        # Time-based features (no leakage risk)
         features['hour'] = features.index.hour
         features['day_of_week'] = features.index.dayofweek
         features['is_business_hours'] = features['hour'].between(9, 17)
         features['is_weekend'] = features['day_of_week'] >= 5
-        
-        # Rolling statistics for each metric and window
-        base_metrics = ['request_rate', 'application_latency', 'client_latency', 'database_latency', 'error_rate']
-        
-        for metric in base_metrics:
-            if metric in features.columns:
-                for window in self.feature_windows:
-                    try:
-                        # Rolling statistics with min_periods to handle edge cases
-                        min_periods = max(1, self._window_to_periods(window) // 3)
-                        
-                        features[f'{metric}_mean_{window}'] = features[metric].rolling(window, min_periods=min_periods).mean()
-                        features[f'{metric}_std_{window}'] = features[metric].rolling(window, min_periods=min_periods).std()
-                        features[f'{metric}_max_{window}'] = features[metric].rolling(window, min_periods=min_periods).max()
-                        features[f'{metric}_min_{window}'] = features[metric].rolling(window, min_periods=min_periods).min()
-                        
-                        # Rate of change with error handling
-                        periods = self._window_to_periods(window)
-                        pct_change = features[metric].pct_change(periods=periods)
-                        # Cap extreme percentage changes
-                        pct_change = np.clip(pct_change, -10, 10)  # Cap at ±1000%
-                        features[f'{metric}_pct_change_{window}'] = pct_change
-                        
-                    except Exception as e:
-                        print(f"     ⚠️ Failed to create rolling features for {metric}_{window}: {e}")
-        
-        # Derived correlation features with safe division
+
+        # Derived correlation features with safe division (no leakage risk)
         if all(col in features.columns for col in ['request_rate', 'application_latency', 'error_rate']):
-            # Use safe division to avoid inf values
             features['latency_error_ratio'] = np.where(
-                features['application_latency'] > 0.001,  # Avoid division by very small numbers
+                features['application_latency'] > 0.001,
                 features['error_rate'] / features['application_latency'],
                 0
             )
-            
+
             features['throughput_latency_efficiency'] = np.where(
                 features['application_latency'] > 0.001,
                 features['request_rate'] / features['application_latency'],
                 0
             )
-            
-            # Anomaly indicators using rolling percentiles
-            try:
-                features['high_error_rate'] = features['error_rate'] > features['error_rate'].rolling('1H', min_periods=1).quantile(0.95)
-                features['high_latency'] = features['application_latency'] > features['application_latency'].rolling('1H', min_periods=1).quantile(0.95)
-                features['traffic_spike'] = features['request_rate'] > features['request_rate'].rolling('1H', min_periods=1).quantile(0.95)
-            except Exception as e:
-                print(f"     ⚠️ Failed to create anomaly indicators: {e}")
-        
-        # Database vs Application latency comparison
+
+        # Database vs Application latency comparison (no leakage risk)
         if all(col in features.columns for col in ['database_latency', 'application_latency']):
             features['db_app_latency_ratio'] = np.where(
                 features['application_latency'] > 0.001,
@@ -300,21 +277,122 @@ class SmartboxFeatureEngineer:
                 0
             )
             features['db_latency_dominance'] = features['database_latency'] > features['application_latency']
-        
-        # Final cleanup: replace any remaining inf/nan values
-        features = features.replace([np.inf, -np.inf], np.nan)
-        
-        # Remove rows with too many NaNs (from rolling windows)
-        valid_threshold = len(features.columns) * 0.5  # At least 50% valid values
-        features = features.dropna(thresh=valid_threshold)
-        
-        # Fill any remaining NaNs with 0 (safer for ML models)
-        features = features.fillna(0)
-        
+
+        # Only add rolling features if explicitly requested
+        # WARNING: Rolling features computed on full dataset cause leakage
+        if include_rolling:
+            print(f"   ⚠️ Computing rolling features on full dataset (potential leakage)")
+            features = self._add_rolling_features(features)
+
+        # Final cleanup
+        features = self._cleanup_features(features)
+
         print(f"   ✅ Feature engineering completed: {len(features)} rows, {len(features.columns)} features")
-        
+
         return features
-    
+
+    def engineer_features_split(
+        self,
+        metrics_df: pd.DataFrame,
+        validation_fraction: float = 0.2
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Engineer features with proper temporal split to prevent leakage.
+
+        Rolling features are computed separately on train and validation sets,
+        preventing information from validation leaking into training statistics.
+
+        Args:
+            metrics_df: Raw metrics DataFrame with timestamp index.
+            validation_fraction: Fraction of data to use for validation (from end).
+
+        Returns:
+            Tuple of (train_features, validation_features) with rolling features
+            computed separately on each split.
+        """
+        if metrics_df.empty:
+            return pd.DataFrame(), pd.DataFrame()
+
+        print(f"   🔧 Engineering features with temporal split (no leakage)...")
+
+        # First, compute base features (no leakage risk)
+        base_features = self.engineer_features(metrics_df, include_rolling=False)
+
+        # Temporal split
+        split_idx = int(len(base_features) * (1 - validation_fraction))
+        train_base = base_features.iloc[:split_idx].copy()
+        validation_base = base_features.iloc[split_idx:].copy()
+
+        print(f"   📊 Split: {len(train_base)} train, {len(validation_base)} validation samples")
+
+        # Add rolling features separately to each split
+        print(f"   🔄 Computing rolling features on train set...")
+        train_features = self._add_rolling_features(train_base)
+        train_features = self._cleanup_features(train_features)
+
+        print(f"   🔄 Computing rolling features on validation set...")
+        validation_features = self._add_rolling_features(validation_base)
+        validation_features = self._cleanup_features(validation_features)
+
+        # For validation, we need some warm-up period for rolling features
+        # Drop the first few rows that have NaN from rolling windows
+        warmup_periods = 12  # 1 hour of 5-min data
+        if len(validation_features) > warmup_periods:
+            validation_features = validation_features.iloc[warmup_periods:]
+            print(f"   ⏭️ Dropped {warmup_periods} warm-up rows from validation")
+
+        print(f"   ✅ Leakage-free features: {len(train_features)} train, {len(validation_features)} validation")
+
+        return train_features, validation_features
+
+    def _add_rolling_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Add rolling statistical features to a DataFrame.
+
+        Should be called separately on train and validation sets to prevent leakage.
+        """
+        for metric in self.base_metrics:
+            if metric in features.columns:
+                for window in self.feature_windows:
+                    try:
+                        min_periods = max(1, self._window_to_periods(window) // 3)
+
+                        features[f'{metric}_mean_{window}'] = features[metric].rolling(window, min_periods=min_periods).mean()
+                        features[f'{metric}_std_{window}'] = features[metric].rolling(window, min_periods=min_periods).std()
+                        features[f'{metric}_max_{window}'] = features[metric].rolling(window, min_periods=min_periods).max()
+                        features[f'{metric}_min_{window}'] = features[metric].rolling(window, min_periods=min_periods).min()
+
+                        # Rate of change
+                        periods = self._window_to_periods(window)
+                        pct_change = features[metric].pct_change(periods=periods)
+                        pct_change = np.clip(pct_change, -10, 10)  # Cap at ±1000%
+                        features[f'{metric}_pct_change_{window}'] = pct_change
+
+                    except Exception as e:
+                        print(f"     ⚠️ Failed to create rolling features for {metric}_{window}: {e}")
+
+        # Anomaly indicators using rolling percentiles (within this split only)
+        if all(col in features.columns for col in ['request_rate', 'application_latency', 'error_rate']):
+            try:
+                features['high_error_rate'] = features['error_rate'] > features['error_rate'].rolling('1H', min_periods=1).quantile(0.95)
+                features['high_latency'] = features['application_latency'] > features['application_latency'].rolling('1H', min_periods=1).quantile(0.95)
+                features['traffic_spike'] = features['request_rate'] > features['request_rate'].rolling('1H', min_periods=1).quantile(0.95)
+            except Exception as e:
+                print(f"     ⚠️ Failed to create anomaly indicators: {e}")
+
+        return features
+
+    def _cleanup_features(self, features: pd.DataFrame) -> pd.DataFrame:
+        """Clean up features by handling NaN and inf values."""
+        features = features.replace([np.inf, -np.inf], np.nan)
+
+        # Remove rows with too many NaNs (from rolling windows)
+        valid_threshold = int(len(features.columns) * 0.5)  # At least 50% valid values
+        features = features.dropna(thresh=valid_threshold)
+
+        # Fill any remaining NaNs with 0
+        features = features.fillna(0)
+
+        return features
+
     def _window_to_periods(self, window: str) -> int:
         """Convert window string to number of periods (5min intervals)"""
         if window == '5T':
@@ -368,22 +446,94 @@ class ParquetTrainingDataStorage:
 
 class EnhancedSmartboxTrainingPipeline:
     """Enhanced training pipeline that automatically uses explainability features"""
-    
-    def __init__(self, vm_endpoint: str = "https://otel-metrics.production.smartbox.com"):
+
+    def __init__(self, vm_endpoint: str = "https://otel-metrics.production.smartbox.com", config_path: str = "./config.json"):
         self.vm_client = VictoriaMetricsClient(vm_endpoint)
         self.metrics_extractor = SmartboxMetricsExtractor(self.vm_client)
         self.feature_engineer = SmartboxFeatureEngineer()
         self.storage = ParquetTrainingDataStorage()
-        
-        # Training configuration
-        self.config = {
-            'lookback_days': 30,
-            'min_data_points': 1000,
-            'validation_split': 0.8
-        }
-        
+
+        # Load training configuration from config.json
+        self.config = self._load_training_config(config_path)
+
         print("🚀 Enhanced Smartbox Training Pipeline initialized")
         print("   ✨ Explainable anomaly detection enabled by default")
+        print(f"   📊 Validation fraction: {self.config.get('validation_fraction', 0.2)}")
+        print(f"   📊 Threshold calibration: {'enabled' if self.config.get('threshold_calibration', {}).get('enabled', True) else 'disabled'}")
+
+    def _load_training_config(self, config_path: str) -> Dict:
+        """Load training configuration from config.json."""
+        default_config = {
+            'lookback_days': 30,
+            'min_data_points': 1000,
+            'validation_fraction': 0.2,
+            'validation_split': 0.8,  # backward compatibility
+            'threshold_calibration': {'enabled': True},
+            'drift_detection': {'enabled': False}
+        }
+
+        try:
+            with open(config_path) as f:
+                full_config = json.load(f)
+
+            training_config = full_config.get("training", {})
+
+            # Merge with defaults
+            for key, value in default_config.items():
+                if key not in training_config:
+                    training_config[key] = value
+
+            # Ensure backward compatibility
+            training_config['validation_split'] = 1 - training_config.get('validation_fraction', 0.2)
+
+            return training_config
+
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"⚠️ Could not load training config: {e}, using defaults")
+            return default_config
+
+    def load_services_from_config(self, config_path: str = "./config.json") -> List[str]:
+        """Load services list from config.json.
+
+        Combines all service categories: critical, standard, micro, admin, core.
+        """
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+
+            services_config = config.get("services", {})
+            all_services = []
+
+            # Collect services from all categories
+            for category in ["critical", "standard", "micro", "admin", "core", "background"]:
+                category_services = services_config.get(category, [])
+                if isinstance(category_services, list):
+                    all_services.extend(category_services)
+
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_services = []
+            for svc in all_services:
+                if svc not in seen:
+                    seen.add(svc)
+                    unique_services.append(svc)
+
+            if unique_services:
+                print(f"📋 Loaded {len(unique_services)} services from {config_path}")
+                return unique_services
+            else:
+                print(f"⚠️ No services found in {config_path}, will discover from VictoriaMetrics")
+                return []
+
+        except FileNotFoundError:
+            print(f"⚠️ Config file not found: {config_path}, will discover from VictoriaMetrics")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Invalid JSON in {config_path}: {e}, will discover from VictoriaMetrics")
+            return []
+        except Exception as e:
+            print(f"⚠️ Error loading config: {e}, will discover from VictoriaMetrics")
+            return []
     
     def test_service_queries(self, service_name: str) -> Dict[str, bool]:
         """Test queries for a specific service"""
@@ -416,22 +566,38 @@ class EnhancedSmartboxTrainingPipeline:
             
             if len(raw_data) < self.config['min_data_points']:
                 return {
-                    'status': 'insufficient_data', 
+                    'status': 'insufficient_data',
                     'message': f'Only {len(raw_data)} data points, need {self.config["min_data_points"]}'
                 }
-            
-            # 2. Engineer features
-            features = self.feature_engineer.engineer_features(raw_data)
-            
-            if features.empty:
+
+            # 2. Engineer features with proper temporal split (no leakage)
+            validation_fraction = self.config.get('validation_fraction', 0.2)
+            train_features, validation_features = self.feature_engineer.engineer_features_split(
+                raw_data, validation_fraction=validation_fraction
+            )
+
+            if train_features.empty:
                 return {'status': 'feature_engineering_failed', 'message': 'Feature engineering produced no features'}
-            
-            # 3. Train enhanced model (SmartboxAnomalyDetector now has explainability built-in)
+
+            # Also create combined features for storage (with leakage warning acknowledged)
+            features = self.feature_engineer.engineer_features(raw_data, include_rolling=True)
+
+            # 3. Train enhanced model with leakage-free validation split
             model = SmartboxAnomalyDetector(service_name)
-            model.train(features)  # This now automatically includes explainability features
-            
-            # 4. Validate model
-            validation_results = self._validate_enhanced_model(model, features)
+
+            # Train with properly split validation data for threshold calibration
+            min_validation_samples = 100  # Need enough for reliable calibration
+            train_result = model.train(
+                train_features,
+                validation_df=validation_features if len(validation_features) >= min_validation_samples else None
+            )
+
+            # Log calibration results
+            if train_result.get("validation_results"):
+                print(f"   📊 Thresholds calibrated on {len(validation_features)} validation samples")
+
+            # 4. Validate model using properly split validation data (no leakage)
+            validation_results = self._validate_enhanced_model_split(model, train_features, validation_features)
             
             if not validation_results['passed']:
                 return {
@@ -447,7 +613,11 @@ class EnhancedSmartboxTrainingPipeline:
                 'training_end': str(raw_data.index.max()),
                 'data_points': len(raw_data),
                 'feature_count': len(features.columns),
-                'explainability_features': len(model.training_statistics),  # NEW
+                'training_samples': len(train_features),
+                'validation_samples': len(validation_features),
+                'explainability_features': len(model.training_statistics),
+                'calibrated_thresholds': len(model.calibrated_thresholds),
+                'validation_calibrated': bool(train_result.get("validation_results")),
                 'validation_results': validation_results,
                 'model_version': f"enhanced_v{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 'training_config': self.config
@@ -509,9 +679,13 @@ class EnhancedSmartboxTrainingPipeline:
             if features.empty:
                 return {'status': 'feature_engineering_failed', 'message': 'Feature engineering produced no features'}
         
-            # Train enhanced time-aware models (now uses enhanced SmartboxAnomalyDetector automatically)
+            # Train enhanced time-aware models with temporal validation split per period
             time_aware_detector = TimeAwareAnomalyDetector(service_name)
-            time_aware_detector.train_time_aware_models(features)
+            validation_fraction = self.config.get('validation_fraction', 0.2)
+            time_aware_detector.train_time_aware_models(
+                features,
+                validation_fraction=validation_fraction
+            )
         
             # Enhanced validation for time-aware models
             validation_results = self._validate_enhanced_time_aware_models(time_aware_detector, features)
@@ -559,10 +733,187 @@ class EnhancedSmartboxTrainingPipeline:
             return {'status': 'error', 'error': str(e)}
 
     
+    def _validate_enhanced_model_split(
+        self,
+        model: SmartboxAnomalyDetector,
+        train_features: pd.DataFrame,
+        validation_features: pd.DataFrame
+    ) -> Dict:
+        """Enhanced validation using properly split data (no leakage).
+
+        Args:
+            model: Trained model to validate.
+            train_features: Training features (for reference).
+            validation_features: Held-out validation features (for testing).
+
+        Returns:
+            Validation results dictionary.
+        """
+        print("   🔍 Validating enhanced model (leakage-free)...")
+
+        # Use the split validation method
+        validation_result = self._validate_model_split(model, train_features, validation_features)
+
+        # Additional explainability validation
+        explainability_checks = {
+            'has_training_statistics': hasattr(model, 'training_statistics') and len(model.training_statistics) > 0,
+            'has_feature_importance': hasattr(model, 'feature_importance') and len(model.feature_importance) > 0,
+            'has_context_method': hasattr(model, 'detect_anomalies_with_context')
+        }
+
+        validation_result['explainability_checks'] = explainability_checks
+        validation_result['explainability_passed'] = all(explainability_checks.values())
+        validation_result['explainability_metrics'] = len(model.training_statistics) if hasattr(model, 'training_statistics') else 0
+        validation_result['enhanced_passed'] = validation_result['passed'] and validation_result['explainability_passed']
+        validation_result['leakage_free'] = True
+
+        if validation_result['explainability_passed']:
+            print(f"     ✅ Explainability validation passed! ({validation_result['explainability_metrics']} metrics)")
+        else:
+            print(f"     ❌ Explainability validation failed:")
+            for check, passed in explainability_checks.items():
+                status = "✅" if passed else "❌"
+                print(f"       {status} {check}")
+
+        return validation_result
+
+    def _validate_model_split(
+        self,
+        model: SmartboxAnomalyDetector,
+        train_features: pd.DataFrame,
+        validation_features: pd.DataFrame
+    ) -> Dict:
+        """Validate trained model using properly split data (no leakage).
+
+        Args:
+            model: Trained model to validate.
+            train_features: Training features (for synthetic anomaly baseline).
+            validation_features: Held-out validation features (for testing).
+
+        Returns:
+            Validation results dictionary.
+        """
+        print("   🔍 Validating model with split data (no leakage)...")
+
+        if len(validation_features) < 50:
+            return {
+                'passed': False,
+                'reason': 'Insufficient validation data',
+                'validation_samples': len(validation_features),
+                'leakage_free': True
+            }
+
+        total_tests = min(100, len(validation_features))
+        test_errors = []
+
+        print(f"     Testing on {total_tests} validation samples (properly split)...")
+
+        # Test 1: Normal validation data (should have low anomaly rate)
+        normal_anomalies = 0
+        for i in range(min(total_tests // 2, len(validation_features))):
+            try:
+                row = validation_features.iloc[i]
+                current_metrics = {
+                    'request_rate': row.get('request_rate', 0),
+                    'application_latency': row.get('application_latency', 0),
+                    'client_latency': row.get('client_latency', 0),
+                    'database_latency': row.get('database_latency', 0),
+                    'error_rate': row.get('error_rate', 0)
+                }
+
+                for key, value in current_metrics.items():
+                    if pd.isna(value) or np.isinf(value):
+                        current_metrics[key] = 0.0
+
+                anomalies = model.detect_anomalies(current_metrics)
+                if anomalies:
+                    normal_anomalies += 1
+
+            except Exception as e:
+                test_errors.append(str(e))
+                if len(test_errors) <= 3:
+                    print(f"     ⚠️ Validation test {i} failed: {e}")
+
+        # Test 2: Synthetic anomalies based on TRAINING statistics (no leakage)
+        # Use training data statistics to create realistic synthetic anomalies
+        synthetic_anomalies = 0
+        synthetic_tests = total_tests // 2
+
+        for i in range(synthetic_tests):
+            try:
+                # Use training data for baseline (this is correct - no leakage)
+                row = train_features.iloc[i % len(train_features)]
+
+                current_metrics = {
+                    'request_rate': row.get('request_rate', 0) * 3,
+                    'application_latency': row.get('application_latency', 0) * 5,
+                    'client_latency': row.get('client_latency', 0) * 2,
+                    'database_latency': row.get('database_latency', 0) * 2,
+                    'error_rate': min(1.0, row.get('error_rate', 0) * 10)
+                }
+
+                for key, value in current_metrics.items():
+                    if pd.isna(value) or np.isinf(value):
+                        current_metrics[key] = 0.0
+
+                anomalies = model.detect_anomalies(current_metrics)
+                if anomalies:
+                    synthetic_anomalies += 1
+
+            except Exception as e:
+                test_errors.append(str(e))
+
+        total_anomalies = normal_anomalies + synthetic_anomalies
+        total_tests_run = (total_tests // 2) + synthetic_tests
+        anomaly_rate = total_anomalies / total_tests_run if total_tests_run > 0 else 0
+        synthetic_detection_rate = synthetic_anomalies / synthetic_tests if synthetic_tests > 0 else 0
+        normal_anomaly_rate = normal_anomalies / (total_tests // 2) if total_tests // 2 > 0 else 0
+
+        validation_checks = {
+            'has_models': len(model.models) > 0,
+            'has_thresholds': len(model.thresholds) > 0,
+            'reasonable_anomaly_rate': 0.0 <= anomaly_rate <= 0.6,
+            'normal_data_reasonable': normal_anomaly_rate <= 0.15,  # Max 15% on normal data
+            'few_test_errors': len(test_errors) < total_tests_run * 0.1,
+            'model_responds': total_tests_run > 0,
+            'detects_synthetic': synthetic_detection_rate > 0.2
+        }
+
+        validation_passed = all(validation_checks.values())
+
+        validation_result = {
+            'passed': validation_passed,
+            'anomaly_rate': anomaly_rate,
+            'normal_anomalies': normal_anomalies,
+            'normal_anomaly_rate': normal_anomaly_rate,
+            'synthetic_anomalies': synthetic_anomalies,
+            'synthetic_detection_rate': synthetic_detection_rate,
+            'models_trained': len(model.models),
+            'thresholds_set': len(model.thresholds),
+            'validation_samples': total_tests_run,
+            'test_errors': len(test_errors),
+            'checks': validation_checks,
+            'leakage_free': True
+        }
+
+        if not validation_passed:
+            print(f"     ❌ Validation failed:")
+            for check, passed in validation_checks.items():
+                status = "✅" if passed else "❌"
+                print(f"       {status} {check}: {passed}")
+            print(f"     Normal data anomaly rate: {normal_anomaly_rate:.1%}")
+            print(f"     Synthetic detection rate: {synthetic_detection_rate:.1%}")
+        else:
+            print(f"     ✅ Validation passed! (leakage-free)")
+            print(f"       Normal data anomaly rate: {normal_anomaly_rate:.1%}")
+            print(f"       Synthetic detection rate: {synthetic_detection_rate:.1%}")
+
+        return validation_result
+
     def _validate_enhanced_model(self, model: SmartboxAnomalyDetector, features: pd.DataFrame) -> Dict:
-        """Enhanced validation including explainability features"""
+        """Enhanced validation including explainability features (legacy method)."""
         print("   🔍 Validating enhanced model...")
-        
+
         # Standard validation
         validation_result = self._validate_model(model, features)
         
@@ -1177,16 +1528,25 @@ SmartboxTrainingPipeline = EnhancedSmartboxTrainingPipeline
 if __name__ == "__main__":
     # Initialize enhanced training pipeline
     training_pipeline = EnhancedSmartboxTrainingPipeline()
-    
+
+    # Load services from config.json (falls back to discovery if not found)
+    services = training_pipeline.load_services_from_config()
+    if not services:
+        print("🔍 Discovering services from VictoriaMetrics...")
+        services = training_pipeline.discover_services()
+
+    if not services:
+        print("❌ No services found to train. Please check config.json or VictoriaMetrics connection.")
+        exit(1)
+
     # Choose training type
     use_time_aware = True  # Set to True to use enhanced time-aware models
-    
+
     if use_time_aware:
         print("🕐 Using enhanced time-aware anomaly detection with explainability")
-        specific_services = ["booking", "friday", "search", "fa5", "gambit", "m2-fr-adm", "m2-it-adm", "m2-bb-adm", "m2-bb", "m2-fr", "m2-it", "mobile-api", "r2d2", "shire-api", "titan"]
-        
-        results = training_pipeline.train_all_services_time_aware(specific_services)
-        
+
+        results = training_pipeline.train_all_services_time_aware(services)
+
         # Print enhanced results summary
         print(f"\n📊 Final Results Summary:")
         for service, result in results.items():
@@ -1196,9 +1556,8 @@ if __name__ == "__main__":
             print(f"{status_icon} {service}: {result['status']} {explainability_status} ({explainability_count} metrics)")
     else:
         # Enhanced regular training
-        specific_services = ["booking", "friday", "search", "fa5", "gambit"]
-        results = training_pipeline.train_all_services(specific_services)
-        
+        results = training_pipeline.train_all_services(services)
+
         # Print enhanced results summary
         print(f"\n📊 Final Results Summary:")
         for service, result in results.items():

@@ -1,0 +1,49 @@
+version: "3.8"
+
+# =============================================================================
+# Smartbox Anomaly Detection - Docker Compose
+# =============================================================================
+
+services:
+  yaga:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      platforms:
+        - linux/amd64
+    platform: linux/amd64
+    container_name: smartbox-anomaly
+    restart: unless-stopped
+
+    # Environment configuration
+    environment:
+      - TZ=UTC
+      - CONFIG_PATH=/app/config.json
+      # Schedule configuration (cron syntax)
+      - TRAIN_SCHEDULE=0 2 * * *         # Daily at 2 AM
+      - INFERENCE_SCHEDULE=*/2 * * * *  # Every 10 minutes
+
+    # Bind mounts to host directories (relative to current working dir)
+    volumes:
+      # Trained models (persistent)
+      - ./smartbox_models:/app/smartbox_models
+      # SQLite database for state (persistent)
+      - ./data:/app/data
+      # Logs
+      - ./logs:/app/logs
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import smartbox_anomaly; print('OK')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
