@@ -15,3 +15,10 @@ smartbox_models/
 bak-*
 11*
 .python-version
+.DS_Store
+
+# Backup files
+backup_files/
+
+smartbox_models/
+smartbox_training_data/
