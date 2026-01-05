@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 # Database Schema
 # =============================================================================
 
-SCHEMA_VERSION = "2.1_refactored"
+SCHEMA_VERSION = "2.2_cycle_based"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS anomaly_incidents (
@@ -51,12 +51,14 @@ CREATE TABLE IF NOT EXISTS anomaly_incidents (
     incident_id TEXT PRIMARY KEY,
     service_name TEXT NOT NULL,
     anomaly_name TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'OPEN',
+    status TEXT NOT NULL DEFAULT 'SUSPECTED',
     severity TEXT NOT NULL,
     first_seen TIMESTAMP NOT NULL,
     last_updated TIMESTAMP NOT NULL,
     resolved_at TIMESTAMP NULL,
     occurrence_count INTEGER NOT NULL DEFAULT 1,
+    consecutive_detections INTEGER NOT NULL DEFAULT 1,
+    missed_cycles INTEGER NOT NULL DEFAULT 0,
     current_value REAL,
     threshold_value REAL,
     confidence_score REAL,
@@ -65,8 +67,10 @@ CREATE TABLE IF NOT EXISTS anomaly_incidents (
     detected_by_model TEXT,
     metadata TEXT,
 
-    CHECK (status IN ('OPEN', 'CLOSED')),
-    CHECK (occurrence_count > 0)
+    CHECK (status IN ('SUSPECTED', 'OPEN', 'RECOVERING', 'CLOSED')),
+    CHECK (occurrence_count > 0),
+    CHECK (consecutive_detections >= 0),
+    CHECK (missed_cycles >= 0)
 )
 """
 
@@ -77,9 +81,9 @@ CREATE_INDEXES_SQL = [
        ON anomaly_incidents(service_name, first_seen DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_incident_lookup
        ON anomaly_incidents(incident_id)""",
-    """CREATE INDEX IF NOT EXISTS idx_open_incidents
+    """CREATE INDEX IF NOT EXISTS idx_active_incidents
        ON anomaly_incidents(status, last_updated DESC)
-       WHERE status = 'OPEN'""",
+       WHERE status IN ('SUSPECTED', 'OPEN', 'RECOVERING')""",
 ]
 
 
@@ -141,7 +145,8 @@ class AnomalyFingerprinter(IncidentTracker):
             raise DatabaseError("initialization", db_path=self.db_path, cause=e) from e
 
     def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
-        """Migrate from legacy anomaly_state table if it exists."""
+        """Migrate from legacy schemas to current schema."""
+        # Check for very old anomaly_state table
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='anomaly_state'"
         )
@@ -153,6 +158,7 @@ class AnomalyFingerprinter(IncidentTracker):
                 INSERT INTO anomaly_incidents (
                     fingerprint_id, incident_id, service_name, anomaly_name,
                     status, severity, first_seen, last_updated, occurrence_count,
+                    consecutive_detections, missed_cycles,
                     current_value, threshold_value, confidence_score,
                     detection_method, description, metadata
                 )
@@ -161,6 +167,7 @@ class AnomalyFingerprinter(IncidentTracker):
                     'incident_' || substr(hex(randomblob(6)), 1, 12) as incident_id,
                     service_name, anomaly_name, 'OPEN' as status, severity,
                     first_seen, last_updated, occurrence_count,
+                    occurrence_count as consecutive_detections, 0 as missed_cycles,
                     current_value, threshold_value, confidence_score,
                     detection_method, description, metadata
                 FROM anomaly_state
@@ -168,6 +175,54 @@ class AnomalyFingerprinter(IncidentTracker):
 
             conn.execute("ALTER TABLE anomaly_state RENAME TO anomaly_state_backup")
             logger.info("Legacy data migrated. Backup: anomaly_state_backup")
+
+        # Migrate from schema 2.1 to 2.2 (add cycle tracking columns)
+        self._migrate_to_cycle_based_schema(conn)
+
+    def _migrate_to_cycle_based_schema(self, conn: sqlite3.Connection) -> None:
+        """Migrate existing anomaly_incidents to cycle-based schema (2.1 → 2.2)."""
+        # Check if we need to add the new columns
+        cursor = conn.execute("PRAGMA table_info(anomaly_incidents)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        migrations_needed = []
+
+        if "consecutive_detections" not in columns:
+            migrations_needed.append(
+                "ALTER TABLE anomaly_incidents ADD COLUMN consecutive_detections INTEGER NOT NULL DEFAULT 1"
+            )
+
+        if "missed_cycles" not in columns:
+            migrations_needed.append(
+                "ALTER TABLE anomaly_incidents ADD COLUMN missed_cycles INTEGER NOT NULL DEFAULT 0"
+            )
+
+        if migrations_needed:
+            logger.info("Migrating to cycle-based schema (v2.2)...")
+
+            for sql in migrations_needed:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError as e:
+                    # Column might already exist
+                    if "duplicate column" not in str(e).lower():
+                        raise
+
+            # Update existing OPEN incidents to have proper cycle counts
+            # Assume existing OPEN incidents are confirmed (set consecutive_detections = confirmation threshold)
+            conn.execute("""
+                UPDATE anomaly_incidents
+                SET consecutive_detections = CASE
+                    WHEN status = 'OPEN' THEN occurrence_count
+                    ELSE 1
+                END,
+                missed_cycles = 0
+                WHERE consecutive_detections = 1 AND occurrence_count > 1
+            """)
+
+            # Migrate status values: old 'OPEN' stays 'OPEN', old 'CLOSED' stays 'CLOSED'
+            # New incidents will use SUSPECTED/RECOVERING states
+            logger.info("Cycle-based schema migration complete")
 
     # =========================================================================
     # Core Processing
@@ -180,7 +235,13 @@ class AnomalyFingerprinter(IncidentTracker):
         current_metrics: dict[str, Any] | None = None,
         timestamp: datetime | None = None,
     ) -> dict[str, Any]:
-        """Process anomaly detection result with incident tracking.
+        """Process anomaly detection result with cycle-based incident tracking.
+
+        Implements a state machine for incident lifecycle:
+        - SUSPECTED: Initial detection, waiting for confirmation (N cycles)
+        - OPEN: Confirmed incident, alerts are sent
+        - RECOVERING: Not detected for 1-2 cycles, may resolve soon
+        - CLOSED: Not detected for N cycles, incident resolved
 
         Args:
             full_service_name: Full service name like "booking_evening_hours".
@@ -201,12 +262,17 @@ class AnomalyFingerprinter(IncidentTracker):
         current_anomalies = self._normalize_anomalies(anomaly_result.get("anomalies", []))
 
         with self._lock:
-            existing_incidents = self._get_open_incidents_by_service(service_name)
-            enhanced_anomalies, processed_fingerprints = self._process_current_anomalies(
-                current_anomalies, service_name, model_name, existing_incidents, timestamp
+            # Get all active incidents (SUSPECTED, OPEN, RECOVERING)
+            active_incidents = self._get_active_incidents_by_service(service_name)
+
+            # Process current anomalies - may create, continue, or confirm incidents
+            enhanced_anomalies, processed_fingerprints, newly_confirmed = self._process_current_anomalies(
+                current_anomalies, service_name, model_name, active_incidents, timestamp
             )
+
+            # Process resolutions for incidents not seen this cycle
             resolved_incidents = self._process_resolutions(
-                existing_incidents, processed_fingerprints, timestamp
+                active_incidents, processed_fingerprints, timestamp
             )
 
             return self._build_enhanced_payload(
@@ -216,6 +282,7 @@ class AnomalyFingerprinter(IncidentTracker):
                 service_name,
                 model_name,
                 timestamp,
+                newly_confirmed=newly_confirmed,
             )
 
     def _normalize_anomalies(self, anomalies: Any) -> list[dict[str, Any]]:
@@ -231,35 +298,81 @@ class AnomalyFingerprinter(IncidentTracker):
         anomalies: list[dict[str, Any]],
         service_name: str,
         model_name: str,
-        existing_incidents: dict[str, dict],
+        active_incidents: dict[str, dict],
         timestamp: datetime,
-    ) -> tuple[list[dict[str, Any]], set[str]]:
-        """Process currently detected anomalies."""
+    ) -> tuple[list[dict[str, Any]], set[str], list[dict[str, Any]]]:
+        """Process currently detected anomalies with cycle-based state machine.
+
+        Returns:
+            Tuple of (enhanced_anomalies, processed_fingerprints, newly_confirmed_incidents)
+        """
         enhanced = []
         processed_fps = set()
+        newly_confirmed = []  # Incidents that just transitioned to OPEN
 
         for i, anomaly_data in enumerate(anomalies):
             anomaly_name = generate_anomaly_name(anomaly_data, i)
             fp_id = generate_fingerprint_id(service_name, anomaly_name)
             processed_fps.add(fp_id)
 
-            existing = existing_incidents.get(fp_id)
+            existing = active_incidents.get(fp_id)
             details = self._extract_anomaly_details(anomaly_name, anomaly_data, model_name)
 
             enhanced_anomaly = anomaly_data.copy()
 
             if existing:
-                enhanced_anomaly.update(
-                    self._continue_incident(existing, details, fp_id, anomaly_name, model_name, timestamp)
-                )
+                # Check if incident is stale (time gap exceeds separation threshold)
+                if self._is_incident_stale(existing, timestamp):
+                    # Close stale incident and create new one
+                    self._close_stale_incident(existing, timestamp)
+                    result = self._create_incident(
+                        service_name, anomaly_name, details, fp_id, model_name, timestamp
+                    )
+                    enhanced_anomaly.update(result)
+                else:
+                    # Continue/confirm existing incident
+                    result, is_newly_confirmed = self._continue_incident(
+                        existing, details, fp_id, anomaly_name, model_name, timestamp
+                    )
+                    enhanced_anomaly.update(result)
+                    if is_newly_confirmed:
+                        newly_confirmed.append(result)
             else:
+                # Create new suspected incident
                 enhanced_anomaly.update(
                     self._create_incident(service_name, anomaly_name, details, fp_id, model_name, timestamp)
                 )
 
             enhanced.append(enhanced_anomaly)
 
-        return enhanced, processed_fps
+        return enhanced, processed_fps, newly_confirmed
+
+    def _is_incident_stale(self, incident: dict[str, Any], current_time: datetime) -> bool:
+        """Check if an incident is stale based on time gap."""
+        last_updated = incident.get("last_updated")
+        if not last_updated:
+            return False
+
+        minutes_since_update = calculate_duration_minutes(last_updated, current_time)
+        return minutes_since_update > self._config.incident_separation_minutes
+
+    def _close_stale_incident(self, incident: dict[str, Any], timestamp: datetime) -> None:
+        """Close a stale incident with auto-resolution reason."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """UPDATE anomaly_incidents
+                   SET status = 'CLOSED', resolved_at = ?,
+                       metadata = json_set(COALESCE(metadata, '{}'), '$.resolution_reason', 'auto_stale')
+                   WHERE incident_id = ?""",
+                (timestamp, incident["incident_id"]),
+            )
+            conn.commit()
+
+        log_event(
+            logger, 20, EventType.INCIDENT_RESOLVED, incident["service_name"],
+            f"Auto-closed stale incident {incident['incident_id']} (gap > {self._config.incident_separation_minutes}min)",
+            fingerprint=incident["fingerprint_id"],
+        )
 
     def _create_incident(
         self,
@@ -270,21 +383,29 @@ class AnomalyFingerprinter(IncidentTracker):
         model_name: str,
         timestamp: datetime,
     ) -> dict[str, Any]:
-        """Create a new incident."""
+        """Create a new incident in SUSPECTED state.
+
+        Incidents start as SUSPECTED and transition to OPEN after
+        confirmation_cycles consecutive detections.
+        """
         incident_id = generate_incident_id()
+
+        # Start in SUSPECTED state - will transition to OPEN after confirmation
+        initial_status = "SUSPECTED"
 
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO anomaly_incidents
                 (fingerprint_id, incident_id, service_name, anomaly_name, status,
-                 severity, first_seen, last_updated, occurrence_count, current_value,
+                 severity, first_seen, last_updated, occurrence_count,
+                 consecutive_detections, missed_cycles, current_value,
                  threshold_value, confidence_score, detection_method, description,
                  detected_by_model, metadata)
-                VALUES (?, ?, ?, ?, 'OPEN', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    fp_id, incident_id, service_name, anomaly_name,
+                    fp_id, incident_id, service_name, anomaly_name, initial_status,
                     details["severity"], timestamp, timestamp,
                     details["current_value"], details["threshold_value"],
                     details["confidence_score"], details["detection_method"],
@@ -295,15 +416,19 @@ class AnomalyFingerprinter(IncidentTracker):
             conn.commit()
 
         log_event(logger, 20, EventType.INCIDENT_CREATED, service_name,
-                  f"New incident {incident_id}", fingerprint=fp_id)
+                  f"New suspected incident {incident_id} (awaiting confirmation)", fingerprint=fp_id)
 
         return {
             "fingerprint_id": fp_id,
             "incident_id": incident_id,
             "anomaly_name": anomaly_name,
+            "status": initial_status,
             "fingerprint_action": IncidentAction.CREATE.value,
             "incident_action": IncidentAction.CREATE.value,
             "occurrence_count": 1,
+            "consecutive_detections": 1,
+            "confirmation_pending": True,  # Signal that this needs more cycles to confirm
+            "cycles_to_confirm": self._config.confirmation_cycles - 1,
             "first_seen": timestamp.isoformat(),
             "last_updated": timestamp.isoformat(),
             "incident_duration_minutes": 0,
@@ -318,22 +443,71 @@ class AnomalyFingerprinter(IncidentTracker):
         anomaly_name: str,
         model_name: str,
         timestamp: datetime,
-    ) -> dict[str, Any]:
-        """Continue an existing incident."""
+    ) -> tuple[dict[str, Any], bool]:
+        """Continue an existing incident with state machine transitions.
+
+        State transitions:
+        - SUSPECTED + detected → increment consecutive_detections
+          - If consecutive_detections >= confirmation_cycles → OPEN (newly confirmed!)
+        - RECOVERING + detected → OPEN (resume, reset missed_cycles)
+        - OPEN + detected → OPEN (continue, reset missed_cycles)
+
+        Returns:
+            Tuple of (result_dict, is_newly_confirmed)
+        """
+        current_status = existing.get("status", "OPEN")
         new_count = existing["occurrence_count"] + 1
+        consecutive = existing.get("consecutive_detections", 1) + 1
         severity_changed = existing["severity"] != details["severity"]
+
+        # Determine new status based on state machine
+        is_newly_confirmed = False
+        new_status = current_status
+
+        if current_status == "SUSPECTED":
+            # Check if we've reached confirmation threshold
+            if consecutive >= self._config.confirmation_cycles:
+                new_status = "OPEN"
+                is_newly_confirmed = True
+                log_event(
+                    logger, 20, EventType.INCIDENT_CREATED, existing["service_name"],
+                    f"Incident {existing['incident_id']} CONFIRMED after {consecutive} cycles",
+                    fingerprint=fp_id,
+                )
+            else:
+                log_event(
+                    logger, 10, EventType.INCIDENT_CONTINUED, existing["service_name"],
+                    f"Suspected incident {existing['incident_id']} ({consecutive}/{self._config.confirmation_cycles} cycles)",
+                    fingerprint=fp_id,
+                )
+        elif current_status == "RECOVERING":
+            # Anomaly reappeared - back to OPEN
+            new_status = "OPEN"
+            log_event(
+                logger, 20, EventType.INCIDENT_CONTINUED, existing["service_name"],
+                f"Incident {existing['incident_id']} resumed from RECOVERING",
+                fingerprint=fp_id,
+            )
+        else:
+            # Already OPEN, just continue
+            log_event(
+                logger, 20, EventType.INCIDENT_CONTINUED, existing["service_name"],
+                f"Updated incident {existing['incident_id']}", count=new_count,
+            )
 
         with self._get_connection() as conn:
             conn.execute(
                 """
                 UPDATE anomaly_incidents
-                SET severity = ?, last_updated = ?, occurrence_count = ?,
+                SET status = ?, severity = ?, last_updated = ?, occurrence_count = ?,
+                    consecutive_detections = ?, missed_cycles = 0,
                     current_value = ?, threshold_value = ?, confidence_score = ?,
                     description = ?, detected_by_model = ?, metadata = ?
                 WHERE incident_id = ?
                 """,
                 (
-                    details["severity"], timestamp, new_count,
+                    new_status, details["severity"], timestamp, new_count,
+                    consecutive,
                     details["current_value"], details["threshold_value"],
                     details["confidence_score"], details["description"],
                     details["detected_by_model"], details["metadata"],
@@ -342,21 +516,26 @@ class AnomalyFingerprinter(IncidentTracker):
             )
             conn.commit()
 
-        log_event(logger, 20, EventType.INCIDENT_CONTINUED, existing["service_name"],
-                  f"Updated incident {existing['incident_id']}", count=new_count)
-
         result = {
             "fingerprint_id": fp_id,
             "incident_id": existing["incident_id"],
             "anomaly_name": anomaly_name,
+            "status": new_status,
+            "previous_status": current_status,
             "fingerprint_action": IncidentAction.UPDATE.value,
             "incident_action": IncidentAction.CONTINUE.value,
             "occurrence_count": new_count,
+            "consecutive_detections": consecutive,
             "first_seen": existing["first_seen"],
             "last_updated": timestamp.isoformat(),
             "incident_duration_minutes": calculate_duration_minutes(existing["first_seen"], timestamp),
             "detected_by_model": model_name,
+            "is_confirmed": new_status == "OPEN",
+            "newly_confirmed": is_newly_confirmed,
         }
+
+        if is_newly_confirmed:
+            result["confirmation_pending"] = False
 
         if severity_changed:
             result.update({
@@ -365,48 +544,121 @@ class AnomalyFingerprinter(IncidentTracker):
                 "severity_changed_at": timestamp.isoformat(),
             })
 
-        return result
+        return result, is_newly_confirmed
 
     def _process_resolutions(
         self,
-        existing_incidents: dict[str, dict],
+        active_incidents: dict[str, dict],
         processed_fps: set[str],
         timestamp: datetime,
     ) -> list[dict[str, Any]]:
-        """Process resolved incidents (no longer detected)."""
+        """Process resolution grace period for incidents not detected this cycle.
+
+        State transitions for undetected incidents:
+        - SUSPECTED + not detected → increment missed_cycles
+          - If missed_cycles >= grace → silently close (no alert was sent)
+        - OPEN + not detected → RECOVERING, increment missed_cycles
+        - RECOVERING + not detected → increment missed_cycles
+          - If missed_cycles >= grace → CLOSED (send resolution)
+
+        Only returns resolutions for OPEN/RECOVERING incidents that are actually closed,
+        since SUSPECTED incidents never had an alert sent.
+        """
         resolved = []
 
-        for fp_id, incident in existing_incidents.items():
+        for fp_id, incident in active_incidents.items():
             if fp_id not in processed_fps:
+                # Incident was not detected this cycle
+                current_status = incident.get("status", "OPEN")
+                missed_cycles = incident.get("missed_cycles", 0) + 1
                 duration = calculate_duration_minutes(incident["first_seen"], timestamp)
-                self._close_incident(incident["incident_id"], timestamp)
 
-                log_event(logger, 20, EventType.INCIDENT_RESOLVED, incident["service_name"],
-                          f"Resolved {incident['incident_id']}", duration_min=duration)
+                if current_status == "SUSPECTED":
+                    # SUSPECTED incidents: silently close if grace exceeded, no resolution alert
+                    if missed_cycles >= self._config.resolution_grace_cycles:
+                        self._close_incident(incident["incident_id"], timestamp, reason="suspected_expired")
+                        log_event(
+                            logger, 10, EventType.INCIDENT_RESOLVED, incident["service_name"],
+                            f"Suspected incident {incident['incident_id']} expired (never confirmed)",
+                            fingerprint=fp_id,
+                        )
+                    else:
+                        self._increment_missed_cycles(incident["incident_id"], missed_cycles)
 
-                resolved.append({
-                    "fingerprint_id": fp_id,
-                    "incident_id": incident["incident_id"],
-                    "anomaly_name": incident["anomaly_name"],
-                    "fingerprint_action": IncidentAction.RESOLVE.value,
-                    "incident_action": IncidentAction.CLOSE.value,
-                    "final_severity": incident["severity"],
-                    "resolved_at": timestamp.isoformat(),
-                    "total_occurrences": incident["occurrence_count"],
-                    "incident_duration_minutes": duration,
-                    "first_seen": incident["first_seen"],
-                    "service_name": incident["service_name"],
-                    "last_detected_by_model": incident.get("detected_by_model", "unknown"),
-                })
+                elif current_status in ("OPEN", "RECOVERING"):
+                    # Confirmed incidents: use grace period before closing
+                    if missed_cycles >= self._config.resolution_grace_cycles:
+                        # Grace period exceeded - close the incident
+                        self._close_incident(incident["incident_id"], timestamp, reason="resolved")
+
+                        log_event(
+                            logger, 20, EventType.INCIDENT_RESOLVED, incident["service_name"],
+                            f"Resolved {incident['incident_id']} after {missed_cycles} cycles without detection",
+                            duration_min=duration,
+                        )
+
+                        resolved.append({
+                            "fingerprint_id": fp_id,
+                            "incident_id": incident["incident_id"],
+                            "anomaly_name": incident["anomaly_name"],
+                            "fingerprint_action": IncidentAction.RESOLVE.value,
+                            "incident_action": IncidentAction.CLOSE.value,
+                            "final_severity": incident["severity"],
+                            "resolved_at": timestamp.isoformat(),
+                            "total_occurrences": incident["occurrence_count"],
+                            "incident_duration_minutes": duration,
+                            "first_seen": incident["first_seen"],
+                            "service_name": incident["service_name"],
+                            "last_detected_by_model": incident.get("detected_by_model", "unknown"),
+                            "missed_cycles_before_close": missed_cycles,
+                        })
+                    else:
+                        # Still within grace period - transition to RECOVERING
+                        new_status = "RECOVERING" if current_status == "OPEN" else current_status
+                        self._transition_to_recovering(
+                            incident["incident_id"], new_status, missed_cycles
+                        )
+
+                        log_event(
+                            logger, 10, EventType.INCIDENT_CONTINUED, incident["service_name"],
+                            f"Incident {incident['incident_id']} → {new_status} "
+                            f"({missed_cycles}/{self._config.resolution_grace_cycles} missed cycles)",
+                            fingerprint=fp_id,
+                        )
 
         return resolved
 
-    def _close_incident(self, incident_id: str, timestamp: datetime) -> None:
+    def _close_incident(self, incident_id: str, timestamp: datetime, reason: str = "resolved") -> None:
         """Close an incident in the database."""
         with self._get_connection() as conn:
             conn.execute(
-                "UPDATE anomaly_incidents SET status = 'CLOSED', resolved_at = ? WHERE incident_id = ?",
-                (timestamp, incident_id),
+                """UPDATE anomaly_incidents
+                   SET status = 'CLOSED', resolved_at = ?,
+                       metadata = json_set(COALESCE(metadata, '{}'), '$.resolution_reason', ?)
+                   WHERE incident_id = ?""",
+                (timestamp, reason, incident_id),
+            )
+            conn.commit()
+
+    def _increment_missed_cycles(self, incident_id: str, missed_cycles: int) -> None:
+        """Increment missed cycles counter for an incident."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE anomaly_incidents SET missed_cycles = ? WHERE incident_id = ?",
+                (missed_cycles, incident_id),
+            )
+            conn.commit()
+
+    def _transition_to_recovering(
+        self, incident_id: str, new_status: str, missed_cycles: int
+    ) -> None:
+        """Transition an incident to RECOVERING state."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """UPDATE anomaly_incidents
+                   SET status = ?, missed_cycles = ?, consecutive_detections = 0
+                   WHERE incident_id = ?""",
+                (new_status, missed_cycles, incident_id),
             )
             conn.commit()
 
@@ -418,10 +670,19 @@ class AnomalyFingerprinter(IncidentTracker):
         service_name: str,
         model_name: str,
         timestamp: datetime,
+        newly_confirmed: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Build the enhanced result payload."""
+        """Build the enhanced result payload with cycle-based tracking info."""
         payload = original.copy()
         payload["anomalies"] = anomalies
+
+        if newly_confirmed is None:
+            newly_confirmed = []
+
+        # Count by status
+        suspected = sum(1 for a in anomalies if a.get("status") == "SUSPECTED")
+        confirmed = sum(1 for a in anomalies if a.get("status") == "OPEN")
+        recovering = sum(1 for a in anomalies if a.get("status") == "RECOVERING")
 
         creates = sum(1 for a in anomalies if a.get("incident_action") == IncidentAction.CREATE.value)
         continues = sum(1 for a in anomalies if a.get("incident_action") == IncidentAction.CONTINUE.value)
@@ -434,13 +695,23 @@ class AnomalyFingerprinter(IncidentTracker):
                 "incident_creates": creates,
                 "incident_continues": continues,
                 "incident_closes": len(resolved),
+                "newly_confirmed": len(newly_confirmed),
             },
-            "overall_action": self._determine_overall_action(anomalies, resolved),
+            "status_summary": {
+                "suspected": suspected,  # Awaiting confirmation
+                "confirmed": confirmed,   # Alerts being sent
+                "recovering": recovering, # May resolve soon
+            },
+            "overall_action": self._determine_overall_action(anomalies, resolved, newly_confirmed),
             "resolved_incidents": resolved,
-            "total_open_incidents": len(anomalies),
+            "newly_confirmed_incidents": newly_confirmed,
+            "total_active_incidents": len(anomalies),
+            "total_alerting_incidents": confirmed,  # Only OPEN incidents trigger alerts
             "detection_context": {
                 "model_used": model_name,
                 "inference_timestamp": timestamp.isoformat(),
+                "confirmation_cycles": self._config.confirmation_cycles,
+                "resolution_grace_cycles": self._config.resolution_grace_cycles,
             },
         }
 
@@ -450,12 +721,22 @@ class AnomalyFingerprinter(IncidentTracker):
         return payload
 
     def _determine_overall_action(
-        self, anomalies: list[dict], resolved: list[dict]
+        self,
+        anomalies: list[dict],
+        resolved: list[dict],
+        newly_confirmed: list[dict] | None = None,
     ) -> str:
         """Determine the overall action for the payload."""
-        total = len(anomalies) + len(resolved)
+        if newly_confirmed is None:
+            newly_confirmed = []
+
+        total = len(anomalies) + len(resolved) + len(newly_confirmed)
         if total == 0:
             return IncidentAction.NO_CHANGE.value
+
+        # Prioritize newly confirmed (these are the most important for alerting)
+        if newly_confirmed:
+            return "CONFIRMED"  # New state: incidents just confirmed and ready to alert
 
         creates = sum(1 for a in anomalies if a.get("incident_action") == IncidentAction.CREATE.value)
         continues = sum(1 for a in anomalies if a.get("incident_action") == IncidentAction.CONTINUE.value)
@@ -495,8 +776,26 @@ class AnomalyFingerprinter(IncidentTracker):
     # Query Methods
     # =========================================================================
 
+    def _get_active_incidents_by_service(self, service_name: str) -> dict[str, dict]:
+        """Get all active incidents for a service, keyed by fingerprint_id.
+
+        Active incidents are those in SUSPECTED, OPEN, or RECOVERING state.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """SELECT * FROM anomaly_incidents
+                   WHERE service_name = ? AND status IN ('SUSPECTED', 'OPEN', 'RECOVERING')
+                   ORDER BY first_seen DESC""",
+                (service_name,),
+            )
+            return {row["fingerprint_id"]: dict(row) for row in cursor.fetchall()}
+
     def _get_open_incidents_by_service(self, service_name: str) -> dict[str, dict]:
-        """Get all open incidents for a service, keyed by fingerprint_id."""
+        """Get all open incidents for a service, keyed by fingerprint_id.
+
+        Deprecated: Use _get_active_incidents_by_service instead.
+        Kept for backward compatibility - returns OPEN status only.
+        """
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """SELECT * FROM anomaly_incidents

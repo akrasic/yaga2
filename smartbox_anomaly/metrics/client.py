@@ -40,7 +40,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class InferenceMetrics:
-    """Input metrics for inference with validation."""
+    """Input metrics for inference with validation and availability tracking."""
 
     service_name: str
     timestamp: datetime
@@ -49,6 +49,10 @@ class InferenceMetrics:
     client_latency: float | None = None
     database_latency: float | None = None
     error_rate: float | None = None
+
+    # Track which metrics were successfully collected vs failed
+    failed_metrics: list[str] | None = None
+    collection_errors: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, float]:
         """Convert to model input format."""
@@ -67,6 +71,42 @@ class InferenceMetrics:
     def is_valid(self) -> bool:
         """Check if metrics are valid."""
         return self.validate().is_valid
+
+    def has_critical_failures(self) -> bool:
+        """Check if critical metrics (request_rate) failed to collect.
+
+        If request_rate failed, we cannot reliably detect anomalies
+        because 0.0 looks like a traffic cliff.
+        """
+        if not self.failed_metrics:
+            return False
+        return MetricName.REQUEST_RATE in self.failed_metrics
+
+    def has_any_failures(self) -> bool:
+        """Check if any metrics failed to collect."""
+        return bool(self.failed_metrics)
+
+    def get_failure_summary(self) -> str | None:
+        """Get a summary of collection failures."""
+        if not self.failed_metrics:
+            return None
+        failed_count = len(self.failed_metrics)
+        total_count = 5  # Total metrics we collect
+        return f"{failed_count}/{total_count} metrics failed: {', '.join(self.failed_metrics)}"
+
+    def is_reliable_for_detection(self) -> bool:
+        """Check if metrics are reliable enough for anomaly detection.
+
+        Returns False if:
+        - request_rate failed (would cause false traffic cliff alerts)
+        - More than 2 metrics failed (too much missing data)
+        """
+        if not self.failed_metrics:
+            return True
+        if self.has_critical_failures():
+            return False
+        # Allow detection if only 1-2 non-critical metrics failed
+        return len(self.failed_metrics) <= 2
 
 
 @dataclass
@@ -272,7 +312,11 @@ class VictoriaMetricsClient(MetricsCollector):
         return healthy
 
     def collect_service_metrics(self, service_name: str) -> InferenceMetrics:  # type: ignore[override]
-        """Collect current metrics for a service with robust error handling."""
+        """Collect current metrics for a service with robust error handling.
+
+        Tracks which metrics failed to collect so detection can decide
+        whether to proceed or skip (avoiding false traffic cliff alerts).
+        """
         if self.is_circuit_open():
             raise CircuitBreakerOpenError(
                 "VictoriaMetrics",
@@ -286,17 +330,56 @@ class VictoriaMetricsClient(MetricsCollector):
             "timestamp": current_time,
         }
 
+        # Track failed metrics for reliability assessment
+        failed_metrics: list[str] = []
+        collection_errors: dict[str, str] = {}
+
         try:
             for metric_name, query in self.QUERIES.items():
                 try:
                     value = self._query_metric_with_retry(query, service_name)
                     metrics_data[metric_name] = value
                 except Exception as e:
-                    logger.warning(f"Failed to collect {metric_name} for {service_name}: {e}")
-                    metrics_data[metric_name] = 0.0
-                time.sleep(0.1)
+                    error_msg = str(e)
+                    # Check for connection errors specifically
+                    is_connection_error = any(
+                        err_type in error_msg.lower()
+                        for err_type in ["connection refused", "connection error", "max retries", "timeout"]
+                    )
+
+                    if is_connection_error:
+                        logger.warning(
+                            f"Metrics server unreachable for {metric_name}/{service_name}: {error_msg[:100]}..."
+                        )
+                    else:
+                        logger.warning(f"Failed to collect {metric_name} for {service_name}: {error_msg[:100]}...")
+
+                    # Track the failure instead of silently defaulting to 0
+                    failed_metrics.append(metric_name)
+                    collection_errors[metric_name] = error_msg[:200]
+                    metrics_data[metric_name] = 0.0  # Still need a value for the dataclass
+
+                time.sleep(0.01)  # Reduced delay (was 0.1s)
+
+            # Add failure tracking to the metrics object
+            metrics_data["failed_metrics"] = failed_metrics if failed_metrics else None
+            metrics_data["collection_errors"] = collection_errors if collection_errors else None
 
             metrics = InferenceMetrics(**metrics_data)
+
+            # Log summary if there were failures
+            if failed_metrics:
+                failure_summary = metrics.get_failure_summary()
+                if metrics.has_critical_failures():
+                    logger.error(
+                        f"Critical metrics collection failure for {service_name}: {failure_summary}. "
+                        "Detection will be skipped to avoid false alerts."
+                    )
+                else:
+                    logger.warning(
+                        f"Partial metrics collection failure for {service_name}: {failure_summary}. "
+                        "Detection will proceed with available metrics."
+                    )
 
             validation_result = metrics.validate()
             if not validation_result.is_valid:
@@ -310,7 +393,13 @@ class VictoriaMetricsClient(MetricsCollector):
             for warning in validation_result.warnings:
                 logger.warning(f"Metrics warning for {service_name}: {warning}")
 
-            self._circuit_breaker.record_success()
+            # Only record full success if no metrics failed
+            if not failed_metrics:
+                self._circuit_breaker.record_success()
+            elif len(failed_metrics) >= 3:
+                # Multiple failures suggest systemic issue
+                self._circuit_breaker.record_failure()
+
             return metrics
 
         except MetricsValidationError:

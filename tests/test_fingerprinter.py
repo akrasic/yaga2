@@ -53,7 +53,7 @@ class TestAnomalyFingerprinter:
         assert "fingerprint_id" in result["anomalies"][0]
 
     def test_continue_existing_incident(self, fingerprinter: AnomalyFingerprinter):
-        """Test continuing an existing incident."""
+        """Test continuing an existing incident with cycle-based confirmation."""
         anomaly_data = {
             "anomalies": [{
                 "type": "threshold",
@@ -63,34 +63,46 @@ class TestAnomalyFingerprinter:
             }]
         }
 
-        # First detection - creates incident
+        # First detection - creates SUSPECTED incident
         result1 = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
         incident_id = result1["anomalies"][0]["incident_id"]
+        assert result1["anomalies"][0]["status"] == "SUSPECTED"
 
-        # Second detection - continues incident
+        # Second detection - CONFIRMS incident (meets confirmation_cycles=2)
         result2 = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
 
-        assert result2["fingerprinting"]["overall_action"] == IncidentAction.UPDATE.value
+        # On confirmation, overall_action is "CONFIRMED"
+        assert result2["fingerprinting"]["overall_action"] == "CONFIRMED"
         assert result2["anomalies"][0]["incident_action"] == IncidentAction.CONTINUE.value
         assert result2["anomalies"][0]["incident_id"] == incident_id
         assert result2["anomalies"][0]["occurrence_count"] == 2
+        assert result2["anomalies"][0]["status"] == "OPEN"  # Now confirmed
+        assert result2["anomalies"][0]["newly_confirmed"] is True
 
     def test_resolve_incident(self, fingerprinter: AnomalyFingerprinter):
-        """Test resolving an incident when anomaly clears."""
-        # Create incident
-        fingerprinter.process_anomalies(
-            "booking_evening_hours",
-            {"anomalies": [{"type": "threshold", "severity": "high"}]},
-        )
+        """Test resolving an incident with grace period."""
+        anomaly_data = {"anomalies": [{"type": "threshold", "severity": "high"}]}
 
-        # Anomaly clears
-        result = fingerprinter.process_anomalies(
-            "booking_evening_hours",
-            {"anomalies": []},
-        )
+        # Cycle 1 - Create SUSPECTED incident
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
 
-        assert result["fingerprinting"]["overall_action"] == IncidentAction.RESOLVE.value
-        assert len(result["fingerprinting"]["resolved_incidents"]) == 1
+        # Cycle 2 - Confirm incident (OPEN)
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
+
+        # Cycles 3-5: Anomaly clears - need 3 cycles (resolution_grace_cycles=3) to resolve
+        # Cycle 3: OPEN -> RECOVERING
+        result1 = fingerprinter.process_anomalies("booking_evening_hours", {"anomalies": []})
+        assert result1["fingerprinting"]["overall_action"] == IncidentAction.NO_CHANGE.value
+        assert len(result1["fingerprinting"]["resolved_incidents"]) == 0
+
+        # Cycle 4: RECOVERING (missed_cycles=2)
+        result2 = fingerprinter.process_anomalies("booking_evening_hours", {"anomalies": []})
+        assert len(result2["fingerprinting"]["resolved_incidents"]) == 0
+
+        # Cycle 5: RECOVERING -> CLOSED (missed_cycles=3, meets grace)
+        result3 = fingerprinter.process_anomalies("booking_evening_hours", {"anomalies": []})
+        assert result3["fingerprinting"]["overall_action"] == IncidentAction.RESOLVE.value
+        assert len(result3["fingerprinting"]["resolved_incidents"]) == 1
 
     def test_severity_change_tracking(self, fingerprinter: AnomalyFingerprinter):
         """Test that severity changes are tracked."""
@@ -121,25 +133,28 @@ class TestAnomalyFingerprinter:
 
     def test_get_statistics(self, fingerprinter: AnomalyFingerprinter):
         """Test getting fingerprinter statistics."""
-        # Create some incidents
-        fingerprinter.process_anomalies(
-            "booking_evening_hours",
-            {"anomalies": [{"type": "threshold", "severity": "high"}]},
-        )
+        anomaly_data = {"anomalies": [{"type": "threshold", "severity": "high"}]}
+
+        # Cycle 1 - Create SUSPECTED incident
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
+
+        # Cycle 2 - Confirm incident (OPEN)
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
 
         stats = fingerprinter.get_statistics()
 
-        assert stats["total_open_incidents"] == 1
+        assert stats["total_open_incidents"] == 1  # Now OPEN after confirmation
         assert "schema_version" in stats
         assert "database_path" in stats
 
     def test_get_incident_by_id(self, fingerprinter: AnomalyFingerprinter):
         """Test retrieving incident by ID."""
-        result = fingerprinter.process_anomalies(
-            "booking_evening_hours",
-            {"anomalies": [{"type": "threshold", "severity": "high"}]},
-        )
-        incident_id = result["anomalies"][0]["incident_id"]
+        anomaly_data = {"anomalies": [{"type": "threshold", "severity": "high"}]}
+
+        # Create and confirm incident
+        result1 = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)
+        incident_id = result1["anomalies"][0]["incident_id"]
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data)  # Confirm
 
         incident = fingerprinter.get_incident_by_id(incident_id)
 
@@ -150,14 +165,16 @@ class TestAnomalyFingerprinter:
 
     def test_get_open_incidents(self, fingerprinter: AnomalyFingerprinter):
         """Test getting all open incidents."""
-        fingerprinter.process_anomalies(
-            "booking_evening_hours",
-            {"anomalies": [{"type": "threshold", "severity": "high"}]},
-        )
-        fingerprinter.process_anomalies(
-            "search_business_hours",
-            {"anomalies": [{"type": "pattern", "severity": "medium"}]},
-        )
+        booking_anomaly = {"anomalies": [{"type": "threshold", "severity": "high"}]}
+        search_anomaly = {"anomalies": [{"type": "pattern", "severity": "medium"}]}
+
+        # Create and confirm booking incident
+        fingerprinter.process_anomalies("booking_evening_hours", booking_anomaly)
+        fingerprinter.process_anomalies("booking_evening_hours", booking_anomaly)
+
+        # Create and confirm search incident
+        fingerprinter.process_anomalies("search_business_hours", search_anomaly)
+        fingerprinter.process_anomalies("search_business_hours", search_anomaly)
 
         incidents = fingerprinter.get_open_incidents()
 

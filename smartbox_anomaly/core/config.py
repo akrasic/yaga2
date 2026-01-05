@@ -235,6 +235,10 @@ class FingerprintingConfig:
     cleanup_max_age_hours: int = 72
     incident_separation_minutes: int = 30
 
+    # Cycle-based incident lifecycle settings
+    confirmation_cycles: int = 2       # Cycles needed to confirm incident (before alerting)
+    resolution_grace_cycles: int = 3   # Cycles without detection before closing incident
+
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> FingerprintingConfig:
         """Create configuration from config dict with environment overrides."""
@@ -243,12 +247,120 @@ class FingerprintingConfig:
             db_path=_get_env_or_config("FINGERPRINT_DB", fp_config, "db_path", cls.db_path),
             cleanup_max_age_hours=fp_config.get("cleanup_max_age_hours", cls.cleanup_max_age_hours),
             incident_separation_minutes=fp_config.get("incident_separation_minutes", cls.incident_separation_minutes),
+            confirmation_cycles=fp_config.get("confirmation_cycles", cls.confirmation_cycles),
+            resolution_grace_cycles=fp_config.get("resolution_grace_cycles", cls.resolution_grace_cycles),
         )
 
     @classmethod
     def from_env(cls) -> FingerprintingConfig:
         """Create configuration from environment variables (backward compatible)."""
         return cls.from_config(_load_config_file())
+
+
+@dataclass(frozen=True)
+class ServiceSLOConfig:
+    """SLO thresholds for a single service."""
+
+    # Latency thresholds (milliseconds)
+    latency_acceptable_ms: float = 500.0    # Anomaly but operationally fine
+    latency_warning_ms: float = 800.0       # Approaching SLO
+    latency_critical_ms: float = 1000.0     # SLO breach
+
+    # Error rate thresholds (as decimals, e.g., 0.01 = 1%)
+    error_rate_acceptable: float = 0.005    # 0.5% - anomaly but fine
+    error_rate_warning: float = 0.01        # 1% - approaching SLO
+    error_rate_critical: float = 0.02       # 2% - SLO breach
+
+    # Traffic thresholds (requests per second)
+    min_traffic_rps: float = 1.0            # Below this = low traffic, relax alerting
+
+    # Busy period relaxation factor (multiply thresholds by this during busy periods)
+    busy_period_factor: float = 1.5
+
+
+@dataclass
+class SLOConfig:
+    """Configuration for SLO-aware severity evaluation."""
+
+    enabled: bool = True
+
+    # Default SLO thresholds (used when service-specific not defined)
+    defaults: ServiceSLOConfig = field(default_factory=ServiceSLOConfig)
+
+    # Service-specific SLO overrides
+    service_slos: dict[str, ServiceSLOConfig] = field(default_factory=dict)
+
+    # Busy period configuration
+    busy_periods: list[dict[str, str]] = field(default_factory=list)
+
+    # Severity adjustment settings
+    allow_downgrade_to_informational: bool = True  # Allow ML anomaly to become informational
+    require_slo_breach_for_critical: bool = True   # Critical only if SLO actually breached
+
+    def get_service_slo(self, service_name: str) -> ServiceSLOConfig:
+        """Get SLO config for a service, falling back to defaults."""
+        return self.service_slos.get(service_name, self.defaults)
+
+    def is_busy_period(self, timestamp: datetime | None = None) -> bool:
+        """Check if current time is within a configured busy period."""
+        from datetime import datetime as dt
+        if timestamp is None:
+            timestamp = dt.now()
+
+        for period in self.busy_periods:
+            try:
+                start = dt.fromisoformat(period.get('start', ''))
+                end = dt.fromisoformat(period.get('end', ''))
+                if start <= timestamp <= end:
+                    return True
+            except (ValueError, TypeError):
+                continue
+        return False
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> SLOConfig:
+        """Create SLO configuration from config dict."""
+        slo_config = config.get("slos", {})
+
+        if not slo_config:
+            # Return disabled config if no SLOs defined
+            return cls(enabled=False)
+
+        # Parse default thresholds
+        defaults_dict = slo_config.get("defaults", {})
+        defaults = ServiceSLOConfig(
+            latency_acceptable_ms=defaults_dict.get("latency_acceptable_ms", 500.0),
+            latency_warning_ms=defaults_dict.get("latency_warning_ms", 800.0),
+            latency_critical_ms=defaults_dict.get("latency_critical_ms", 1000.0),
+            error_rate_acceptable=defaults_dict.get("error_rate_acceptable", 0.005),
+            error_rate_warning=defaults_dict.get("error_rate_warning", 0.01),
+            error_rate_critical=defaults_dict.get("error_rate_critical", 0.02),
+            min_traffic_rps=defaults_dict.get("min_traffic_rps", 1.0),
+            busy_period_factor=defaults_dict.get("busy_period_factor", 1.5),
+        )
+
+        # Parse service-specific SLOs
+        service_slos = {}
+        for service_name, svc_config in slo_config.get("services", {}).items():
+            service_slos[service_name] = ServiceSLOConfig(
+                latency_acceptable_ms=svc_config.get("latency_acceptable_ms", defaults.latency_acceptable_ms),
+                latency_warning_ms=svc_config.get("latency_warning_ms", defaults.latency_warning_ms),
+                latency_critical_ms=svc_config.get("latency_critical_ms", defaults.latency_critical_ms),
+                error_rate_acceptable=svc_config.get("error_rate_acceptable", defaults.error_rate_acceptable),
+                error_rate_warning=svc_config.get("error_rate_warning", defaults.error_rate_warning),
+                error_rate_critical=svc_config.get("error_rate_critical", defaults.error_rate_critical),
+                min_traffic_rps=svc_config.get("min_traffic_rps", defaults.min_traffic_rps),
+                busy_period_factor=svc_config.get("busy_period_factor", defaults.busy_period_factor),
+            )
+
+        return cls(
+            enabled=slo_config.get("enabled", True),
+            defaults=defaults,
+            service_slos=service_slos,
+            busy_periods=slo_config.get("busy_periods", []),
+            allow_downgrade_to_informational=slo_config.get("allow_downgrade_to_informational", True),
+            require_slo_breach_for_critical=slo_config.get("require_slo_breach_for_critical", True),
+        )
 
 
 @dataclass(frozen=True)
@@ -476,6 +588,7 @@ class PipelineConfig:
     service: ServiceConfig = field(default_factory=ServiceConfig)
     time_period: TimePeriodConfig = field(default_factory=TimePeriodConfig)
     detection_thresholds: DetectionThresholdConfig = field(default_factory=DetectionThresholdConfig)
+    slo: SLOConfig = field(default_factory=lambda: SLOConfig(enabled=False))
 
     # Track which config file was loaded (if any)
     config_file_path: str | None = None
@@ -519,6 +632,7 @@ class PipelineConfig:
             service=ServiceConfig(),  # ServiceConfig doesn't change from file yet
             time_period=TimePeriodConfig.from_config(config),
             detection_thresholds=DetectionThresholdConfig.from_config(config),
+            slo=SLOConfig.from_config(config),
             config_file_path=config_file_path,
         )
 

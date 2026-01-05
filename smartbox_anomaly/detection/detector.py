@@ -1966,17 +1966,26 @@ class SmartboxAnomalyDetector:
         return comparison
 
     def _estimate_percentile(self, value: float, stats: TrainingStatistics) -> float:
-        """Estimate percentile position of a value."""
-        if value <= stats.p25:
-            return 25 * (value - stats.min) / (stats.p25 - stats.min + 1e-8)
+        """Estimate percentile position of a value.
+
+        Returns a value clamped to [0, 100].
+        """
+        if value <= stats.min:
+            # Below minimum observed in training
+            percentile = 0.0
+        elif value <= stats.p25:
+            percentile = 25 * (value - stats.min) / (stats.p25 - stats.min + 1e-8)
         elif value <= stats.p50:
-            return 25 + 25 * (value - stats.p25) / (stats.p50 - stats.p25 + 1e-8)
+            percentile = 25 + 25 * (value - stats.p25) / (stats.p50 - stats.p25 + 1e-8)
         elif value <= stats.p75:
-            return 50 + 25 * (value - stats.p50) / (stats.p75 - stats.p50 + 1e-8)
+            percentile = 50 + 25 * (value - stats.p50) / (stats.p75 - stats.p50 + 1e-8)
         elif value <= stats.p95:
-            return 75 + 20 * (value - stats.p75) / (stats.p95 - stats.p75 + 1e-8)
+            percentile = 75 + 20 * (value - stats.p75) / (stats.p95 - stats.p75 + 1e-8)
         else:
-            return min(100, 95 + 5 * (value - stats.p95) / (stats.p99 - stats.p95 + 1e-8))
+            percentile = 95 + 5 * (value - stats.p95) / (stats.p99 - stats.p95 + 1e-8)
+
+        # Clamp to valid percentile range
+        return max(0.0, min(100.0, percentile))
 
     def _get_business_impact(self, anomaly: dict[str, Any]) -> str:
         """Get business impact description for an anomaly."""

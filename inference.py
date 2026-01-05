@@ -24,7 +24,9 @@ from smartbox_anomaly.core import (
     ObservabilityConfig,
     DependencyContext,
     DependencyStatus,
+    SLOConfig,
 )
+from smartbox_anomaly.slo import SLOEvaluator
 from smartbox_anomaly.detection import (
     SmartboxAnomalyDetector,
     TimeAwareAnomalyDetector,
@@ -1195,6 +1197,12 @@ class SmartboxMLInferencePipeline:
         # Load dependency graph from config
         self.dependency_graph = self._load_dependency_graph()
 
+        # Initialize SLO evaluator if configured
+        self.slo_evaluator: SLOEvaluator | None = None
+        if config.slo.enabled:
+            self.slo_evaluator = SLOEvaluator(config.slo)
+            logger.info("SLO-aware severity evaluation enabled")
+
         logger.info("Enhanced Smartbox ML Inference Pipeline initialized with explainability")
         if verbose:
             logger.info(f"  VM Endpoint: {vm_endpoint}")
@@ -1202,6 +1210,8 @@ class SmartboxMLInferencePipeline:
             logger.info(f"  Observability API: {config.observability.base_url}")
             if self.dependency_graph:
                 logger.info(f"  Dependency graph loaded: {len(self.dependency_graph)} services")
+            if self.slo_evaluator:
+                logger.info(f"  SLO evaluation: enabled")
 
     def _load_dependency_graph(self) -> Dict[str, List[str]]:
         """Load dependency graph from config.json."""
@@ -1463,6 +1473,28 @@ class SmartboxMLInferencePipeline:
 
             try:
                 metrics = metrics_cache[service_name]
+
+                # Check if metrics are reliable enough for detection
+                # Skip detection if critical metrics (request_rate) failed to avoid false alerts
+                if not metrics.is_reliable_for_detection():
+                    failure_summary = metrics.get_failure_summary()
+                    logger.warning(
+                        f"Skipping detection for {service_name}: metrics unreliable - {failure_summary}"
+                    )
+                    pass1_results[service_name] = {
+                        'service': service_name,
+                        'alert_type': 'metrics_unavailable',
+                        'error': f'Metrics collection failed: {failure_summary}',
+                        'failed_metrics': metrics.failed_metrics,
+                        'collection_errors': metrics.collection_errors,
+                        'timestamp': service_timestamp.isoformat(),
+                        'anomalies': {},
+                        'anomaly_count': 0,
+                        'overall_severity': 'none',
+                        'skipped_reason': 'critical_metrics_unavailable',
+                    }
+                    continue
+
                 metrics_dict = metrics.to_dict()
 
                 # Validate metrics at inference boundary
@@ -1478,6 +1510,13 @@ class SmartboxMLInferencePipeline:
                 # Add validation info to result
                 if validation_warnings:
                     enhanced_result['validation_warnings'] = validation_warnings
+
+                # Add partial failure info if some non-critical metrics failed
+                if metrics.has_any_failures():
+                    enhanced_result['partial_metrics_failure'] = {
+                        'failed_metrics': metrics.failed_metrics,
+                        'failure_summary': metrics.get_failure_summary(),
+                    }
 
                 pass1_results[service_name] = enhanced_result
 
@@ -1591,6 +1630,48 @@ class SmartboxMLInferencePipeline:
                         if self.verbose:
                             logger.warning(f"Pass 2 failed for {service_name}: {e}")
                         # Keep Pass 1 result on failure
+
+        # ===== SLO Evaluation Layer =====
+        # Apply SLO-aware severity adjustments if configured
+        if self.slo_evaluator:
+            if self.verbose:
+                logger.info("Applying SLO-aware severity evaluation")
+
+            for service_name, result in results.items():
+                if 'error' not in result and result.get('alert_type') != 'metrics_unavailable':
+                    try:
+                        # Get timestamp from result for busy period check
+                        result_timestamp = None
+                        if 'timestamp' in result:
+                            try:
+                                result_timestamp = datetime.fromisoformat(result['timestamp'].replace('Z', '+00:00'))
+                            except (ValueError, AttributeError):
+                                pass
+
+                        # Apply SLO evaluation
+                        results[service_name] = self.slo_evaluator.evaluate_result(
+                            result, timestamp=result_timestamp
+                        )
+
+                        # Log if severity was adjusted
+                        slo_eval = results[service_name].get('slo_evaluation', {})
+                        if slo_eval.get('severity_changed') and self.verbose:
+                            logger.info(
+                                f"SLO adjustment: {service_name} "
+                                f"{slo_eval.get('original_severity')} -> {slo_eval.get('adjusted_severity')} "
+                                f"(impact: {slo_eval.get('operational_impact')})"
+                            )
+                    except Exception as e:
+                        logger.warning(f"SLO evaluation failed for {service_name}: {e}")
+                        # Keep original result on failure
+
+            # Log SLO evaluation stats
+            slo_stats = self.slo_evaluator.get_stats()
+            if self.verbose and slo_stats['evaluations_performed'] > 0:
+                logger.info(
+                    f"SLO evaluation complete: {slo_stats['severity_adjustments']} adjustments "
+                    f"out of {slo_stats['evaluations_performed']} evaluations"
+                )
 
         # Process final results and log
         for service_name, result in results.items():

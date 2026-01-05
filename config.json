@@ -128,7 +128,10 @@
   "fingerprinting": {
     "db_path": "./anomaly_state.db",
     "cleanup_max_age_hours": 72,
-    "incident_separation_minutes": 30
+    "incident_separation_minutes": 30,
+    "_comment_cycles": "Cycle-based incident lifecycle settings (inference runs every 2-3 min)",
+    "confirmation_cycles": 2,
+    "resolution_grace_cycles": 3
   },
   "time_periods": {
     "business_hours": {
@@ -333,6 +336,68 @@
       "require_temporal_correlation": true,
       "correlation_window_minutes": 5
     }
+  },
+  "slos": {
+    "_comment": "SLO-aware severity evaluation. Adjusts ML-detected severity based on operational thresholds.",
+    "enabled": true,
+    "allow_downgrade_to_informational": true,
+    "require_slo_breach_for_critical": true,
+    "defaults": {
+      "_comment": "Default thresholds applied to services without specific SLOs",
+      "latency_acceptable_ms": 500,
+      "latency_warning_ms": 800,
+      "latency_critical_ms": 1000,
+      "error_rate_acceptable": 0.005,
+      "error_rate_warning": 0.01,
+      "error_rate_critical": 0.02,
+      "min_traffic_rps": 1.0,
+      "busy_period_factor": 1.5
+    },
+    "services": {
+      "booking": {
+        "_comment": "Critical booking service - stricter latency SLOs",
+        "latency_acceptable_ms": 300,
+        "latency_warning_ms": 400,
+        "latency_critical_ms": 500,
+        "error_rate_acceptable": 0.002,
+        "error_rate_warning": 0.005,
+        "error_rate_critical": 0.01
+      },
+      "search": {
+        "_comment": "Search must be fast",
+        "latency_acceptable_ms": 200,
+        "latency_warning_ms": 350,
+        "latency_critical_ms": 500,
+        "error_rate_acceptable": 0.005,
+        "error_rate_warning": 0.01,
+        "error_rate_critical": 0.02
+      },
+      "mobile-api": {
+        "_comment": "Mobile API - user-facing, moderate latency acceptable",
+        "latency_acceptable_ms": 400,
+        "latency_warning_ms": 600,
+        "latency_critical_ms": 800,
+        "error_rate_acceptable": 0.003,
+        "error_rate_warning": 0.008,
+        "error_rate_critical": 0.015
+      },
+      "vms": {
+        "_comment": "VMS backend - can tolerate higher latency",
+        "latency_acceptable_ms": 800,
+        "latency_warning_ms": 1200,
+        "latency_critical_ms": 2000,
+        "error_rate_acceptable": 0.01,
+        "error_rate_warning": 0.02,
+        "error_rate_critical": 0.05
+      }
+    },
+    "busy_periods": [
+      {
+        "_comment": "Example: Holiday season - thresholds relaxed by busy_period_factor",
+        "start": "2024-12-20T00:00:00",
+        "end": "2025-01-05T23:59:59"
+      }
+    ]
   },
   "logging": {
     "level": "INFO",

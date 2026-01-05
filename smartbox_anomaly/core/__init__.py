@@ -16,6 +16,8 @@ from smartbox_anomaly.core.config import (
     ObservabilityConfig,
     PipelineConfig,
     ServiceConfig,
+    ServiceSLOConfig,
+    SLOConfig,
     TimePeriodConfig,
     VictoriaMetricsConfig,
     get_config,
@@ -110,6 +112,8 @@ __all__ = [
     "ObservabilityConfig",
     "ServiceConfig",
     "TimePeriodConfig",
+    "SLOConfig",
+    "ServiceSLOConfig",
     # Constants
     "AnomalySeverity",
     "IncidentStatus",
