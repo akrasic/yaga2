@@ -14,7 +14,7 @@ The inference engine performs anomaly detection using multiple methods (Isolatio
 
 ```json
 {
-  "alert_type": "anomaly_detected | no_anomaly",
+  "alert_type": "anomaly_detected | no_anomaly | metrics_unavailable",
   "service_name": "string",
   "timestamp": "ISO8601 datetime",
   "time_period": "business_hours | evening_hours | night_hours | weekend_day | weekend_night",
@@ -32,7 +32,8 @@ The inference engine performs anomaly detection using multiple methods (Isolatio
 
   "drift_warning": { ... },
   "validation_warnings": [ ... ],
-  "drift_analysis": { ... }
+  "drift_analysis": { ... },
+  "slo_evaluation": { ... }
 }
 ```
 
@@ -40,17 +41,30 @@ The inference engine performs anomaly detection using multiple methods (Isolatio
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `alert_type` | string | `"anomaly_detected"` if anomalies found, `"no_anomaly"` otherwise |
+| `alert_type` | string | `"anomaly_detected"`, `"no_anomaly"`, or `"metrics_unavailable"` |
 | `service_name` | string | Name of the service being monitored |
 | `timestamp` | string | ISO8601 timestamp of the detection |
 | `time_period` | string | Current time period used for detection |
 | `model_name` | string | Name of the model used (matches time_period for time-aware) |
 | `model_type` | string | Type of model: `"time_aware_5period"` or `"single"` |
 | `anomaly_count` | integer | Number of distinct anomalies (after consolidation) |
-| `overall_severity` | string | Highest severity among all anomalies |
+| `overall_severity` | string | Highest severity among all anomalies (may be adjusted by SLO evaluation) |
+| `original_severity` | string | Original ML-assigned severity before SLO adjustment (only present if adjusted) |
 | `drift_warning` | object | Present when model drift is detected (see Drift Warning section) |
 | `validation_warnings` | array | List of input validation issues (see Validation Warnings section) |
 | `drift_analysis` | object | Detailed drift analysis results (when `check_drift` is enabled) |
+| `slo_evaluation` | object | SLO-aware severity evaluation results (when SLO config enabled) |
+| `skipped_reason` | string | Present when `alert_type` is `"metrics_unavailable"` - explains why detection was skipped |
+| `failed_metrics` | array | Present when metrics collection failed - list of metric names that couldn't be collected |
+| `partial_metrics_failure` | object | Present when some non-critical metrics failed but detection proceeded |
+
+### Alert Types
+
+| Alert Type | Description |
+|------------|-------------|
+| `anomaly_detected` | Anomalies were detected for this service |
+| `no_anomaly` | No anomalies detected, service is healthy |
+| `metrics_unavailable` | Metrics collection failed, detection was skipped to avoid false alerts |
 
 ---
 
@@ -325,7 +339,7 @@ Raw metric values at detection time:
 
 ## Fingerprinting Object
 
-Incident tracking and lifecycle information:
+Incident tracking and lifecycle information with cycle-based state management:
 
 ```json
 {
@@ -333,21 +347,32 @@ Incident tracking and lifecycle information:
     "service_name": "titan",
     "model_name": "business_hours",
     "timestamp": "2025-12-17T13:56:06.028585",
-    "overall_action": "CREATE | UPDATE | MIXED | RESOLVE",
-    "total_open_incidents": 1,
+    "overall_action": "CREATE | CONFIRMED | UPDATE | MIXED | RESOLVE | NO_CHANGE",
+    "total_active_incidents": 1,
+    "total_alerting_incidents": 1,
 
     "action_summary": {
       "incident_creates": 1,
       "incident_continues": 0,
-      "incident_closes": 0
+      "incident_closes": 0,
+      "newly_confirmed": 0
+    },
+
+    "status_summary": {
+      "suspected": 0,
+      "confirmed": 1,
+      "recovering": 0
     },
 
     "detection_context": {
       "inference_timestamp": "2025-12-17T13:56:06.028585",
-      "model_used": "business_hours"
+      "model_used": "business_hours",
+      "confirmation_cycles": 2,
+      "resolution_grace_cycles": 3
     },
 
-    "resolved_incidents": [ ... ]
+    "resolved_incidents": [ ... ],
+    "newly_confirmed_incidents": [ ... ]
   }
 }
 ```
@@ -356,16 +381,40 @@ Incident tracking and lifecycle information:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `overall_action` | string | Summary action: `CREATE`, `UPDATE`, `MIXED`, `RESOLVE` |
-| `total_open_incidents` | integer | Current number of open incidents |
+| `overall_action` | string | Summary action: `CREATE`, `CONFIRMED`, `UPDATE`, `MIXED`, `RESOLVE`, `NO_CHANGE` |
+| `total_active_incidents` | integer | Total incidents (SUSPECTED + OPEN + RECOVERING) |
+| `total_alerting_incidents` | integer | Confirmed incidents only (OPEN status) |
 | `action_summary` | object | Counts of each action type |
+| `status_summary` | object | Counts by incident status |
 | `resolved_incidents` | array | Details of incidents closed in this detection |
+| `newly_confirmed_incidents` | array | Incidents that just transitioned to OPEN (ready to alert) |
+| `detection_context` | object | Cycle configuration and model info |
+
+### Incident Status Values
+
+| Status | Description |
+|--------|-------------|
+| `SUSPECTED` | First detection, waiting for confirmation (no alert yet) |
+| `OPEN` | Confirmed incident, alerts being sent |
+| `RECOVERING` | Not detected for 1-2 cycles (grace period, no resolution yet) |
+| `CLOSED` | Incident resolved |
+
+### Overall Action Values
+
+| Action | Description |
+|--------|-------------|
+| `CREATE` | New SUSPECTED incident created |
+| `CONFIRMED` | Incident transitioned from SUSPECTED to OPEN (alert triggered) |
+| `UPDATE` | Existing incident continued |
+| `RESOLVE` | Incident closed after grace period |
+| `MIXED` | Multiple different actions in one cycle |
+| `NO_CHANGE` | No significant changes (e.g., still in grace period) |
 
 ---
 
 ## Anomaly-Level Fingerprinting Fields
 
-Each anomaly includes fingerprinting metadata:
+Each anomaly includes fingerprinting metadata with cycle-based state information:
 
 ```json
 {
@@ -373,23 +422,46 @@ Each anomaly includes fingerprinting metadata:
   "fingerprint_action": "CREATE | UPDATE | RESOLVE",
   "incident_id": "incident_31e9e23d4b2b",
   "incident_action": "CREATE | CONTINUE | CLOSE",
+  "status": "SUSPECTED | OPEN | RECOVERING",
+  "previous_status": "SUSPECTED",
   "incident_duration_minutes": 0,
   "first_seen": "2025-12-17T13:56:06.028585",
   "last_updated": "2025-12-17T13:56:06.028585",
-  "occurrence_count": 1
+  "occurrence_count": 1,
+  "consecutive_detections": 1,
+  "confirmation_pending": true,
+  "cycles_to_confirm": 1,
+  "is_confirmed": false,
+  "newly_confirmed": false
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `fingerprint_id` | string | Unique identifier for this anomaly fingerprint |
-| `fingerprint_action` | string | Action taken: `CREATE`, `UPDATE`, `RESOLVE` |
-| `incident_id` | string | Incident this anomaly belongs to |
-| `incident_action` | string | Incident lifecycle action |
-| `incident_duration_minutes` | integer | How long incident has been open |
-| `first_seen` | string | When anomaly was first detected |
-| `last_updated` | string | Last update timestamp |
-| `occurrence_count` | integer | Number of consecutive detections |
+| `fingerprint_id` | string | Deterministic pattern identifier (content-based hash) |
+| `fingerprint_action` | string | Pattern action: `CREATE`, `UPDATE`, `RESOLVE` |
+| `incident_id` | string | Unique incident occurrence identifier |
+| `incident_action` | string | Incident lifecycle action: `CREATE`, `CONTINUE`, `CLOSE` |
+| `status` | string | Current incident status: `SUSPECTED`, `OPEN`, `RECOVERING` |
+| `previous_status` | string | Status before this cycle (for tracking transitions) |
+| `incident_duration_minutes` | integer | Time since first_seen |
+| `first_seen` | string | When incident was first detected |
+| `last_updated` | string | Last detection timestamp |
+| `occurrence_count` | integer | Total detections during incident |
+| `consecutive_detections` | integer | Cycles detected in a row (for confirmation) |
+| `confirmation_pending` | boolean | True if still in SUSPECTED state |
+| `cycles_to_confirm` | integer | Remaining cycles needed for confirmation |
+| `is_confirmed` | boolean | True if status is OPEN |
+| `newly_confirmed` | boolean | True if just transitioned to OPEN this cycle |
+
+### Cycle-Based Alerting Logic
+
+**For API consumers:**
+
+1. **Only alert on OPEN incidents**: Check `status == "OPEN"` or `is_confirmed == true`
+2. **New alerts**: Check `newly_confirmed == true` for fresh confirmations
+3. **Ignore SUSPECTED**: These are not confirmed yet, don't alert
+4. **Resolution**: Wait for `incident_action == "CLOSE"` (after grace period)
 
 ---
 
@@ -589,6 +661,90 @@ Detection feature flags and context:
   }
 }
 ```
+
+---
+
+## SLO Evaluation Object
+
+Present when SLO-aware severity evaluation is enabled (see `slos.enabled` in config). This layer adjusts ML-detected severity based on operational SLO thresholds.
+
+```json
+{
+  "slo_evaluation": {
+    "original_severity": "high",
+    "adjusted_severity": "medium",
+    "severity_changed": true,
+    "slo_status": "elevated",
+    "slo_proximity": 0.45,
+    "operational_impact": "informational",
+    "is_busy_period": false,
+    "latency_evaluation": {
+      "status": "elevated",
+      "proximity": 0.45,
+      "value": 225.0,
+      "threshold_acceptable": 300,
+      "threshold_warning": 400,
+      "threshold_critical": 500
+    },
+    "error_rate_evaluation": {
+      "status": "ok",
+      "proximity": 0.1,
+      "value": 0.001,
+      "value_percent": "0.10%",
+      "threshold_acceptable": 0.005,
+      "threshold_warning": 0.01,
+      "threshold_critical": 0.02
+    },
+    "explanation": "Severity adjusted from high to medium based on SLO evaluation. Anomaly detected but metrics within acceptable SLO thresholds (latency: 225ms < 300ms, errors: 0.10% < 0.50%)."
+  }
+}
+```
+
+### SLO Evaluation Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `original_severity` | string | ML-assigned severity before SLO adjustment |
+| `adjusted_severity` | string | Final severity after SLO evaluation |
+| `severity_changed` | boolean | Whether severity was adjusted |
+| `slo_status` | string | Overall SLO status: `ok`, `elevated`, `warning`, `breached` |
+| `slo_proximity` | float | How close to SLO breach (0.0 = far, 1.0 = at threshold, >1.0 = breached) |
+| `operational_impact` | string | Impact level: `none`, `informational`, `actionable`, `critical` |
+| `is_busy_period` | boolean | Whether detection occurred during configured busy period |
+| `latency_evaluation` | object | Latency metrics vs SLO thresholds |
+| `error_rate_evaluation` | object | Error rate vs SLO thresholds |
+| `explanation` | string | Human-readable explanation of SLO evaluation |
+
+### SLO Status Values
+
+| Status | Description |
+|--------|-------------|
+| `ok` | All metrics well within acceptable thresholds |
+| `elevated` | Metrics above acceptable but below warning threshold |
+| `warning` | Approaching SLO breach, investigate soon |
+| `breached` | SLO threshold exceeded, immediate action needed |
+
+### Operational Impact Values
+
+| Impact | Description |
+|--------|-------------|
+| `none` | No operational concern |
+| `informational` | Anomaly detected but operationally acceptable - log but don't alert |
+| `actionable` | Approaching limits or elevated state - should investigate |
+| `critical` | SLO breached - requires immediate attention |
+
+### Severity Adjustment Logic
+
+The SLO layer can adjust severity in these ways:
+
+| Scenario | ML Severity | SLO Status | Adjusted Severity |
+|----------|-------------|------------|-------------------|
+| Anomaly within acceptable limits | high | ok | medium or low |
+| Anomaly approaching SLO | medium | warning | high |
+| SLO breached (regardless of ML) | any | breached | critical |
+| No anomaly but SLO elevated | none | elevated | low |
+
+**Key insight**: ML answers "is this unusual?" while SLO evaluation answers "does it matter operationally?"
 
 ---
 
@@ -804,6 +960,81 @@ Detection feature flags and context:
       "anomaly_correlation": true
     }
   }
+}
+```
+
+---
+
+## Complete Example: Metrics Unavailable
+
+When the metrics server (VictoriaMetrics) is unreachable or critical metrics fail to collect, detection is skipped to avoid false alerts:
+
+```json
+{
+  "alert_type": "metrics_unavailable",
+  "service_name": "booking",
+  "timestamp": "2025-12-25T16:51:46.000000",
+
+  "error": "Metrics collection failed: 5/5 metrics failed: request_rate, application_latency, client_latency, database_latency, error_rate",
+  "skipped_reason": "critical_metrics_unavailable",
+
+  "failed_metrics": [
+    "request_rate",
+    "application_latency",
+    "client_latency",
+    "database_latency",
+    "error_rate"
+  ],
+
+  "collection_errors": {
+    "request_rate": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
+    "application_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
+    "client_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
+    "database_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
+    "error_rate": "HTTPSConnectionPool: Max retries exceeded (Connection refused)"
+  },
+
+  "anomalies": {},
+  "anomaly_count": 0,
+  "overall_severity": "none"
+}
+```
+
+### Metrics Unavailable Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `alert_type` | string | Always `"metrics_unavailable"` for this response type |
+| `error` | string | Human-readable summary of the collection failure |
+| `skipped_reason` | string | Why detection was skipped: `"critical_metrics_unavailable"` |
+| `failed_metrics` | array | List of metric names that failed to collect |
+| `collection_errors` | object | Detailed error message per failed metric |
+
+### When Metrics Unavailable is Returned
+
+Detection is skipped and `metrics_unavailable` is returned when:
+
+1. **Critical metric failed**: `request_rate` failed to collect
+   - This prevents false "traffic cliff" alerts (0.0 looks like traffic dropped to zero)
+
+2. **Too many failures**: 3+ metrics failed to collect
+   - Too much missing data for reliable detection
+
+### Partial Metrics Failure
+
+If only 1-2 non-critical metrics fail (e.g., `database_latency`), detection proceeds with a warning:
+
+```json
+{
+  "alert_type": "anomaly_detected",
+  "service_name": "booking",
+
+  "partial_metrics_failure": {
+    "failed_metrics": ["database_latency"],
+    "failure_summary": "1/5 metrics failed: database_latency"
+  },
+
+  "anomalies": { ... }
 }
 ```
 

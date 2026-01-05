@@ -228,14 +228,16 @@ Settings for the inference pipeline execution.
 
 ### Fingerprinting Configuration (`fingerprinting`)
 
-Settings for anomaly tracking and deduplication.
+Settings for incident tracking with cycle-based lifecycle management.
 
 ```json
 {
   "fingerprinting": {
     "db_path": "./anomaly_state.db",
     "cleanup_max_age_hours": 72,
-    "incident_separation_minutes": 30
+    "incident_separation_minutes": 30,
+    "confirmation_cycles": 2,
+    "resolution_grace_cycles": 3
   }
 }
 ```
@@ -243,8 +245,28 @@ Settings for anomaly tracking and deduplication.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `db_path` | string | `./anomaly_state.db` | SQLite database path |
-| `cleanup_max_age_hours` | int | 72 | Hours before old incidents are cleaned |
-| `incident_separation_minutes` | int | 30 | Minutes between separate incidents |
+| `cleanup_max_age_hours` | int | 72 | Hours before old closed incidents are cleaned |
+| `incident_separation_minutes` | int | 30 | Time gap that triggers a new incident instead of continuing stale one |
+| `confirmation_cycles` | int | 2 | Consecutive detection cycles required before confirming incident (sending alert) |
+| `resolution_grace_cycles` | int | 3 | Consecutive non-detection cycles required before closing incident |
+
+**Cycle-Based Lifecycle:**
+
+The fingerprinting system uses a state machine to reduce alert noise:
+
+1. **SUSPECTED**: First detection, waiting for confirmation (no alert sent yet)
+2. **OPEN**: Confirmed after N consecutive detections (alerts being sent)
+3. **RECOVERING**: Not detected for 1-2 cycles (grace period, no resolution yet)
+4. **CLOSED**: Not detected for N cycles (resolution sent)
+
+With default settings (`confirmation_cycles=2`, `resolution_grace_cycles=3`) and inference running every 2-3 minutes:
+- Incidents are confirmed after ~4-6 minutes of continuous detection
+- Incidents are resolved after ~6-9 minutes without detection
+- Incidents older than 30 minutes are considered "stale" and create new incidents on re-detection
+
+**Staleness Check:**
+
+If the time since `last_updated` exceeds `incident_separation_minutes`, the existing incident is auto-closed with reason `auto_stale`, and a new SUSPECTED incident is created. This prevents "zombie incidents" that continue indefinitely.
 
 ### Time Periods (`time_periods`)
 
@@ -571,6 +593,105 @@ After editing, rebuild and restart the container:
 ```bash
 docker compose build
 docker compose up -d
+```
+
+### SLO Configuration (`slos`)
+
+SLO-aware severity evaluation adjusts ML-detected severity based on operational thresholds. This adds an extra layer that considers whether an anomaly is operationally significant, not just statistically unusual.
+
+```json
+{
+  "slos": {
+    "enabled": true,
+    "allow_downgrade_to_informational": true,
+    "require_slo_breach_for_critical": true,
+    "defaults": {
+      "latency_acceptable_ms": 500,
+      "latency_warning_ms": 800,
+      "latency_critical_ms": 1000,
+      "error_rate_acceptable": 0.005,
+      "error_rate_warning": 0.01,
+      "error_rate_critical": 0.02,
+      "min_traffic_rps": 1.0,
+      "busy_period_factor": 1.5
+    },
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300,
+        "latency_warning_ms": 400,
+        "latency_critical_ms": 500,
+        "error_rate_acceptable": 0.002,
+        "error_rate_warning": 0.005,
+        "error_rate_critical": 0.01
+      }
+    },
+    "busy_periods": [
+      {
+        "start": "2024-12-20T00:00:00",
+        "end": "2025-01-05T23:59:59"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | false | Enable/disable SLO evaluation layer |
+| `allow_downgrade_to_informational` | bool | true | Allow ML anomalies to be downgraded to informational if within SLO |
+| `require_slo_breach_for_critical` | bool | true | Only assign critical severity if SLO is actually breached |
+
+**Default Thresholds:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `latency_acceptable_ms` | float | 500 | Latency below this is operationally acceptable |
+| `latency_warning_ms` | float | 800 | Latency approaching SLO limit |
+| `latency_critical_ms` | float | 1000 | Latency SLO breach threshold |
+| `error_rate_acceptable` | float | 0.005 | Error rate below this is acceptable (0.5%) |
+| `error_rate_warning` | float | 0.01 | Error rate approaching SLO (1%) |
+| `error_rate_critical` | float | 0.02 | Error rate SLO breach (2%) |
+| `min_traffic_rps` | float | 1.0 | Services below this traffic level get relaxed alerting |
+| `busy_period_factor` | float | 1.5 | Multiply thresholds by this during busy periods |
+
+**How SLO Evaluation Works:**
+
+The SLO layer runs after ML detection and adjusts severity based on operational impact:
+
+| | Within Acceptable | Approaching SLO | Breaching SLO |
+|---|---|---|---|
+| **Anomaly Detected** | informational | warning/high | critical |
+| **No Anomaly** | none | warning | critical |
+
+- **Informational**: Statistically anomalous but operationally fine - logged but not alerted
+- **Actionable**: Approaching SLO limits, should investigate
+- **Critical**: SLO breached, immediate action needed
+
+**Busy Periods:**
+
+During configured busy periods (e.g., holiday season), all thresholds are multiplied by `busy_period_factor`. For example, with a factor of 1.5:
+- 500ms acceptable → 750ms acceptable
+- 1% error rate warning → 1.5% error rate warning
+
+This prevents false positives during expected high-load periods.
+
+**Service-Specific SLOs:**
+
+Override default thresholds for specific services based on their criticality and performance characteristics:
+
+```json
+{
+  "services": {
+    "booking": {
+      "latency_acceptable_ms": 300,
+      "latency_critical_ms": 500
+    },
+    "search": {
+      "latency_acceptable_ms": 200,
+      "latency_critical_ms": 400
+    }
+  }
+}
 ```
 
 ### Logging (`logging`)

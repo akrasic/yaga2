@@ -1,31 +1,68 @@
 # Smartbox Anomaly Fingerprinting System
 
-**Version**: 1.0  
-**Date**: August 2025  
-**Owner**: ML Platform Team  
+**Version**: 2.0 (Cycle-Based State Machine)
+**Date**: December 2025
+**Owner**: ML Platform Team
 
 ## Overview
 
-The Anomaly Fingerprinting System provides stateful tracking and lifecycle management for anomalies detected by the Smartbox ML inference pipeline. It enables the observability service to track individual anomalies over time, reducing noise and providing rich historical context.
+The Anomaly Fingerprinting System provides stateful tracking and lifecycle management for anomalies detected by the Smartbox ML inference pipeline. It enables the observability service to track individual incidents over time, reducing noise from flapping alerts and providing rich historical context.
+
+**Key Features in v2.0:**
+- **Cycle-based confirmation**: Incidents require multiple consecutive detections before alerting
+- **Grace period resolution**: Incidents don't close immediately when anomaly clears
+- **Staleness detection**: Long time gaps create new incidents instead of continuing stale ones
+- **Four-state lifecycle**: SUSPECTED → OPEN → RECOVERING → CLOSED
 
 ## Core Concepts
 
 ### Fingerprinting
-Each anomaly is assigned a **stable, deterministic ID** based on:
+Each anomaly is assigned a **stable, deterministic fingerprint ID** based on:
 - Service name (e.g., `booking`)
-- Model name (e.g., `night_hours`) 
-- Anomaly type (e.g., `multivariate_enhanced_isolation_forest`)
+- Anomaly name/type (e.g., `traffic_surge_failing`)
 
-This ensures the same anomaly gets the same ID across inference runs.
+This ensures the same anomaly pattern gets the same fingerprint across inference runs and across different time-aware models.
 
-### Lifecycle Management
-Anomalies follow a clear lifecycle:
-1. **CREATE** - First detection of a new anomaly pattern
-2. **UPDATE** - Subsequent detections of the same anomaly
-3. **RESOLVE** - Anomaly no longer detected (auto-resolution)
+### Incident vs Fingerprint
+- **Fingerprint ID**: Content-based pattern identity (same pattern = same fingerprint)
+- **Incident ID**: Unique occurrence identifier (each new incident = unique ID)
+
+### Cycle-Based Lifecycle Management
+Incidents follow a **state machine** designed to reduce alert noise:
+
+```
+                    ┌─────────────┐
+     First detect   │  SUSPECTED  │  Waiting for confirmation
+         ──────────►│  (no alert) │  (default: 2 cycles)
+                    └──────┬──────┘
+                           │ N consecutive detections
+                           ▼
+                    ┌─────────────┐
+                    │    OPEN     │  CONFIRMED - alerts sent
+                    │  (alerting) │◄──────────────────────────┐
+                    └──────┬──────┘  detected again           │
+                           │ 1-2 cycles not detected          │
+                           ▼                                  │
+                    ┌─────────────┐                           │
+                    │ RECOVERING  │  Grace period             │
+                    │  (waiting)  │───────────────────────────┘
+                    └──────┬──────┘
+                           │ N cycles not detected
+                           │ OR time gap > separation threshold
+                           ▼
+                    ┌─────────────┐
+                    │   CLOSED    │  Resolution sent
+                    └─────────────┘
+```
+
+**States:**
+1. **SUSPECTED** - First detection, waiting for confirmation (no alert yet)
+2. **OPEN** - Confirmed incident, alerts are being sent
+3. **RECOVERING** - Not detected recently, may resolve soon (no resolution yet)
+4. **CLOSED** - Incident resolved, resolution notification sent
 
 ### State Persistence
-All anomaly state is stored in SQLite for persistence across inference runs.
+All incident state is stored in SQLite for persistence across inference runs.
 
 ## System Architecture
 
@@ -139,140 +176,226 @@ The system checks the database for existing anomalies with the same ID:
 
 ### Database Schema
 
-**Table**: `anomaly_state`
+**Table**: `anomaly_incidents` (v2.2_cycle_based)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | TEXT PRIMARY KEY | Unique anomaly ID (hash-based) |
+| `fingerprint_id` | TEXT NOT NULL | Deterministic pattern ID (hash-based) |
+| `incident_id` | TEXT PRIMARY KEY | Unique incident occurrence ID |
 | `service_name` | TEXT NOT NULL | Service name (e.g., "booking") |
-| `model_name` | TEXT NOT NULL | Model name (e.g., "night_hours") |
 | `anomaly_name` | TEXT NOT NULL | Anomaly type name |
+| `status` | TEXT NOT NULL | Current state: SUSPECTED, OPEN, RECOVERING, CLOSED |
 | `severity` | TEXT NOT NULL | Current severity level |
-| `first_seen` | TIMESTAMP NOT NULL | When anomaly was first detected |
-| `last_updated` | TIMESTAMP NOT NULL | Last update timestamp |
-| `occurrence_count` | INTEGER NOT NULL | Number of times detected |
+| `first_seen` | TIMESTAMP NOT NULL | When incident was first detected |
+| `last_updated` | TIMESTAMP NOT NULL | Last detection timestamp |
+| `resolved_at` | TIMESTAMP NULL | When incident was resolved |
+| `occurrence_count` | INTEGER NOT NULL | Total times detected during incident |
+| `consecutive_detections` | INTEGER NOT NULL | Consecutive cycles detected (for confirmation) |
+| `missed_cycles` | INTEGER NOT NULL | Consecutive cycles NOT detected (for grace period) |
 | `current_value` | REAL | Current metric value |
 | `threshold_value` | REAL | Threshold value if applicable |
 | `confidence_score` | REAL | ML confidence score |
 | `detection_method` | TEXT | Detection method used |
 | `description` | TEXT | Human-readable description |
-| `metadata` | TEXT | JSON metadata |
+| `detected_by_model` | TEXT | Which time-period model detected it |
+| `metadata` | TEXT | JSON metadata (includes resolution_reason) |
 
 **Indexes**:
-- `idx_service_model` on `(service_name, model_name)` for fast lookups
+- `idx_fingerprint_status` on `(fingerprint_id, status)` for pattern lookups
+- `idx_service_timeline` on `(service_name, first_seen DESC)` for service history
+- `idx_incident_lookup` on `(incident_id)` for direct access
+- `idx_active_incidents` on `(status, last_updated DESC)` WHERE status IN ('SUSPECTED', 'OPEN', 'RECOVERING')
 
 ### State Transitions
 
 ```mermaid
 graph TD
-    A[New Anomaly Detected] --> B{Anomaly ID exists?}
-    B -->|No| C[CREATE]
-    B -->|Yes| D[UPDATE]
-    
-    C --> E[Add to Database]
-    E --> F[Set occurrence_count = 1]
-    F --> G[Return CREATE action]
-    
-    D --> H[Increment occurrence_count]
-    H --> I{Severity changed?}
-    I -->|Yes| J[Update severity + flag change]
-    I -->|No| K[Update timestamp only]
-    J --> L[Return UPDATE action]
-    K --> L
-    
-    M[No Anomaly Detected] --> N{Previously existed?}
-    N -->|Yes| O[RESOLVE]
-    N -->|No| P[NO_CHANGE]
-    
-    O --> Q[Remove from Database]
-    Q --> R[Calculate duration]
-    R --> S[Return RESOLVE action]
-    
-    P --> T[Return NO_CHANGE]
+    A[Anomaly Detected] --> B{Active incident exists?}
+    B -->|No| C[CREATE SUSPECTED]
+    B -->|Yes| D{Is incident stale?}
+
+    D -->|Yes: gap > separation_minutes| E[Close stale incident]
+    E --> C
+
+    D -->|No| F{Current status?}
+
+    F -->|SUSPECTED| G{consecutive >= confirmation_cycles?}
+    G -->|Yes| H[Transition to OPEN]
+    G -->|No| I[Increment consecutive_detections]
+
+    F -->|RECOVERING| J[Transition to OPEN]
+    F -->|OPEN| K[Continue OPEN]
+
+    H --> L[Mark newly_confirmed = true]
+    L --> M[Send Alert]
+
+    N[No Anomaly Detected] --> O{Active incident exists?}
+    O -->|No| P[NO_CHANGE]
+    O -->|Yes| Q{Current status?}
+
+    Q -->|SUSPECTED| R{missed >= grace_cycles?}
+    R -->|Yes| S[Silent close - no alert was sent]
+    R -->|No| T[Increment missed_cycles]
+
+    Q -->|OPEN| U[Transition to RECOVERING]
+    U --> V[Increment missed_cycles]
+
+    Q -->|RECOVERING| W{missed >= grace_cycles?}
+    W -->|Yes| X[CLOSE + Send Resolution]
+    W -->|No| V
 ```
+
+### Cycle-Based Transition Rules
+
+| Current State | Event | Condition | New State | Action |
+|---------------|-------|-----------|-----------|--------|
+| (none) | Detected | - | SUSPECTED | Create incident, no alert |
+| SUSPECTED | Detected | consecutive < N | SUSPECTED | Increment counter |
+| SUSPECTED | Detected | consecutive >= N | OPEN | **Send alert** |
+| SUSPECTED | Not detected | missed < N | SUSPECTED | Increment missed |
+| SUSPECTED | Not detected | missed >= N | CLOSED | Silent close |
+| OPEN | Detected | - | OPEN | Continue, reset missed |
+| OPEN | Not detected | - | RECOVERING | Start grace period |
+| RECOVERING | Detected | - | OPEN | Resume incident |
+| RECOVERING | Not detected | missed < N | RECOVERING | Continue grace |
+| RECOVERING | Not detected | missed >= N | CLOSED | **Send resolution** |
+| Any | Detected | gap > separation_minutes | SUSPECTED | Close stale, create new |
+
+**Default Configuration:**
+- `confirmation_cycles = 2` (2 cycles ≈ 4-6 minutes to confirm)
+- `resolution_grace_cycles = 3` (3 cycles ≈ 6-9 minutes grace period)
+- `incident_separation_minutes = 30` (30+ minute gap = new incident)
 
 ### Lifecycle Examples
 
-#### Example 1: New Anomaly
+#### Example 1: New Incident (Cycle 1 - SUSPECTED)
 
-**Run 1**: First detection
+**Cycle 1**: First detection - incident created in SUSPECTED state (no alert yet)
 ```json
 {
   "fingerprint_action": "CREATE",
-  "anomaly_id": "anomaly_7d20f5dbf0e4",
+  "incident_action": "CREATE",
+  "fingerprint_id": "anomaly_7d20f5dbf0e4",
+  "incident_id": "incident_abc123def456",
+  "status": "SUSPECTED",
   "occurrence_count": 1,
-  "first_seen": "2025-08-19T22:21:57Z",
-  "duration_minutes": 0
+  "consecutive_detections": 1,
+  "confirmation_pending": true,
+  "cycles_to_confirm": 1,
+  "first_seen": "2025-12-19T22:21:57Z"
 }
 ```
 
 **Database State**:
 ```sql
-INSERT INTO anomaly_state VALUES (
-  'anomaly_7d20f5dbf0e4',
-  'booking', 
-  'night_hours',
-  'multivariate_enhanced_isolation_forest',
-  'medium',
-  '2025-08-19T22:21:57Z',
-  '2025-08-19T22:21:57Z',
-  1,
+INSERT INTO anomaly_incidents VALUES (
+  'anomaly_7d20f5dbf0e4',    -- fingerprint_id
+  'incident_abc123def456',   -- incident_id
+  'booking',                  -- service_name
+  'traffic_surge_failing',    -- anomaly_name
+  'SUSPECTED',                -- status (not OPEN yet!)
+  'high',                     -- severity
+  '2025-12-19T22:21:57Z',     -- first_seen
+  '2025-12-19T22:21:57Z',     -- last_updated
+  NULL,                       -- resolved_at
+  1,                          -- occurrence_count
+  1,                          -- consecutive_detections
+  0,                          -- missed_cycles
   ...
 );
 ```
 
-#### Example 2: Persisting Anomaly
+#### Example 2: Confirmation (Cycle 2 - SUSPECTED → OPEN)
 
-**Run 2**: Same anomaly detected (5 minutes later)
-```json
-{
-  "fingerprint_action": "UPDATE", 
-  "anomaly_id": "anomaly_7d20f5dbf0e4",
-  "occurrence_count": 2,
-  "first_seen": "2025-08-19T22:21:57Z",
-  "last_updated": "2025-08-19T22:26:57Z",
-  "duration_minutes": 5
-}
-```
-
-**Database State**:
-```sql
-UPDATE anomaly_state SET 
-  last_updated = '2025-08-19T22:26:57Z',
-  occurrence_count = 2
-WHERE id = 'anomaly_7d20f5dbf0e4';
-```
-
-#### Example 3: Severity Escalation
-
-**Run 3**: Severity increases (10 minutes later)
+**Cycle 2**: Same anomaly detected again - incident CONFIRMED, now sends alert
 ```json
 {
   "fingerprint_action": "UPDATE",
-  "anomaly_id": "anomaly_7d20f5dbf0e4", 
-  "occurrence_count": 3,
-  "severity": "high",
-  "severity_changed": true,
-  "previous_severity": "medium",
-  "severity_changed_at": "2025-08-19T22:31:57Z",
-  "duration_minutes": 10
+  "incident_action": "CONTINUE",
+  "fingerprint_id": "anomaly_7d20f5dbf0e4",
+  "incident_id": "incident_abc123def456",
+  "status": "OPEN",
+  "previous_status": "SUSPECTED",
+  "occurrence_count": 2,
+  "consecutive_detections": 2,
+  "newly_confirmed": true,
+  "is_confirmed": true,
+  "first_seen": "2025-12-19T22:21:57Z",
+  "last_updated": "2025-12-19T22:24:57Z",
+  "incident_duration_minutes": 3
 }
 ```
 
-#### Example 4: Resolution
+**Fingerprinting Summary**:
+```json
+{
+  "overall_action": "CONFIRMED",
+  "newly_confirmed_incidents": [{...}],
+  "status_summary": {
+    "suspected": 0,
+    "confirmed": 1,
+    "recovering": 0
+  }
+}
+```
 
-**Run 4**: Anomaly no longer detected (15 minutes later)
+#### Example 3: Continuing OPEN Incident (Cycles 3-5)
+
+**Cycles 3-5**: Anomaly persists, severity may change
+```json
+{
+  "fingerprint_action": "UPDATE",
+  "incident_action": "CONTINUE",
+  "status": "OPEN",
+  "occurrence_count": 5,
+  "consecutive_detections": 5,
+  "severity": "critical",
+  "severity_changed": true,
+  "previous_severity": "high",
+  "incident_duration_minutes": 12
+}
+```
+
+#### Example 4: Grace Period (Cycles 6-7 - OPEN → RECOVERING)
+
+**Cycle 6**: Anomaly NOT detected - enters grace period
+```json
+{
+  "fingerprinting": {
+    "overall_action": "NO_CHANGE",
+    "resolved_incidents": [],
+    "status_summary": {
+      "suspected": 0,
+      "confirmed": 0,
+      "recovering": 1
+    }
+  }
+}
+```
+
+**Database State**: Status → RECOVERING, missed_cycles = 1
+
+**Cycle 7**: Still not detected - grace period continues
+- missed_cycles = 2, still RECOVERING
+
+#### Example 5: Resolution (Cycle 8 - RECOVERING → CLOSED)
+
+**Cycle 8**: Third cycle without detection - grace period exceeded, incident CLOSED
 ```json
 {
   "fingerprinting": {
     "overall_action": "RESOLVE",
-    "resolved_anomalies": [{
-      "anomaly_id": "anomaly_7d20f5dbf0e4",
+    "resolved_incidents": [{
+      "fingerprint_id": "anomaly_7d20f5dbf0e4",
+      "incident_id": "incident_abc123def456",
+      "anomaly_name": "traffic_surge_failing",
       "fingerprint_action": "RESOLVE",
-      "final_severity": "high", 
-      "resolved_at": "2025-08-19T22:36:57Z",
-      "total_occurrences": 3,
-      "duration_minutes": 15
+      "incident_action": "CLOSE",
+      "final_severity": "critical",
+      "resolved_at": "2025-12-19T22:45:57Z",
+      "total_occurrences": 5,
+      "incident_duration_minutes": 24,
+      "missed_cycles_before_close": 3
     }]
   }
 }
@@ -280,7 +403,40 @@ WHERE id = 'anomaly_7d20f5dbf0e4';
 
 **Database State**:
 ```sql
-DELETE FROM anomaly_state WHERE id = 'anomaly_7d20f5dbf0e4';
+UPDATE anomaly_incidents SET
+  status = 'CLOSED',
+  resolved_at = '2025-12-19T22:45:57Z',
+  metadata = '{"resolution_reason": "resolved"}'
+WHERE incident_id = 'incident_abc123def456';
+```
+
+#### Example 6: Stale Incident (Gap > 30 minutes)
+
+**Scenario**: Anomaly detected at 10:00, not detected until 11:00 (60 min gap)
+
+**At 11:00**: Old incident is auto-closed, new SUSPECTED incident created
+```json
+{
+  "fingerprinting": {
+    "overall_action": "CREATE",
+    "action_summary": {
+      "incident_creates": 1,
+      "incident_closes": 1  // Stale incident auto-closed
+    }
+  },
+  "anomalies": [{
+    "fingerprint_id": "anomaly_7d20f5dbf0e4",  // Same pattern
+    "incident_id": "incident_xyz789newone",    // NEW incident ID
+    "status": "SUSPECTED",
+    "occurrence_count": 1
+  }]
+}
+```
+
+**Log output**:
+```
+INFO - Auto-closed stale incident incident_abc123def456 (gap > 30min)
+INFO - New suspected incident incident_xyz789newone (awaiting confirmation)
 ```
 
 ## Integration Points

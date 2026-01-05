@@ -64,6 +64,7 @@ docker compose run --rm yaga once
 | Disk usage | `du -sh smartbox_models/ data/` | < 80% capacity |
 | Model drift | Check `drift_warning` in output | No severe drift (score < 5) |
 | Validation warnings | Check `validation_warnings` in output | Minimal or none |
+| Metrics availability | Check for `metrics_unavailable` alerts | None (all services collecting) |
 
 ### Automated Monitoring Script
 
@@ -267,7 +268,65 @@ docker compose exec yaga rm /app/data/anomaly_state.db
 docker compose restart
 ```
 
-#### 6. Input Validation Warnings
+#### 6. Metrics Unavailable (VictoriaMetrics Unreachable)
+
+**Symptoms**: Services returning `alert_type: "metrics_unavailable"` instead of detection results.
+
+**What Happens**:
+When VictoriaMetrics is unreachable or returns errors, the system now gracefully handles this instead of producing false alerts. Previously, failed metrics would default to 0.0, causing false "traffic cliff" alerts. Now:
+
+1. The system tracks which metrics failed to collect
+2. If critical metrics (like `request_rate`) fail, detection is skipped entirely
+3. The service returns `alert_type: "metrics_unavailable"` with failure details
+
+**Checks**:
+```bash
+# Check VictoriaMetrics connectivity
+docker compose exec yaga curl -s "http://your-vm:8428/api/v1/status/buildinfo"
+
+# Check for metrics unavailable in recent output
+docker compose run --rm yaga inference --verbose 2>&1 | grep -E "(metrics_unavailable|failed_metrics)"
+
+# Check circuit breaker status
+docker compose exec yaga tail -50 /app/logs/inference.log | grep -i "circuit"
+```
+
+**Common Causes**:
+| Cause | Solution |
+|-------|----------|
+| VictoriaMetrics down | Check VM service status, restart if needed |
+| Network connectivity | Check firewall, DNS, routing |
+| Circuit breaker open | Wait for timeout (default 5 min) or fix underlying issue |
+| High VM latency | Increase `timeout_seconds` in config |
+| Rate limiting | Reduce inference frequency or increase limits |
+
+**Understanding the Response**:
+```json
+{
+  "service": "booking",
+  "alert_type": "metrics_unavailable",
+  "error": "Metrics collection failed: request_rate failed (connection timeout)",
+  "failed_metrics": ["request_rate"],
+  "skipped_reason": "critical_metrics_unavailable"
+}
+```
+
+- `failed_metrics`: List of metrics that couldn't be collected
+- `skipped_reason`: Why detection was skipped (`critical_metrics_unavailable` if request_rate failed)
+
+**Resolution**:
+1. Fix the underlying VictoriaMetrics connectivity issue
+2. Once resolved, the next inference cycle will resume normal detection
+3. No manual intervention needed - the system auto-recovers
+
+**Circuit Breaker Behavior**:
+The VictoriaMetrics client uses a circuit breaker pattern:
+- Opens after 5 consecutive failures
+- Stays open for 5 minutes (configurable via `circuit_breaker_timeout_seconds`)
+- During open state, requests fail fast without hitting VM
+- Automatically closes after timeout and retries
+
+#### 7. Input Validation Warnings
 
 **Symptoms**: `validation_warnings` in output, metrics being capped or replaced.
 
@@ -286,7 +345,7 @@ docker compose run --rm yaga inference --verbose 2>&1 | grep -A5 "validation"
 
 **Note**: Validation warnings are informational. The system will still run detection using sanitized values. However, frequent warnings may indicate data quality issues upstream.
 
-#### 7. Wrong Time Period Detection
+#### 8. Wrong Time Period Detection
 
 **Symptoms**: Business hours model used during night, or vice versa.
 
