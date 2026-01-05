@@ -5,6 +5,7 @@ A production-grade machine learning pipeline for real-time anomaly detection in 
 ## Key Features
 
 - **Time-Aware Detection**: 5 behavioral periods (business hours, evening, night, weekend day/night)
+- **SLO-Aware Severity**: Adjusts ML severity based on operational SLO thresholds (latency, error rates)
 - **Calibrated Thresholds**: Per-model severity thresholds from validation data percentiles
 - **Empirical Contamination**: Automatic contamination estimation using knee/gap detection
 - **Drift Detection**: Z-score and Mahalanobis distance for distribution drift monitoring
@@ -14,6 +15,8 @@ A production-grade machine learning pipeline for real-time anomaly detection in 
 - **Explainable AI**: Feature contributions, business impact analysis, and recommendations
 - **Lazy Loading**: Memory-efficient model loading (only loads needed time period)
 - **Cascade Detection**: Dependency-aware anomaly correlation
+- **Admin Dashboard**: Web UI for configuration management and service visualization
+- **Docker Ready**: Production container with cron scheduling for training and inference
 
 ## Quick Start
 
@@ -28,6 +31,28 @@ python main.py
 python inference.py --verbose
 ```
 
+## Docker Deployment
+
+```bash
+# Build and start all services
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Run training manually
+docker compose run --rm yaga train
+
+# Run inference manually
+docker compose run --rm yaga inference --verbose
+```
+
+The Docker deployment includes:
+- **yaga**: Main service running cron-scheduled training (daily 2 AM) and inference (every 2 min)
+- **admin-dashboard**: Web UI for configuration at http://localhost:8050
+
+See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for Kubernetes and advanced deployment options.
+
 ## Documentation
 
 Comprehensive documentation is available in the `docs/` directory:
@@ -41,6 +66,7 @@ Comprehensive documentation is available in the `docs/` directory:
 | [OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day operations and troubleshooting |
 | [FINGERPRINTING.md](docs/FINGERPRINTING.md) | Incident tracking system |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker and Kubernetes deployment |
+| [API_SPECIFICATION.md](docs/API_SPECIFICATION.md) | Observability API integration |
 
 ## Architecture
 
@@ -124,6 +150,73 @@ Comprehensive documentation is available in the `docs/` directory:
 | `night_hours` | 22:00-06:00 | Mon-Fri | 0.95 |
 | `weekend_day` | 08:00-22:00 | Sat-Sun | 0.7 |
 | `weekend_night` | 22:00-08:00 | Sat-Sun | 0.6 |
+
+## Service Categories
+
+Services are classified into categories that determine default detection sensitivity:
+
+| Category | Contamination | Description |
+|----------|---------------|-------------|
+| `critical` | 0.03 (3%) | High-traffic, revenue-impacting services (booking, search, APIs) |
+| `core` | 0.04 (4%) | Platform infrastructure services |
+| `standard` | 0.05 (5%) | Normal production services |
+| `admin` | 0.06 (6%) | Administrative interfaces |
+| `micro` | 0.08 (8%) | Low-traffic microservices |
+| `background` | 0.08 (8%) | Background workers and jobs |
+
+Lower contamination = stricter detection = fewer false positives. Configure services in `config.json`:
+
+```json
+{
+  "services": {
+    "critical": ["booking", "search", "mobile-api"],
+    "standard": ["friday", "gambit", "titan"]
+  }
+}
+```
+
+## SLO-Aware Severity Evaluation
+
+The SLO layer adjusts ML-detected severity based on operational thresholds. This ensures alerts reflect business impact, not just statistical deviation.
+
+**Severity Matrix:**
+
+| | Within Acceptable | Approaching SLO | Breaching SLO |
+|---|---|---|---|
+| **Anomaly Detected** | informational | warning/high | critical |
+| **No Anomaly** | none | warning | critical |
+
+Configure per-service SLO thresholds:
+
+```json
+{
+  "slos": {
+    "enabled": true,
+    "defaults": {
+      "latency_acceptable_ms": 500,
+      "latency_warning_ms": 800,
+      "latency_critical_ms": 1000,
+      "error_rate_acceptable": 0.005,
+      "error_rate_warning": 0.01,
+      "error_rate_critical": 0.02
+    },
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300,
+        "latency_critical_ms": 500,
+        "error_rate_critical": 0.01
+      }
+    },
+    "busy_periods": [
+      {"start": "2024-12-20T00:00:00", "end": "2025-01-05T23:59:59"}
+    ]
+  }
+}
+```
+
+During busy periods, thresholds are relaxed by `busy_period_factor` (default 1.5x).
+
+See [CONFIGURATION.md](docs/CONFIGURATION.md) for full SLO configuration options.
 
 ## ML Improvements
 
@@ -319,12 +412,33 @@ See [CONFIGURATION.md](docs/CONFIGURATION.md) for full options.
 
 See [INFERENCE_API_PAYLOAD.md](docs/INFERENCE_API_PAYLOAD.md) for full specification.
 
+## Admin Dashboard
+
+A web-based configuration interface is available for managing services and SLOs:
+
+```bash
+# Run standalone
+python admin_dashboard.py
+# Access at http://localhost:8050
+
+# Or via Docker
+docker compose up -d admin-dashboard
+```
+
+Features:
+- Service management with search/filter
+- SLO threshold configuration with validation
+- Service dependency graph visualization
+- Configuration export/import
+- Audit logging for all changes
+
 ## Project Structure
 
 ```
 yaga2/
 ├── main.py                         # Training pipeline
 ├── inference.py                    # Inference pipeline
+├── admin_dashboard.py              # Configuration web UI
 ├── config.json                     # Configuration
 │
 ├── smartbox_anomaly/               # Core package
@@ -332,6 +446,7 @@ yaga2/
 │   ├── detection/                  # ML detector, time-aware, service config
 │   ├── metrics/                    # VictoriaMetrics client
 │   ├── fingerprinting/             # Incident tracking
+│   ├── slo/                        # SLO evaluation
 │   └── api/                        # Pydantic models
 │
 ├── docs/                           # Documentation
@@ -342,7 +457,10 @@ yaga2/
 │   ├── OPERATIONS.md
 │   └── ...
 │
-├── tests/                          # Test suite (214 tests)
+├── tests/                          # Test suite
+│
+├── Dockerfile                      # Production container
+├── docker-compose.yml              # Multi-service deployment
 │
 ├── smartbox_models/                # Trained models (generated)
 └── alerts/                         # Alert output (generated)

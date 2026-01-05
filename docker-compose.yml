@@ -47,3 +47,48 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Admin Dashboard Service
+  admin-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      platforms:
+        - linux/amd64
+    platform: linux/amd64
+    container_name: smartbox-admin-dashboard
+    restart: unless-stopped
+
+    # Override entrypoint to run the dashboard directly
+    entrypoint: ["python", "admin_dashboard.py"]
+
+    # Environment configuration
+    environment:
+      - TZ=UTC
+      - CONFIG_PATH=/app/config.json
+
+    # Expose the dashboard port
+    ports:
+      - "8050:8050"
+
+    # Share the same volumes for config and data access
+    volumes:
+      - ./smartbox_models:/app/smartbox_models
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+    # Health check for the web service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8050/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -32,6 +32,7 @@ FROM python:3.12-slim AS production
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cron \
+    curl \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
@@ -51,7 +52,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=smartbox:smartbox pyproject.toml ./
 COPY --chown=smartbox:smartbox config.json ./
 COPY --chown=smartbox:smartbox smartbox_anomaly/ ./smartbox_anomaly/
-COPY --chown=smartbox:smartbox main.py inference.py ./
+COPY --chown=smartbox:smartbox main.py inference.py admin_dashboard.py ./
 COPY --chown=smartbox:smartbox anomaly_models.py anomaly_fingerprinter.py time_aware_anomaly_detection.py vmclient.py ./
 
 # Copy entrypoint script

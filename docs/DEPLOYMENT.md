@@ -39,16 +39,25 @@ docker compose logs -f
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Docker Container                      │
+│                 Main Container (yaga)                    │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
 │  │   Cron      │  │  Training   │  │   Inference     │  │
 │  │  Scheduler  │──│  (main.py)  │──│  (inference.py) │  │
 │  └─────────────┘  └─────────────┘  └─────────────────┘  │
-│         │                │                   │           │
-│         ▼                ▼                   ▼           │
+└─────────────────────────────────────────────────────────┘
+         │                                     │
+         ▼                                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Shared Volumes                        │
+│      ./smartbox_models  ./data  ./logs  ./config.json   │
+└─────────────────────────────────────────────────────────┘
+         ▲                                     ▲
+         │                                     │
+┌─────────────────────────────────────────────────────────┐
+│           Admin Dashboard Container (optional)           │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │              Shared Volumes                      │    │
-│  │  ./smartbox_models  ./data  ./logs              │    │
+│  │  FastAPI Web UI - http://localhost:8050         │    │
+│  │  Config management, SLO editing, visualization  │    │
 │  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
          │                                     │
@@ -58,6 +67,10 @@ docker compose logs -f
 │   (metrics)     │                 │  (anomaly reports)  │
 └─────────────────┘                 └─────────────────────┘
 ```
+
+**Services:**
+- **yaga**: Main anomaly detection service with cron-scheduled training and inference
+- **admin-dashboard**: Web UI for configuration management (port 8050)
 
 ---
 
@@ -111,6 +124,30 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # Admin Dashboard (optional)
+  admin-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: smartbox-admin-dashboard
+    restart: unless-stopped
+    entrypoint: ["python", "admin_dashboard.py"]
+    environment:
+      - TZ=UTC
+      - CONFIG_PATH=/app/config.json
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./smartbox_models:/app/smartbox_models
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8050/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 ```
 
 ### Environment Variables
@@ -149,6 +186,29 @@ docker compose run --rm yaga shell
 # View scheduled job logs
 docker compose exec yaga tail -f /app/logs/inference.log
 ```
+
+### Admin Dashboard
+
+The admin dashboard provides a web interface for configuration management:
+
+```bash
+# Start the admin dashboard alongside the main service
+docker compose up -d
+
+# Or start only the dashboard
+docker compose up -d admin-dashboard
+
+# Access at http://localhost:8050
+```
+
+**Features:**
+- View and edit service configurations
+- Configure SLO thresholds per service
+- Visualize service dependency graph
+- Export/import configuration
+- Audit log of all changes
+
+**Note:** Changes made via the dashboard modify the shared `config.json`. The main `yaga` service will use updated configuration on the next inference/training run.
 
 ---
 
