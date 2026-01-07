@@ -422,7 +422,19 @@ WHERE incident_id = 'incident_abc123def456';
     "action_summary": {
       "incident_creates": 1,
       "incident_closes": 1  // Stale incident auto-closed
-    }
+    },
+    "resolved_incidents": [{
+      "incident_id": "incident_abc123def456",
+      "fingerprint_id": "anomaly_7d20f5dbf0e4",
+      "anomaly_name": "latency_high",
+      "incident_action": "CLOSE",
+      "fingerprint_action": "RESOLVE",
+      "resolution_reason": "auto_stale",
+      "final_severity": "high",
+      "total_occurrences": 5,
+      "incident_duration_minutes": 60,
+      "resolved_at": "2025-12-19T11:00:00Z"
+    }]
   },
   "anomalies": [{
     "fingerprint_id": "anomaly_7d20f5dbf0e4",  // Same pattern
@@ -432,6 +444,8 @@ WHERE incident_id = 'incident_abc123def456';
   }]
 }
 ```
+
+**Note**: The stale incident resolution is included in `resolved_incidents` so it can be sent to the observability API. This ensures external systems (dashboards, alerting) are properly notified that the old incident has been superseded.
 
 **Log output**:
 ```

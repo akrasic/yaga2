@@ -1,5 +1,7 @@
 # Inference Engine API Payload Specification
 
+**Schema Version**: 1.2.0
+
 This document describes the JSON payload format sent by the inference engine to the API server after anomaly detection.
 
 ---
@@ -26,6 +28,8 @@ The inference engine performs anomaly detection using multiple methods (Isolatio
   "overall_severity": "critical | high | medium | low | none",
 
   "current_metrics": { ... },
+  "exception_context": { ... },
+  "service_graph_context": { ... },
   "fingerprinting": { ... },
   "performance_info": { ... },
   "metadata": { ... },
@@ -57,6 +61,8 @@ The inference engine performs anomaly detection using multiple methods (Isolatio
 | `skipped_reason` | string | Present when `alert_type` is `"metrics_unavailable"` - explains why detection was skipped |
 | `failed_metrics` | array | Present when metrics collection failed - list of metric names that couldn't be collected |
 | `partial_metrics_failure` | object | Present when some non-critical metrics failed but detection proceeded |
+| `exception_context` | object \| null | Exception breakdown when error-related anomalies detected (see Exception Context section) |
+| `service_graph_context` | object \| null | Downstream service call breakdown when latency anomalies detected (see Service Graph Context section) |
 
 ### Alert Types
 
@@ -337,6 +343,196 @@ Raw metric values at detection time:
 
 ---
 
+## Exception Context Object
+
+Present when error-related anomalies are detected with HIGH or CRITICAL severity. Provides a breakdown of exception types from OpenTelemetry metrics to help identify root causes.
+
+```json
+{
+  "exception_context": {
+    "service_name": "search",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_exception_rate": 0.35,
+    "exception_count": 3,
+    "top_exceptions": [
+      {
+        "type": "Smartbox\\Search\\R2D2\\Exception\\R2D2Exception",
+        "short_name": "R2D2Exception",
+        "rate": 0.217,
+        "percentage": 62.0
+      },
+      {
+        "type": "Smartbox\\Search\\Exception\\UserInputException",
+        "short_name": "UserInputException",
+        "rate": 0.083,
+        "percentage": 23.7
+      },
+      {
+        "type": "Smartbox\\Search\\SearchMiddleware\\Exception\\ClientSideMiddlewareException",
+        "short_name": "ClientSideMiddlewareException",
+        "rate": 0.050,
+        "percentage": 14.3
+      }
+    ],
+    "query_successful": true,
+    "error_message": null
+  }
+}
+```
+
+### Exception Context Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `service_name` | string | Service for which exceptions were queried |
+| `timestamp` | string | ISO8601 timestamp of the query (aligned with anomaly detection) |
+| `total_exception_rate` | float | Total exceptions per second across all types |
+| `exception_count` | integer | Number of distinct exception types found |
+| `top_exceptions` | array | Top exception types by rate (max 10) |
+| `query_successful` | boolean | Whether the exception query succeeded |
+| `error_message` | string \| null | Error message if query failed |
+
+### Top Exceptions Array
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Full exception class name (including namespace) |
+| `short_name` | string | Short class name for display |
+| `rate` | float | Exceptions per second for this type |
+| `percentage` | float | Percentage of total exceptions (0-100) |
+
+### When Exception Context is Populated
+
+The `exception_context` field is populated when ALL of the following conditions are met:
+
+1. **Severity is HIGH or CRITICAL** - Low/medium severity anomalies don't include exception context
+2. **Error-related anomaly detected** - Pattern name contains "error", "failure", or "outage"
+3. **Error rate > 1%** - Current `error_rate` metric exceeds 0.01
+
+If any condition is not met, `exception_context` will be `null`.
+
+### Time Alignment
+
+Exception queries are time-aligned with anomaly detection:
+- Query window: `[anomaly_timestamp - 5min, anomaly_timestamp]`
+- This ensures exception data matches the anomaly detection window
+- Prevents querying "current" exceptions when viewing historical anomalies
+
+---
+
+## Service Graph Context Object
+
+Present when client latency anomalies are detected and SLO evaluation confirms latency is above threshold. Provides a breakdown of downstream service calls from OpenTelemetry service graph metrics to help identify which dependencies are contributing to latency issues.
+
+```json
+{
+  "service_graph_context": {
+    "service_name": "cmhub",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_request_rate": 2.1,
+    "route_count": 5,
+    "unique_servers": ["r2d2", "eai.production.smartbox.com", "database"],
+    "routes": [
+      {
+        "server": "r2d2",
+        "route": "app_broadcastlistener_roomavailabilitylistener",
+        "request_rate": 0.117,
+        "avg_latency_ms": 29.0,
+        "percentage": 5.6
+      },
+      {
+        "server": "eai.production.smartbox.com",
+        "route": null,
+        "request_rate": 0.087,
+        "avg_latency_ms": null,
+        "percentage": 4.1
+      },
+      {
+        "server": "database",
+        "route": "query",
+        "request_rate": 0.050,
+        "avg_latency_ms": 150.0,
+        "percentage": 2.4
+      }
+    ],
+    "top_route": {
+      "server": "r2d2",
+      "route": "app_broadcastlistener_roomavailabilitylistener",
+      "request_rate": 0.117
+    },
+    "slowest_route": {
+      "server": "database",
+      "route": "query",
+      "avg_latency_ms": 150.0
+    },
+    "summary": "Service graph for cmhub (2.10 req/s total):\n  Downstream services: r2d2, eai.production.smartbox.com, database\n  Top routes by traffic:\n    - r2d2/roomavailabilitylistener: 0.117/s (5.6%), 29ms\n    - eai.production.smartbox.com: 0.087/s (4.1%)",
+    "query_successful": true,
+    "error_message": null
+  }
+}
+```
+
+### Service Graph Context Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `service_name` | string | Client service for which downstream calls were queried |
+| `timestamp` | string | ISO8601 timestamp of the query (aligned with anomaly detection) |
+| `total_request_rate` | float | Total requests per second to all downstream services |
+| `route_count` | integer | Number of distinct server/route combinations |
+| `unique_servers` | array | List of unique downstream server names |
+| `routes` | array | All routes sorted by request rate descending |
+| `top_route` | object \| null | Route with highest request rate |
+| `slowest_route` | object \| null | Route with highest average latency |
+| `summary` | string | Human-readable summary of the service graph |
+| `query_successful` | boolean | Whether the service graph query succeeded |
+| `error_message` | string \| null | Error message if query failed |
+
+### Routes Array
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server` | string | Downstream service/server name |
+| `route` | string \| null | HTTP route being called (may be null for external services) |
+| `request_rate` | float | Requests per second to this route |
+| `avg_latency_ms` | float \| null | Average latency in milliseconds (may be null if no latency data) |
+| `percentage` | float | Percentage of total downstream traffic (0-100) |
+
+### When Service Graph Context is Populated
+
+The `service_graph_context` field is populated when ALL of the following conditions are met:
+
+1. **SLO latency breach** - `slo_evaluation.latency_evaluation.status` is NOT `"ok"`
+2. **Client latency elevated** - The service has elevated client_latency metric
+3. **Service graph data exists** - VictoriaMetrics has OpenTelemetry service graph metrics for this service
+
+If any condition is not met, `service_graph_context` will be `null`.
+
+### VictoriaMetrics Queries Used
+
+**Request Rate Query:**
+```promql
+sum(rate(traces_service_graph_request_total{client="<SERVICE>"}[5m]))
+    by (client, server, server_http_route)
+```
+
+**Latency Query:**
+```promql
+sum(rate(traces_service_graph_request_server_seconds_sum{client="<SERVICE>"}[5m]))
+    by (client, server, server_http_route)
+/ sum(rate(traces_service_graph_request_server_seconds_count{client="<SERVICE>"}[5m]))
+    by (client, server, server_http_route)
+```
+
+### Use Cases
+
+1. **Identify slow dependencies** - The `slowest_route` field immediately highlights which downstream service is causing latency
+2. **Traffic distribution** - The `percentage` field shows where most traffic is going
+3. **Root cause analysis** - Compare `top_route` vs `slowest_route` to see if high-traffic routes are also slow
+4. **External vs internal** - Routes without HTTP route data (null) are typically external services
+
+---
+
 ## Fingerprinting Object
 
 Incident tracking and lifecycle information with cycle-based state management:
@@ -409,6 +605,53 @@ Incident tracking and lifecycle information with cycle-based state management:
 | `RESOLVE` | Incident closed after grace period |
 | `MIXED` | Multiple different actions in one cycle |
 | `NO_CHANGE` | No significant changes (e.g., still in grace period) |
+
+### Resolved Incidents Array
+
+The `resolved_incidents` array contains details of incidents closed in this detection cycle. Each item has the following structure:
+
+```json
+{
+  "fingerprint_id": "anomaly_061598e9ca91",
+  "incident_id": "incident_abc123def456",
+  "anomaly_name": "database_degradation",
+  "fingerprint_action": "RESOLVE",
+  "incident_action": "CLOSE",
+  "final_severity": "medium",
+  "resolved_at": "2025-12-17T14:30:00.000000",
+  "total_occurrences": 5,
+  "incident_duration_minutes": 45,
+  "first_seen": "2025-12-17T13:45:00.000000",
+  "service_name": "booking",
+  "last_detected_by_model": "business_hours",
+  "resolution_reason": "resolved"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fingerprint_id` | string | Pattern identifier that was resolved |
+| `incident_id` | string | Unique incident ID being closed |
+| `anomaly_name` | string | Name of the resolved anomaly pattern |
+| `fingerprint_action` | string | Always `"RESOLVE"` for closed incidents |
+| `incident_action` | string | Always `"CLOSE"` for closed incidents |
+| `final_severity` | string | Severity level at time of resolution |
+| `resolved_at` | string | ISO8601 timestamp of resolution |
+| `total_occurrences` | integer | Total times the anomaly was detected |
+| `incident_duration_minutes` | integer | Total duration from first_seen to resolved_at |
+| `first_seen` | string | When the incident was first detected |
+| `service_name` | string | Service name |
+| `last_detected_by_model` | string | Which time-period model last detected it |
+| `resolution_reason` | string | Why closed: `"resolved"` or `"auto_stale"` |
+
+### Resolution Reasons
+
+| Reason | Description |
+|--------|-------------|
+| `resolved` | Normal resolution - anomaly stopped being detected for `resolution_grace_cycles` (default: 3 cycles) |
+| `auto_stale` | Auto-closed because anomaly reappeared after gap > `incident_separation_minutes` (default: 30 min) |
+
+When `auto_stale` occurs, the old incident is closed and a new incident is created in the same detection cycle. Both the resolution and the new anomaly will appear in the same payload.
 
 ---
 
@@ -672,14 +915,14 @@ Present when SLO-aware severity evaluation is enabled (see `slos.enabled` in con
 {
   "slo_evaluation": {
     "original_severity": "high",
-    "adjusted_severity": "medium",
+    "adjusted_severity": "low",
     "severity_changed": true,
-    "slo_status": "elevated",
+    "slo_status": "ok",
     "slo_proximity": 0.45,
     "operational_impact": "informational",
     "is_busy_period": false,
     "latency_evaluation": {
-      "status": "elevated",
+      "status": "ok",
       "proximity": 0.45,
       "value": 225.0,
       "threshold_acceptable": 300,
@@ -695,7 +938,30 @@ Present when SLO-aware severity evaluation is enabled (see `slos.enabled` in con
       "threshold_warning": 0.01,
       "threshold_critical": 0.02
     },
-    "explanation": "Severity adjusted from high to medium based on SLO evaluation. Anomaly detected but metrics within acceptable SLO thresholds (latency: 225ms < 300ms, errors: 0.10% < 0.50%)."
+    "database_latency_evaluation": {
+      "status": "warning",
+      "value_ms": 45.2,
+      "baseline_mean_ms": 15.0,
+      "ratio": 3.01,
+      "floor_ms": 5.0,
+      "thresholds": {
+        "info": 1.5,
+        "warning": 2.0,
+        "high": 3.0,
+        "critical": 5.0
+      },
+      "explanation": "DB latency elevated: 45.2ms is 3.0x baseline (15.0ms)"
+    },
+    "request_rate_evaluation": {
+      "status": "ok",
+      "value": 150.5,
+      "baseline_mean": 145.0,
+      "ratio": 1.04,
+      "surge_threshold": 3.0,
+      "cliff_threshold": 0.1,
+      "explanation": "Request rate within normal range"
+    },
+    "explanation": "Severity adjusted from high to low based on SLO evaluation. Anomaly detected but metrics within acceptable SLO thresholds (latency: 225ms < 300ms, errors: 0.10% < 0.50%)."
   }
 }
 ```
@@ -713,6 +979,8 @@ Present when SLO-aware severity evaluation is enabled (see `slos.enabled` in con
 | `is_busy_period` | boolean | Whether detection occurred during configured busy period |
 | `latency_evaluation` | object | Latency metrics vs SLO thresholds |
 | `error_rate_evaluation` | object | Error rate vs SLO thresholds |
+| `database_latency_evaluation` | object | Database latency ratio evaluation (optional) |
+| `request_rate_evaluation` | object | Request rate surge/cliff evaluation (optional) |
 | `explanation` | string | Human-readable explanation of SLO evaluation |
 
 ### SLO Status Values
@@ -739,12 +1007,60 @@ The SLO layer can adjust severity in these ways:
 
 | Scenario | ML Severity | SLO Status | Adjusted Severity |
 |----------|-------------|------------|-------------------|
-| Anomaly within acceptable limits | high | ok | medium or low |
+| Anomaly within acceptable limits | critical/high/medium | ok | **low** |
 | Anomaly approaching SLO | medium | warning | high |
 | SLO breached (regardless of ML) | any | breached | critical |
 | No anomaly but SLO elevated | none | elevated | low |
 
+**Key principle**: When `slo_status` is `ok` (all metrics within acceptable thresholds), severity is always adjusted to `low` regardless of the original ML-assigned severity. This ensures alerts reflect operational impact, not just statistical deviation.
+
 **Key insight**: ML answers "is this unusual?" while SLO evaluation answers "does it matter operationally?"
+
+### Database Latency Evaluation
+
+The `database_latency_evaluation` object evaluates database latency using ratio-based thresholds against the training baseline.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Status: `ok`, `info`, `warning`, `high`, `critical` |
+| `value_ms` | float | Current database latency in milliseconds |
+| `baseline_mean_ms` | float | Mean database latency from training data |
+| `ratio` | float | Current / baseline ratio |
+| `floor_ms` | float | Minimum latency to consider (noise filter, default: 5ms) |
+| `thresholds` | object | Ratio thresholds for each status level |
+| `explanation` | string | Human-readable explanation |
+
+**Ratio Thresholds (defaults):**
+| Status | Ratio | Meaning |
+|--------|-------|---------|
+| `ok` | < 1.5× | Normal database performance |
+| `info` | ≥ 1.5× | Slightly elevated, monitor |
+| `warning` | ≥ 2.0× | Elevated, investigate |
+| `high` | ≥ 3.0× | Significantly elevated |
+| `critical` | ≥ 5.0× | Critical database performance issue |
+
+**Note:** Values below the floor (default 5ms) are always considered `ok` to filter out noise from low-latency databases.
+
+### Request Rate Evaluation
+
+The `request_rate_evaluation` object detects sudden traffic surges or cliffs.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Status: `ok`, `surge`, `cliff` |
+| `value` | float | Current request rate (req/s) |
+| `baseline_mean` | float | Mean request rate from training |
+| `ratio` | float | Current / baseline ratio |
+| `surge_threshold` | float | Ratio above which is considered a surge (default: 3.0×) |
+| `cliff_threshold` | float | Ratio below which is considered a cliff (default: 0.1×) |
+| `explanation` | string | Human-readable explanation |
+
+**Detection Logic:**
+| Condition | Status | Meaning |
+|-----------|--------|---------|
+| ratio > surge_threshold | `surge` | Traffic surge detected (e.g., 3× normal) |
+| ratio < cliff_threshold | `cliff` | Traffic cliff detected (e.g., 90% drop) |
+| otherwise | `ok` | Normal traffic variation |
 
 ---
 
@@ -867,6 +1183,8 @@ The SLO layer can adjust severity in these ways:
     "request_rate": 0.039
   },
 
+  "exception_context": null,
+
   "fingerprinting": {
     "service_name": "titan",
     "model_name": "business_hours",
@@ -904,6 +1222,250 @@ The SLO layer can adjust severity in these ways:
       "interpretations": true,
       "anomaly_correlation": true
     }
+  }
+}
+```
+
+---
+
+## Complete Example: Error Anomaly with Exception Context
+
+When an error-related anomaly is detected with high severity, the `exception_context` field is populated:
+
+```json
+{
+  "alert_type": "anomaly_detected",
+  "service_name": "search",
+  "timestamp": "2024-01-15T10:30:00",
+  "time_period": "business_hours",
+  "model_name": "business_hours",
+  "model_type": "time_aware_5period",
+
+  "anomalies": {
+    "elevated_errors": {
+      "type": "consolidated",
+      "root_metric": "error_rate",
+      "severity": "high",
+      "confidence": 0.85,
+      "score": -0.45,
+      "signal_count": 2,
+
+      "description": "Error rate elevated above normal threshold (5% vs typical 0.5%)",
+      "interpretation": "Error rate is significantly above the normal range. Exception analysis shows R2D2Exception (62% of errors) is the dominant exception type.",
+      "pattern_name": "elevated_errors",
+
+      "value": 0.05,
+
+      "possible_causes": [
+        "Downstream service failures",
+        "Database connectivity issues",
+        "Application bug in recent deployment"
+      ],
+
+      "recommended_actions": [
+        "INVESTIGATE: Top exception is R2D2Exception (62% of errors)",
+        "CHECK: Application logs for error details",
+        "VERIFY: Recent deployments or configuration changes"
+      ],
+
+      "comparison_data": {
+        "error_rate": {
+          "current": 0.05,
+          "training_mean": 0.005,
+          "training_std": 0.01,
+          "training_p95": 0.02,
+          "deviation_sigma": 4.5,
+          "percentile_estimate": 98.5
+        }
+      }
+    }
+  },
+
+  "anomaly_count": 1,
+  "overall_severity": "high",
+
+  "current_metrics": {
+    "application_latency": 150.5,
+    "client_latency": 45.2,
+    "database_latency": 12.3,
+    "error_rate": 0.05,
+    "request_rate": 150.5
+  },
+
+  "exception_context": {
+    "service_name": "search",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_exception_rate": 0.35,
+    "exception_count": 3,
+    "top_exceptions": [
+      {
+        "type": "Smartbox\\Search\\R2D2\\Exception\\R2D2Exception",
+        "short_name": "R2D2Exception",
+        "rate": 0.217,
+        "percentage": 62.0
+      },
+      {
+        "type": "Smartbox\\Search\\Exception\\UserInputException",
+        "short_name": "UserInputException",
+        "rate": 0.083,
+        "percentage": 23.7
+      },
+      {
+        "type": "Smartbox\\Search\\SearchMiddleware\\Exception\\ClientSideMiddlewareException",
+        "short_name": "ClientSideMiddlewareException",
+        "rate": 0.050,
+        "percentage": 14.3
+      }
+    ],
+    "query_successful": true,
+    "error_message": null
+  },
+
+  "fingerprinting": {
+    "service_name": "search",
+    "model_name": "business_hours",
+    "timestamp": "2024-01-15T10:30:00",
+    "overall_action": "CONFIRMED",
+    "total_active_incidents": 1,
+    "total_alerting_incidents": 1
+  },
+
+  "metadata": {
+    "service_name": "search",
+    "detection_timestamp": "2024-01-15T10:30:00",
+    "enhanced_messaging": true
+  }
+}
+```
+
+---
+
+## Complete Example: Latency Anomaly with Service Graph Context
+
+When a client latency anomaly is detected and SLO evaluation confirms latency breach, the `service_graph_context` field shows downstream service calls:
+
+```json
+{
+  "alert_type": "anomaly_detected",
+  "service_name": "cmhub",
+  "timestamp": "2024-01-15T10:30:00",
+  "time_period": "business_hours",
+  "model_name": "business_hours",
+  "model_type": "time_aware_5period",
+
+  "anomalies": {
+    "client_latency_elevated": {
+      "type": "consolidated",
+      "root_metric": "client_latency",
+      "severity": "high",
+      "confidence": 0.82,
+      "score": -0.42,
+      "signal_count": 2,
+
+      "description": "Client latency elevated above normal threshold (850ms vs typical 200ms)",
+      "interpretation": "Downstream service calls are taking longer than expected. Service graph analysis shows database route has highest latency (150ms avg).",
+      "pattern_name": "external_dependency_slow",
+
+      "value": 850.0,
+
+      "possible_causes": [
+        "Downstream service slowdown",
+        "Network latency to dependencies",
+        "Connection pool exhaustion"
+      ],
+
+      "recommended_actions": [
+        "INVESTIGATE: Slowest downstream route is database/query (150ms)",
+        "CHECK: r2d2 service performance (highest traffic: 0.117/s)",
+        "VERIFY: Network connectivity to downstream services"
+      ]
+    }
+  },
+
+  "anomaly_count": 1,
+  "overall_severity": "high",
+
+  "current_metrics": {
+    "application_latency": 120.5,
+    "client_latency": 850.0,
+    "database_latency": 45.2,
+    "error_rate": 0.001,
+    "request_rate": 25.4
+  },
+
+  "exception_context": null,
+
+  "service_graph_context": {
+    "service_name": "cmhub",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_request_rate": 2.1,
+    "route_count": 3,
+    "unique_servers": ["r2d2", "eai.production.smartbox.com", "database"],
+    "routes": [
+      {
+        "server": "r2d2",
+        "route": "app_broadcastlistener_roomavailabilitylistener",
+        "request_rate": 0.117,
+        "avg_latency_ms": 29.0,
+        "percentage": 5.6
+      },
+      {
+        "server": "eai.production.smartbox.com",
+        "route": null,
+        "request_rate": 0.087,
+        "avg_latency_ms": null,
+        "percentage": 4.1
+      },
+      {
+        "server": "database",
+        "route": "query",
+        "request_rate": 0.050,
+        "avg_latency_ms": 150.0,
+        "percentage": 2.4
+      }
+    ],
+    "top_route": {
+      "server": "r2d2",
+      "route": "app_broadcastlistener_roomavailabilitylistener",
+      "request_rate": 0.117
+    },
+    "slowest_route": {
+      "server": "database",
+      "route": "query",
+      "avg_latency_ms": 150.0
+    },
+    "summary": "Service graph for cmhub (2.10 req/s total):\n  Downstream services: r2d2, eai.production.smartbox.com, database\n  Top routes by traffic:\n    - r2d2/roomavailabilitylistener: 0.117/s (5.6%), 29ms\n    - eai.production.smartbox.com: 0.087/s (4.1%)\n  Slowest route: database/query (150ms)",
+    "query_successful": true,
+    "error_message": null
+  },
+
+  "slo_evaluation": {
+    "original_severity": "high",
+    "adjusted_severity": "high",
+    "severity_changed": false,
+    "slo_status": "warning",
+    "latency_evaluation": {
+      "status": "warning",
+      "value": 850.0,
+      "threshold_acceptable": 300,
+      "threshold_warning": 500,
+      "threshold_critical": 1000
+    }
+  },
+
+  "fingerprinting": {
+    "service_name": "cmhub",
+    "model_name": "business_hours",
+    "timestamp": "2024-01-15T10:30:00",
+    "overall_action": "CONFIRMED",
+    "total_active_incidents": 1,
+    "total_alerting_incidents": 1
+  },
+
+  "metadata": {
+    "service_name": "cmhub",
+    "detection_timestamp": "2024-01-15T10:30:00",
+    "enhanced_messaging": true
   }
 }
 ```

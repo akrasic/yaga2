@@ -1,0 +1,19 @@
+%% Severity Matrix Summary
+%% Shows how SLO status maps to final severity adjustment
+
+flowchart LR
+    subgraph SLOStatus["SLO Status"]
+        BREACH[Breached]
+        WARN[Warning]
+        ELEV[Elevated]
+        OK[OK]
+    end
+
+    subgraph Adjustment["Severity Adjustment"]
+        BREACH --> CRIT[CRITICAL]
+        WARN --> HIGH[HIGH]
+        ELEV --> |with anomaly| MED[MEDIUM]
+        ELEV --> |no anomaly| NONE1[NONE]
+        OK --> |with anomaly| INFO[INFORMATIONAL]
+        OK --> |no anomaly| NONE2[NONE]
+    end

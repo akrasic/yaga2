@@ -613,7 +613,14 @@ SLO-aware severity evaluation adjusts ML-detected severity based on operational 
       "error_rate_warning": 0.01,
       "error_rate_critical": 0.02,
       "min_traffic_rps": 1.0,
-      "busy_period_factor": 1.5
+      "busy_period_factor": 1.5,
+      "database_latency_floor_ms": 5.0,
+      "database_latency_ratios": {
+        "info": 1.5,
+        "warning": 2.0,
+        "high": 3.0,
+        "critical": 5.0
+      }
     },
     "services": {
       "booking": {
@@ -622,7 +629,17 @@ SLO-aware severity evaluation adjusts ML-detected severity based on operational 
         "latency_critical_ms": 500,
         "error_rate_acceptable": 0.002,
         "error_rate_warning": 0.005,
-        "error_rate_critical": 0.01
+        "error_rate_critical": 0.01,
+        "database_latency_floor_ms": 3.0
+      },
+      "search": {
+        "database_latency_floor_ms": 2.0,
+        "database_latency_ratios": {
+          "info": 1.3,
+          "warning": 1.5,
+          "high": 2.0,
+          "critical": 3.0
+        }
       }
     },
     "busy_periods": [
@@ -653,6 +670,42 @@ SLO-aware severity evaluation adjusts ML-detected severity based on operational 
 | `error_rate_critical` | float | 0.02 | Error rate SLO breach (2%) |
 | `min_traffic_rps` | float | 1.0 | Services below this traffic level get relaxed alerting |
 | `busy_period_factor` | float | 1.5 | Multiply thresholds by this during busy periods |
+| `database_latency_floor_ms` | float | 1.0 | Database latency noise floor - below this is always OK |
+| `database_latency_ratios` | object | see below | Ratio-based thresholds relative to training baseline |
+
+**Database Latency Ratio Thresholds:**
+
+| Ratio | Default | Description |
+|-------|---------|-------------|
+| `info` | 1.5 | 1.5x baseline → informational (logged but not alerted) |
+| `warning` | 2.0 | 2x baseline → warning severity |
+| `high` | 3.0 | 3x baseline → high severity |
+| `critical` | 5.0 | 5x baseline → critical severity (SLO breach) |
+
+**Database Latency SLO Evaluation:**
+
+Database latency uses a hybrid approach combining noise floor filtering and ratio-based thresholds:
+
+1. **Noise Floor Filter**: If database latency is below the `database_latency_floor_ms` (default 5ms), it's always considered OK regardless of the ratio. This filters out operationally meaningless sub-millisecond changes (e.g., 0.3ms → 0.4ms).
+
+2. **Ratio-Based Thresholds**: Above the floor, severity is determined by the ratio of current latency to the training baseline mean:
+   - `ratio < info` → OK (within normal variance)
+   - `info ≤ ratio < warning` → Informational
+   - `warning ≤ ratio < high` → Warning
+   - `high ≤ ratio < critical` → High
+   - `ratio ≥ critical` → Critical (SLO breach)
+
+**Example:**
+- Service has training baseline of 10ms for database latency
+- Current database latency is 25ms
+- Ratio = 25 / 10 = 2.5x
+- With default thresholds: 2.5x is between warning (2.0) and high (3.0) → Warning severity
+
+**Per-Service Customization:**
+
+Services with faster or slower databases can have custom thresholds:
+- `search` service: stricter thresholds (2ms floor, 3x = critical) for fast search queries
+- `vms` service: relaxed thresholds (10ms floor) for slower backend operations
 
 **How SLO Evaluation Works:**
 
@@ -660,12 +713,22 @@ The SLO layer runs after ML detection and adjusts severity based on operational 
 
 | | Within Acceptable | Approaching SLO | Breaching SLO |
 |---|---|---|---|
-| **Anomaly Detected** | informational | warning/high | critical |
+| **Anomaly Detected** | low | warning/high | critical |
 | **No Anomaly** | none | warning | critical |
 
-- **Informational**: Statistically anomalous but operationally fine - logged but not alerted
+- **Low**: Statistically anomalous but operationally fine - anomaly detected but all metrics within acceptable SLO thresholds
 - **Actionable**: Approaching SLO limits, should investigate
 - **Critical**: SLO breached, immediate action needed
+
+**Severity Adjustment Examples:**
+
+| Original (ML) | SLO Status | Adjusted | Reason |
+|---------------|------------|----------|--------|
+| critical | ok | low | Anomaly detected but metrics within acceptable thresholds |
+| high | ok | low | Same - SLO ok means operationally acceptable |
+| medium | ok | low | Same |
+| critical | warning | high | Approaching SLO breach |
+| any | breached | critical | SLO breached - immediate action needed |
 
 **Busy Periods:**
 

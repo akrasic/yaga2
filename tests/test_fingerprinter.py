@@ -244,6 +244,89 @@ class TestFactoryFunction:
             assert fp.db_path == f.name
 
 
+class TestStaleIncidentResolution:
+    """Tests for stale incident auto-resolution."""
+
+    @pytest.fixture
+    def temp_db(self) -> str:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            return f.name
+
+    @pytest.fixture
+    def fingerprinter(self, temp_db: str) -> AnomalyFingerprinter:
+        from smartbox_anomaly.core.config import FingerprintingConfig
+
+        # Use a short separation time for testing
+        config = FingerprintingConfig(
+            db_path=temp_db,
+            incident_separation_minutes=1,  # 1 minute for easy testing
+            confirmation_cycles=2,
+            resolution_grace_cycles=3,
+        )
+        return AnomalyFingerprinter(db_path=temp_db, config=config)
+
+    def test_stale_incident_returns_resolution(self, fingerprinter: AnomalyFingerprinter):
+        """Test that stale incidents are included in resolved_incidents."""
+        from datetime import datetime, timedelta
+
+        anomaly_data = {"anomalies": [{"type": "threshold", "severity": "high"}]}
+
+        # T0: Create and confirm incident
+        t0 = datetime.now()
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t0)
+        result1 = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t0)
+        incident_id = result1["anomalies"][0]["incident_id"]
+        assert result1["anomalies"][0]["status"] == "OPEN"
+
+        # T0 + 2 minutes: Same anomaly reappears after gap > incident_separation_minutes (1 min)
+        # This should trigger stale closure + new incident creation
+        t1 = t0 + timedelta(minutes=2)
+        result2 = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t1)
+
+        # The stale incident should be in resolved_incidents
+        resolved = result2["fingerprinting"]["resolved_incidents"]
+        assert len(resolved) == 1
+        assert resolved[0]["incident_id"] == incident_id
+        assert resolved[0]["resolution_reason"] == "auto_stale"
+        assert resolved[0]["incident_action"] == IncidentAction.CLOSE.value
+
+        # A new incident should have been created
+        new_incident_id = result2["anomalies"][0]["incident_id"]
+        assert new_incident_id != incident_id
+        assert result2["anomalies"][0]["incident_action"] == IncidentAction.CREATE.value
+
+    def test_stale_resolution_includes_required_fields(self, fingerprinter: AnomalyFingerprinter):
+        """Test that stale resolution has all fields needed for API notification."""
+        from datetime import datetime, timedelta
+
+        anomaly_data = {"anomalies": [{"type": "threshold", "severity": "high"}]}
+
+        # Create and confirm incident
+        t0 = datetime.now()
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t0)
+        fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t0)
+
+        # Trigger stale closure
+        t1 = t0 + timedelta(minutes=2)
+        result = fingerprinter.process_anomalies("booking_evening_hours", anomaly_data, timestamp=t1)
+
+        resolved = result["fingerprinting"]["resolved_incidents"][0]
+
+        # All required fields for API notification
+        assert "fingerprint_id" in resolved
+        assert "incident_id" in resolved
+        assert "anomaly_name" in resolved
+        assert "fingerprint_action" in resolved
+        assert "incident_action" in resolved
+        assert "final_severity" in resolved
+        assert "resolved_at" in resolved
+        assert "total_occurrences" in resolved
+        assert "incident_duration_minutes" in resolved
+        assert "first_seen" in resolved
+        assert "service_name" in resolved
+        assert "resolution_reason" in resolved
+
+
 class TestCrossModelTracking:
     """Tests for cross-model anomaly tracking."""
 

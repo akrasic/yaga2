@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Schema Version - Increment when breaking changes are made
 # =============================================================================
 
-API_SCHEMA_VERSION = "1.0.0"
+API_SCHEMA_VERSION = "1.2.0"  # Added service_graph_context, database_latency_evaluation, request_rate_evaluation
 
 
 # =============================================================================
@@ -405,6 +405,16 @@ class AnomalyDetectedPayload(BaseModel):
     # Performance info
     performance_info: dict[str, Any] | None = Field(
         None, description="Model loading and performance metadata"
+    )
+
+    # Exception context for error-related anomalies
+    exception_context: dict[str, Any] | None = Field(
+        None, description="Exception breakdown when error-related anomalies detected"
+    )
+
+    # Service graph context for latency-related anomalies
+    service_graph_context: dict[str, Any] | None = Field(
+        None, description="Downstream service call breakdown when latency anomalies detected"
     )
 
     # Metadata about detection

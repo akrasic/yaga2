@@ -410,3 +410,428 @@ class TestDetectionIntegration:
 
         assert "anomalies" in result
         # Zero values shouldn't trigger anomalies for zero-normal metrics
+
+
+class TestPatternMatching:
+    """Tests for pattern matching and level assignment."""
+
+    @pytest.fixture
+    def trained_detector(self) -> SmartboxAnomalyDetector:
+        """Create a trained detector for pattern matching tests."""
+        np.random.seed(42)
+        n_samples = 500
+
+        data = pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        })
+
+        detector = create_detector("test-service")
+        detector.train(data)
+        return detector
+
+    def test_pattern_matches_valid_conditions(self, trained_detector):
+        """Test that valid conditions are properly matched."""
+        # Test the _pattern_matches method with valid conditions
+        metric_levels = {
+            "request_rate": "high",
+            "application_latency": "normal",
+            "error_rate": "normal",
+        }
+        ratios = {}
+
+        # Should match when all conditions are satisfied
+        conditions = {
+            "request_rate": "high",
+            "application_latency": "normal",
+            "error_rate": "normal",
+        }
+        assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is True
+
+        # Should not match when a condition is not satisfied
+        conditions = {
+            "request_rate": "low",  # Doesn't match
+            "application_latency": "normal",
+        }
+        assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is False
+
+    def test_pattern_matches_unknown_condition_fails_closed(self, trained_detector):
+        """Test that unknown conditions cause pattern to NOT match (fail-closed)."""
+        metric_levels = {
+            "request_rate": "normal",
+            "application_latency": "low",
+            "error_rate": "normal",
+        }
+        ratios = {}
+
+        # Unknown condition "unknown_level" should cause no match
+        conditions = {
+            "application_latency": "low",
+            "error_rate": "unknown_level",  # Invalid condition
+        }
+        assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is False
+
+    def test_pattern_matches_elevated_and_moderate_conditions(self, trained_detector):
+        """Test that elevated and moderate conditions work correctly."""
+        ratios = {}
+
+        # Test elevated matches elevated, high, very_high
+        for level in ["elevated", "high", "very_high"]:
+            metric_levels = {"application_latency": level}
+            conditions = {"application_latency": "elevated"}
+            assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is True
+
+        # Test elevated does NOT match normal or low
+        for level in ["normal", "low", "very_low"]:
+            metric_levels = {"application_latency": level}
+            conditions = {"application_latency": "elevated"}
+            assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is False
+
+        # Test moderate matches moderate, elevated, high
+        for level in ["moderate", "elevated", "high"]:
+            metric_levels = {"error_rate": level}
+            conditions = {"error_rate": "moderate"}
+            assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is True
+
+        # Test moderate does NOT match normal
+        metric_levels = {"error_rate": "normal"}
+        conditions = {"error_rate": "moderate"}
+        assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is False
+
+    def test_pattern_matches_any_condition(self, trained_detector):
+        """Test that 'any' condition always matches."""
+        ratios = {}
+
+        for level in ["very_high", "high", "normal", "low", "very_low"]:
+            metric_levels = {"request_rate": level}
+            conditions = {"request_rate": "any"}
+            assert trained_detector._pattern_matches(metric_levels, ratios, conditions) is True
+
+
+class TestSignalsToLevels:
+    """Tests for the _signals_to_levels method."""
+
+    @pytest.fixture
+    def trained_detector(self) -> SmartboxAnomalyDetector:
+        """Create a trained detector."""
+        np.random.seed(42)
+        n_samples = 500
+
+        data = pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        })
+
+        detector = create_detector("test-service")
+        detector.train(data)
+        return detector
+
+    def test_signals_to_levels_percentile_thresholds(self, trained_detector):
+        """Test that percentile thresholds map to correct levels."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+
+        # Test very_high (percentile > 95)
+        signals = [AnomalySignal(
+            metric_name="request_rate",
+            score=-0.5,
+            direction="high",
+            value=1000,
+            percentile=97.0,
+            deviation_sigma=3.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["request_rate"] == "very_high"
+
+        # Test high (percentile 90-95)
+        signals = [AnomalySignal(
+            metric_name="request_rate",
+            score=-0.3,
+            direction="high",
+            value=800,
+            percentile=92.0,
+            deviation_sigma=2.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["request_rate"] == "high"
+
+        # Test elevated (percentile 80-90)
+        signals = [AnomalySignal(
+            metric_name="request_rate",
+            score=-0.2,
+            direction="high",
+            value=600,
+            percentile=85.0,
+            deviation_sigma=1.5,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["request_rate"] == "elevated"
+
+        # Test moderate (percentile 70-80)
+        signals = [AnomalySignal(
+            metric_name="request_rate",
+            score=-0.1,
+            direction="high",
+            value=550,
+            percentile=75.0,
+            deviation_sigma=1.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["request_rate"] == "moderate"
+
+    def test_signals_to_levels_lower_is_better_metrics(self, trained_detector):
+        """Test that lower_is_better metrics treat low values as normal."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+
+        # database_latency is lower_is_better - low should become normal
+        signals = [AnomalySignal(
+            metric_name="database_latency",
+            score=-0.2,
+            direction="low",  # Low direction
+            value=2.0,
+            percentile=8.0,
+            deviation_sigma=-2.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["database_latency"] == "normal"  # Not "low"
+
+        # client_latency is lower_is_better - low should become normal
+        signals = [AnomalySignal(
+            metric_name="client_latency",
+            score=-0.2,
+            direction="low",
+            value=5.0,
+            percentile=5.0,
+            deviation_sigma=-2.5,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["client_latency"] == "normal"
+
+        # error_rate is lower_is_better - low should become normal
+        signals = [AnomalySignal(
+            metric_name="error_rate",
+            score=-0.1,
+            direction="low",
+            value=0.0,
+            percentile=2.0,
+            deviation_sigma=-1.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["error_rate"] == "normal"
+
+    def test_signals_to_levels_application_latency_not_lower_is_better(self, trained_detector):
+        """Test that application_latency is NOT in lower_is_better (can trigger fast-fail)."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+
+        # application_latency low should remain low (not converted to normal)
+        signals = [AnomalySignal(
+            metric_name="application_latency",
+            score=-0.2,
+            direction="low",
+            value=10.0,
+            percentile=8.0,
+            deviation_sigma=-2.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+        assert levels["application_latency"] == "low"  # Should stay low, not normal
+
+    def test_signals_to_levels_no_signal_is_normal(self, trained_detector):
+        """Test that metrics without signals are marked as normal."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+
+        # Only request_rate has a signal
+        signals = [AnomalySignal(
+            metric_name="request_rate",
+            score=-0.3,
+            direction="high",
+            value=500,
+            percentile=92.0,
+            deviation_sigma=2.0,
+        )]
+        levels = trained_detector._signals_to_levels(signals, {})
+
+        assert levels["request_rate"] == "high"
+        # All other core metrics should be normal
+        assert levels.get("application_latency") == "normal"
+        assert levels.get("error_rate") == "normal"
+        assert levels.get("database_latency") == "normal"
+        assert levels.get("client_latency") == "normal"
+
+
+class TestLowerIsBetterMetrics:
+    """Tests for lower_is_better_metrics constant."""
+
+    def test_lower_is_better_metrics_defined(self):
+        """Test that lower_is_better_metrics returns expected metrics."""
+        lower_is_better = MetricName.lower_is_better_metrics()
+
+        assert MetricName.DATABASE_LATENCY in lower_is_better
+        assert MetricName.CLIENT_LATENCY in lower_is_better
+        assert MetricName.ERROR_RATE in lower_is_better
+
+        # application_latency should NOT be in lower_is_better
+        assert MetricName.APPLICATION_LATENCY not in lower_is_better
+
+        # request_rate should NOT be in lower_is_better
+        assert MetricName.REQUEST_RATE not in lower_is_better
+
+
+class TestImprovementSignalFiltering:
+    """Tests for filtering improvement signals (lower_is_better with direction=low)."""
+
+    @pytest.fixture
+    def trained_detector(self) -> SmartboxAnomalyDetector:
+        """Create a trained detector for testing _interpret_signals."""
+        np.random.seed(42)
+        n_samples = 500
+
+        data = pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(30, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        })
+
+        detector = create_detector("test-service")
+        detector.train(data)
+        return detector
+
+    def test_client_latency_improvement_produces_no_anomaly(self, trained_detector):
+        """Test that improved client latency (below mean) produces no anomaly."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        # Simulate only client_latency being low (an improvement)
+        signals = [AnomalySignal(
+            metric_name="client_latency",
+            score=-0.3,
+            direction="low",
+            value=20.0,  # Below mean of ~50ms
+            percentile=10.0,
+            deviation_sigma=-2.0,
+        )]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {"client_latency": 20.0, "application_latency": 100.0},
+            datetime.now()
+        )
+
+        # Should return empty dict - no anomaly to report
+        assert result == {}
+
+    def test_database_latency_improvement_produces_no_anomaly(self, trained_detector):
+        """Test that improved database latency produces no anomaly."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="database_latency",
+            score=-0.25,
+            direction="low",
+            value=1.0,  # Below mean
+            percentile=5.0,
+            deviation_sigma=-2.5,
+        )]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {"database_latency": 1.0, "application_latency": 100.0},
+            datetime.now()
+        )
+
+        assert result == {}
+
+    def test_mixed_signals_filters_improvements_keeps_degradations(self, trained_detector):
+        """Test that mixed signals filter improvements but keep degradations."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        # Mix of improvement (client_latency low) and degradation (application_latency high)
+        signals = [
+            AnomalySignal(
+                metric_name="client_latency",
+                score=-0.2,
+                direction="low",
+                value=15.0,
+                percentile=8.0,
+                deviation_sigma=-2.0,
+            ),
+            AnomalySignal(
+                metric_name="application_latency",
+                score=-0.4,
+                direction="high",
+                value=500.0,
+                percentile=95.0,
+                deviation_sigma=3.0,
+            ),
+        ]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {
+                "client_latency": 15.0,
+                "application_latency": 500.0,
+                "request_rate": 100.0,
+                "error_rate": 0.01,
+                "database_latency": 5.0,
+            },
+            datetime.now()
+        )
+
+        # Should produce an anomaly based on the high application_latency
+        assert result != {}
+        # Check that some anomaly was created
+        assert len(result) > 0
+
+    def test_error_rate_improvement_produces_no_anomaly(self, trained_detector):
+        """Test that improved error rate (below mean) produces no anomaly."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="error_rate",
+            score=-0.15,
+            direction="low",
+            value=0.0,  # Zero errors
+            percentile=2.0,
+            deviation_sigma=-1.5,
+        )]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {"error_rate": 0.0, "application_latency": 100.0},
+            datetime.now()
+        )
+
+        assert result == {}
+
+    def test_application_latency_low_still_produces_anomaly(self, trained_detector):
+        """Test that low application_latency still produces anomaly (fast-fail detection)."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        # application_latency is NOT in lower_is_better (can indicate fast-fail)
+        signals = [AnomalySignal(
+            metric_name="application_latency",
+            score=-0.3,
+            direction="low",
+            value=5.0,  # Very fast - might indicate fast-fail
+            percentile=3.0,
+            deviation_sigma=-2.5,
+        )]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {"application_latency": 5.0, "error_rate": 0.05},
+            datetime.now()
+        )
+
+        # Should produce an anomaly (not filtered out)
+        assert result != {}

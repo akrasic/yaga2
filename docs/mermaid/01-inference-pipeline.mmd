@@ -1,0 +1,49 @@
+%% High-Level Inference Pipeline
+%% Shows data flow from VictoriaMetrics through ML models to final output
+
+flowchart TB
+    subgraph DataIngestion["Data Ingestion"]
+        VM[(VictoriaMetrics)]
+        VM -->|PromQL queries| Metrics[InferenceMetrics]
+    end
+
+    subgraph MetricsCollected["Collected Metrics"]
+        M1[request_rate]
+        M2[application_latency]
+        M3[error_rate]
+        M4[database_latency]
+    end
+
+    subgraph InferenceEngine["Inference Engine"]
+        TP{Time Period Detection}
+        TP -->|business_hours| BH[Business Hours Model]
+        TP -->|evening_hours| EH[Evening Hours Model]
+        TP -->|night_hours| NH[Night Hours Model]
+        TP -->|weekend_day| WD[Weekend Day Model]
+        TP -->|weekend_night| WN[Weekend Night Model]
+
+        BH & EH & NH & WD & WN --> IF[Isolation Forest]
+        IF --> Score[Anomaly Score + ML Severity]
+    end
+
+    subgraph SLOEvaluation["SLO Evaluation Layer"]
+        LE[Latency Eval]
+        EE[Error Rate Eval]
+        DE[DB Latency Eval]
+        RE[Request Rate Eval]
+
+        LE & EE & DE --> Status[Combined SLO Status]
+        RE --> Traffic[Traffic Context]
+        Status & Traffic --> Adjust[Severity Adjustment]
+    end
+
+    subgraph Output["Final Output"]
+        Result[Evaluated Result]
+        Result --> FP[Fingerprinter]
+        FP --> API[Observability API]
+    end
+
+    DataIngestion --> MetricsCollected
+    MetricsCollected --> InferenceEngine
+    InferenceEngine --> SLOEvaluation
+    SLOEvaluation --> Output

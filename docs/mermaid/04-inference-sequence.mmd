@@ -1,0 +1,35 @@
+%% Inference Sequence Diagram
+%% Shows the sequence of operations during a typical inference run
+
+sequenceDiagram
+    participant Cron
+    participant Runner as InferenceRunner
+    participant VM as VictoriaMetrics
+    participant Detector as TimeAwareDetector
+    participant SLO as SLOEvaluator
+    participant FP as Fingerprinter
+    participant API as ObservabilityAPI
+
+    Cron->>Runner: trigger
+
+    loop Each Service
+        Runner->>VM: fetch metrics
+        VM-->>Runner: InferenceMetrics
+
+        Runner->>Detector: detect(metrics)
+        Detector-->>Runner: anomalies + baselines
+
+        Runner->>SLO: evaluate(result)
+        Note over SLO: Evaluate latency
+        Note over SLO: Evaluate errors
+        Note over SLO: Evaluate DB latency
+        Note over SLO: Evaluate request rate
+        Note over SLO: Adjust severity
+        SLO-->>Runner: evaluated result
+
+        Runner->>FP: process(result)
+        FP-->>Runner: with incident tracking
+    end
+
+    Runner->>API: POST anomalies
+    API-->>Runner: 200 OK

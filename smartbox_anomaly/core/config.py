@@ -258,6 +258,123 @@ class FingerprintingConfig:
 
 
 @dataclass(frozen=True)
+class DatabaseLatencyRatios:
+    """Ratio thresholds for database latency evaluation relative to baseline."""
+
+    info: float = 1.5       # 1.5x baseline = informational
+    warning: float = 2.0    # 2x baseline = warning
+    high: float = 3.0       # 3x baseline = high
+    critical: float = 5.0   # 5x baseline = critical
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DatabaseLatencyRatios:
+        """Create from config dict."""
+        return cls(
+            info=data.get("info", 1.5),
+            warning=data.get("warning", 2.0),
+            high=data.get("high", 3.0),
+            critical=data.get("critical", 5.0),
+        )
+
+
+@dataclass(frozen=True)
+class RequestRateSurgeConfig:
+    """Configuration for traffic surge evaluation."""
+
+    threshold_percent: float = 200.0  # 200% of baseline = surge
+    standalone_severity: str = "informational"  # Surge alone is just info
+    with_latency_breach_severity: str = "warning"  # Surge + latency issue
+    with_error_breach_severity: str = "high"  # Surge + errors
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RequestRateSurgeConfig:
+        """Create from config dict."""
+        return cls(
+            threshold_percent=data.get("threshold_percent", 200.0),
+            standalone_severity=data.get("standalone_severity", "informational"),
+            with_latency_breach_severity=data.get("with_latency_breach_severity", "warning"),
+            with_error_breach_severity=data.get("with_error_breach_severity", "high"),
+        )
+
+
+@dataclass(frozen=True)
+class RequestRateCliffConfig:
+    """Configuration for traffic cliff evaluation."""
+
+    threshold_percent: float = 50.0  # Below 50% of baseline = cliff
+    standalone_severity: str = "warning"  # Cliff alone is warning
+    peak_hours_severity: str = "high"  # Cliff during peak hours
+    with_upstream_errors_severity: str = "critical"  # Cliff + upstream errors
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RequestRateCliffConfig:
+        """Create from config dict."""
+        return cls(
+            threshold_percent=data.get("threshold_percent", 50.0),
+            standalone_severity=data.get("standalone_severity", "warning"),
+            peak_hours_severity=data.get("peak_hours_severity", "high"),
+            with_upstream_errors_severity=data.get("with_upstream_errors_severity", "critical"),
+        )
+
+
+@dataclass(frozen=True)
+class MinExpectedRpsConfig:
+    """Minimum expected traffic by time period."""
+
+    business_hours: float = 5.0
+    evening_hours: float = 2.0
+    night_hours: float = 0.5
+    weekend_day: float = 2.0
+    weekend_night: float = 0.2
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MinExpectedRpsConfig:
+        """Create from config dict."""
+        return cls(
+            business_hours=data.get("business_hours", 5.0),
+            evening_hours=data.get("evening_hours", 2.0),
+            night_hours=data.get("night_hours", 0.5),
+            weekend_day=data.get("weekend_day", 2.0),
+            weekend_night=data.get("weekend_night", 0.2),
+        )
+
+    def get_min_for_period(self, time_period: str) -> float:
+        """Get minimum expected RPS for a time period."""
+        period_map = {
+            "business_hours": self.business_hours,
+            "evening_hours": self.evening_hours,
+            "night_hours": self.night_hours,
+            "weekend_day": self.weekend_day,
+            "weekend_night": self.weekend_night,
+        }
+        return period_map.get(time_period, self.business_hours)
+
+
+@dataclass(frozen=True)
+class RequestRateEvaluationConfig:
+    """Configuration for request rate (traffic) evaluation."""
+
+    enabled: bool = True
+    surge: RequestRateSurgeConfig = field(default_factory=RequestRateSurgeConfig)
+    cliff: RequestRateCliffConfig = field(default_factory=RequestRateCliffConfig)
+    min_expected_rps: MinExpectedRpsConfig = field(default_factory=MinExpectedRpsConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RequestRateEvaluationConfig:
+        """Create from config dict."""
+        surge_data = data.get("surge", {})
+        cliff_data = data.get("cliff", {})
+        min_rps_data = data.get("min_expected_rps", {})
+
+        return cls(
+            enabled=data.get("enabled", True),
+            surge=RequestRateSurgeConfig.from_dict(surge_data),
+            cliff=RequestRateCliffConfig.from_dict(cliff_data),
+            min_expected_rps=MinExpectedRpsConfig.from_dict(min_rps_data),
+        )
+
+
+@dataclass(frozen=True)
 class ServiceSLOConfig:
     """SLO thresholds for a single service."""
 
@@ -276,6 +393,17 @@ class ServiceSLOConfig:
 
     # Busy period relaxation factor (multiply thresholds by this during busy periods)
     busy_period_factor: float = 1.5
+
+    # Database latency evaluation (ratio-based from baseline)
+    database_latency_floor_ms: float = 1.0  # Below this, always OK regardless of ratio
+    database_latency_ratios: DatabaseLatencyRatios = field(
+        default_factory=DatabaseLatencyRatios
+    )
+
+    # Request rate evaluation (surge/cliff with correlation-based severity)
+    request_rate_evaluation: RequestRateEvaluationConfig = field(
+        default_factory=RequestRateEvaluationConfig
+    )
 
 
 @dataclass
@@ -328,6 +456,12 @@ class SLOConfig:
 
         # Parse default thresholds
         defaults_dict = slo_config.get("defaults", {})
+        default_db_ratios = DatabaseLatencyRatios.from_dict(
+            defaults_dict.get("database_latency_ratios", {})
+        )
+        default_request_rate = RequestRateEvaluationConfig.from_dict(
+            defaults_dict.get("request_rate_evaluation", {})
+        )
         defaults = ServiceSLOConfig(
             latency_acceptable_ms=defaults_dict.get("latency_acceptable_ms", 500.0),
             latency_warning_ms=defaults_dict.get("latency_warning_ms", 800.0),
@@ -337,11 +471,46 @@ class SLOConfig:
             error_rate_critical=defaults_dict.get("error_rate_critical", 0.02),
             min_traffic_rps=defaults_dict.get("min_traffic_rps", 1.0),
             busy_period_factor=defaults_dict.get("busy_period_factor", 1.5),
+            database_latency_floor_ms=defaults_dict.get("database_latency_floor_ms", 1.0),
+            database_latency_ratios=default_db_ratios,
+            request_rate_evaluation=default_request_rate,
         )
 
         # Parse service-specific SLOs
         service_slos = {}
         for service_name, svc_config in slo_config.get("services", {}).items():
+            # Parse database latency ratios for this service (fall back to defaults)
+            svc_db_ratios_dict = svc_config.get("database_latency_ratios")
+            if svc_db_ratios_dict:
+                svc_db_ratios = DatabaseLatencyRatios.from_dict(svc_db_ratios_dict)
+            else:
+                svc_db_ratios = defaults.database_latency_ratios
+
+            # Parse request rate evaluation for this service (merge with defaults)
+            svc_request_rate_dict = svc_config.get("request_rate_evaluation")
+            if svc_request_rate_dict:
+                # Merge service config with defaults for partial overrides
+                merged_surge = {**defaults.request_rate_evaluation.surge.__dict__}
+                if "surge" in svc_request_rate_dict:
+                    merged_surge.update(svc_request_rate_dict["surge"])
+
+                merged_cliff = {**defaults.request_rate_evaluation.cliff.__dict__}
+                if "cliff" in svc_request_rate_dict:
+                    merged_cliff.update(svc_request_rate_dict["cliff"])
+
+                merged_min_rps = {**defaults.request_rate_evaluation.min_expected_rps.__dict__}
+                if "min_expected_rps" in svc_request_rate_dict:
+                    merged_min_rps.update(svc_request_rate_dict["min_expected_rps"])
+
+                svc_request_rate = RequestRateEvaluationConfig(
+                    enabled=svc_request_rate_dict.get("enabled", defaults.request_rate_evaluation.enabled),
+                    surge=RequestRateSurgeConfig.from_dict(merged_surge),
+                    cliff=RequestRateCliffConfig.from_dict(merged_cliff),
+                    min_expected_rps=MinExpectedRpsConfig.from_dict(merged_min_rps),
+                )
+            else:
+                svc_request_rate = defaults.request_rate_evaluation
+
             service_slos[service_name] = ServiceSLOConfig(
                 latency_acceptable_ms=svc_config.get("latency_acceptable_ms", defaults.latency_acceptable_ms),
                 latency_warning_ms=svc_config.get("latency_warning_ms", defaults.latency_warning_ms),
@@ -351,6 +520,11 @@ class SLOConfig:
                 error_rate_critical=svc_config.get("error_rate_critical", defaults.error_rate_critical),
                 min_traffic_rps=svc_config.get("min_traffic_rps", defaults.min_traffic_rps),
                 busy_period_factor=svc_config.get("busy_period_factor", defaults.busy_period_factor),
+                database_latency_floor_ms=svc_config.get(
+                    "database_latency_floor_ms", defaults.database_latency_floor_ms
+                ),
+                database_latency_ratios=svc_db_ratios,
+                request_rate_evaluation=svc_request_rate,
             )
 
         return cls(

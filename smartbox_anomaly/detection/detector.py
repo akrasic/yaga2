@@ -603,6 +603,33 @@ class SmartboxAnomalyDetector:
         Returns:
             Single interpreted anomaly dict, or unknown anomaly if no pattern matches
         """
+        # Filter out "improvement" signals - lower_is_better metrics with direction="low"
+        # These represent performance improvements, not problems to alert on
+        lower_is_better = MetricName.lower_is_better_metrics()
+        actionable_signals = [
+            s for s in signals
+            if not (s.metric_name in lower_is_better and s.direction == "low")
+        ]
+
+        # If all signals were improvements, return empty (no anomaly to report)
+        if not actionable_signals:
+            logger.debug(
+                f"All {len(signals)} signal(s) represent improvements (lower_is_better with low direction), "
+                "no anomaly to report"
+            )
+            return {}
+
+        # Log if we filtered out any improvement signals
+        filtered_count = len(signals) - len(actionable_signals)
+        if filtered_count > 0:
+            filtered_metrics = [s.metric_name for s in signals if s not in actionable_signals]
+            logger.debug(
+                f"Filtered {filtered_count} improvement signal(s) for {filtered_metrics}"
+            )
+
+        # Use filtered signals for pattern matching
+        signals = actionable_signals
+
         # Convert IF signals to metric levels for pattern matching
         metric_levels = self._signals_to_levels(signals, metrics)
 
@@ -636,28 +663,46 @@ class SmartboxAnomalyDetector:
 
         IF signals tell us WHICH metrics are anomalous.
         Levels tell us HOW they're anomalous (high/low/normal).
+
+        Applies semantic interpretation:
+        - "Lower is better" metrics (database_latency, client_latency, error_rate):
+          Low values are treated as "normal" since they represent improvements.
         """
         levels: dict[str, str] = {}
 
-        # Build set of signaled metrics for quick lookup
-        signaled_metrics = {s.metric_name for s in signals}
+        # Metrics where lower values are desirable (not anomalous)
+        lower_is_better = MetricName.lower_is_better_metrics()
 
         # Metrics with IF signals get their level from signal
+        # Level thresholds (percentile-based):
+        #   > 95: very_high, 90-95: high, 80-90: elevated, 70-80: moderate
+        #   < 5: very_low, 5-10: low
+        #   10-70: uses direction as fallback
         for signal in signals:
+            metric = signal.metric_name
+
+            # For "lower is better" metrics, low values are improvements, not concerns
+            if metric in lower_is_better and signal.direction == "low":
+                levels[metric] = "normal"
+                continue
+
             if signal.direction == "activated":
-                levels[signal.metric_name] = "high"  # Treat activation as high
+                levels[metric] = "high"  # Treat activation as high
             elif signal.percentile > 95:
-                levels[signal.metric_name] = "very_high"
+                levels[metric] = "very_high"
             elif signal.percentile > 90:
-                levels[signal.metric_name] = "high"
+                levels[metric] = "high"
+            elif signal.percentile > 80:
+                levels[metric] = "elevated"
+            elif signal.percentile > 70:
+                levels[metric] = "moderate"
             elif signal.percentile < 5:
-                levels[signal.metric_name] = "very_low"
+                levels[metric] = "very_low"
             elif signal.percentile < 10:
-                levels[signal.metric_name] = "low"
+                levels[metric] = "low"
             else:
-                # Edge case: IF flagged it but percentile is mid-range
-                # Use direction to determine
-                levels[signal.metric_name] = signal.direction
+                # Mid-range percentile (10-70): use direction as fallback
+                levels[metric] = signal.direction
 
         # Metrics WITHOUT IF signals are "normal"
         for metric in self.CORE_METRICS:
@@ -1883,7 +1928,23 @@ class SmartboxAnomalyDetector:
             # Handle level conditions
             level = metric_levels.get(metric, "unknown")
 
-            if (condition == "high" and level not in ("high", "very_high")) or (condition == "very_high" and level != "very_high") or (condition == "low" and level not in ("low", "very_low")) or (condition == "very_low" and level != "very_low") or (condition == "normal" and level != "normal"):
+            # Valid level conditions and their acceptable levels
+            valid_conditions = {
+                "very_high": ("very_high",),
+                "high": ("high", "very_high"),
+                "elevated": ("elevated", "high", "very_high"),
+                "moderate": ("moderate", "elevated", "high"),
+                "normal": ("normal",),
+                "low": ("low", "very_low"),
+                "very_low": ("very_low",),
+            }
+
+            if condition in valid_conditions:
+                if level not in valid_conditions[condition]:
+                    return False
+            else:
+                # Unknown condition - fail closed for safety
+                # This prevents silent pattern matches on unimplemented conditions
                 return False
 
         return True

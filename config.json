@@ -351,17 +351,64 @@
       "error_rate_warning": 0.01,
       "error_rate_critical": 0.02,
       "min_traffic_rps": 1.0,
-      "busy_period_factor": 1.5
+      "busy_period_factor": 1.5,
+      "_comment_db_latency": "Database latency evaluation - uses ratio from baseline (training mean)",
+      "database_latency_floor_ms": 1.0,
+      "database_latency_ratios": {
+        "_comment": "Multipliers of baseline: 1.5x=info, 2x=warning, 3x=high, 5x=critical",
+        "info": 1.5,
+        "warning": 2.0,
+        "high": 3.0,
+        "critical": 5.0
+      },
+      "_comment_request_rate": "Request rate evaluation - surges vs cliffs with correlation-based severity",
+      "request_rate_evaluation": {
+        "enabled": true,
+        "_comment_surge": "Traffic surge: informational unless causing other SLO breaches",
+        "surge": {
+          "threshold_percent": 200,
+          "standalone_severity": "informational",
+          "with_latency_breach_severity": "warning",
+          "with_error_breach_severity": "high"
+        },
+        "_comment_cliff": "Traffic cliff: warning by default - often indicates real problems",
+        "cliff": {
+          "threshold_percent": 50,
+          "standalone_severity": "warning",
+          "peak_hours_severity": "high",
+          "with_upstream_errors_severity": "critical"
+        },
+        "_comment_min_expected": "Minimum expected traffic by time period (rps)",
+        "min_expected_rps": {
+          "business_hours": 5.0,
+          "evening_hours": 2.0,
+          "night_hours": 0.5,
+          "weekend_day": 2.0,
+          "weekend_night": 0.2
+        }
+      }
     },
     "services": {
       "booking": {
-        "_comment": "Critical booking service - stricter latency SLOs",
+        "_comment": "Critical booking service - stricter thresholds",
         "latency_acceptable_ms": 300,
         "latency_warning_ms": 400,
         "latency_critical_ms": 500,
         "error_rate_acceptable": 0.002,
         "error_rate_warning": 0.005,
-        "error_rate_critical": 0.01
+        "error_rate_critical": 0.01,
+        "database_latency_floor_ms": 0.5,
+        "request_rate_evaluation": {
+          "cliff": {
+            "standalone_severity": "high",
+            "peak_hours_severity": "critical"
+          },
+          "min_expected_rps": {
+            "business_hours": 20.0,
+            "evening_hours": 10.0,
+            "night_hours": 2.0
+          }
+        }
       },
       "search": {
         "_comment": "Search must be fast",
@@ -370,7 +417,14 @@
         "latency_critical_ms": 500,
         "error_rate_acceptable": 0.005,
         "error_rate_warning": 0.01,
-        "error_rate_critical": 0.02
+        "error_rate_critical": 0.02,
+        "database_latency_floor_ms": 0.3,
+        "database_latency_ratios": {
+          "info": 1.3,
+          "warning": 1.5,
+          "high": 2.0,
+          "critical": 3.0
+        }
       },
       "mobile-api": {
         "_comment": "Mobile API - user-facing, moderate latency acceptable",
@@ -388,7 +442,8 @@
         "latency_critical_ms": 2000,
         "error_rate_acceptable": 0.01,
         "error_rate_warning": 0.02,
-        "error_rate_critical": 0.05
+        "error_rate_critical": 0.05,
+        "database_latency_floor_ms": 5.0
       }
     },
     "busy_periods": [

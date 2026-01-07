@@ -1,0 +1,27 @@
+%% Request Rate Correlation Logic
+%% Shows how traffic surges and cliffs are evaluated with correlation-based severity
+
+flowchart TD
+    START[Request Rate Evaluation] --> RATIO[ratio = current / baseline]
+
+    RATIO --> SURGE_CHECK{ratio >= 200%?}
+    SURGE_CHECK -->|yes| SURGE[SURGE Detected]
+    SURGE_CHECK -->|no| CLIFF_CHECK{ratio <= 50%?}
+
+    CLIFF_CHECK -->|yes| CLIFF[CLIFF Detected]
+    CLIFF_CHECK -->|no| MIN_CHECK{below min_expected?}
+
+    MIN_CHECK -->|yes| LOW[LOW_TRAFFIC - informational]
+    MIN_CHECK -->|no| NORMAL[NORMAL - ok]
+
+    SURGE --> S_ERR{errors breached?}
+    S_ERR -->|yes| S_HIGH[high - capacity issue]
+    S_ERR -->|no| S_LAT{latency breached?}
+    S_LAT -->|yes| S_WARN[warning - monitor capacity]
+    S_LAT -->|no| S_INFO[informational - normal growth]
+
+    CLIFF --> C_ERR{errors present?}
+    C_ERR -->|yes| C_CRIT[critical - possible outage]
+    C_ERR -->|no| C_PEAK{peak hours?}
+    C_PEAK -->|yes| C_HIGH[high - investigate]
+    C_PEAK -->|no| C_WARN[warning - routing issue?]

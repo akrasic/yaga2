@@ -32,6 +32,7 @@ from smartbox_anomaly.detection import (
     TimeAwareAnomalyDetector,
 )
 from smartbox_anomaly.fingerprinting import AnomalyFingerprinter
+from smartbox_anomaly.enrichment import ExceptionEnrichmentService, ServiceGraphEnrichmentService
 from smartbox_anomaly.api import (
     AlertType,
     AnomalyDetectedPayload,
@@ -93,6 +94,8 @@ class ServiceInferenceResult:
     metric_analysis: Optional[Dict[str, Any]] = None
     explanation: Optional[Dict[str, Any]] = None
     recommended_actions: Optional[List[str]] = None
+    # Exception enrichment context (populated when error_rate anomalies detected)
+    exception_context: Optional[Dict[str, Any]] = None
     
     @property
     def has_anomalies(self) -> bool:
@@ -505,7 +508,16 @@ class EnhancedResultsProcessor:
 
         # Determine alert type and overall severity
         alert_type = AlertType.ANOMALY_DETECTED if formatted_anomalies else AlertType.NO_ANOMALY
-        overall_severity = Severity.max_severity(severities) if severities else Severity.NONE
+
+        # Use SLO-adjusted severity if available, otherwise calculate from anomalies
+        slo_eval = result.get('slo_evaluation', {})
+        if slo_eval.get('severity_changed') and result.get('overall_severity'):
+            # SLO evaluation already adjusted the severity - use it
+            severity_str = result['overall_severity']
+            overall_severity = Severity(severity_str) if severity_str in [s.value for s in Severity] else Severity.NONE
+        else:
+            # No SLO adjustment - calculate from individual anomaly severities
+            overall_severity = Severity.max_severity(severities) if severities else Severity.NONE
 
         # Build current metrics model
         metrics_data = result.get('metrics', result.get('current_metrics', {}))
@@ -550,6 +562,8 @@ class EnhancedResultsProcessor:
             current_metrics=current_metrics,
             fingerprinting=fingerprinting if isinstance(fingerprinting, FingerprintingMetadata) else None,
             performance_info=result.get('performance_info'),
+            exception_context=result.get('exception_context'),
+            service_graph_context=result.get('service_graph_context'),
             metadata=metadata,
         )
 
@@ -557,6 +571,20 @@ class EnhancedResultsProcessor:
         response = payload.model_dump(mode='json', exclude_none=True)
         if fingerprinting and not isinstance(fingerprinting, FingerprintingMetadata):
             response['fingerprinting'] = fingerprinting
+
+        # Add SLO evaluation if present (not part of Pydantic model yet)
+        if result.get('slo_evaluation'):
+            response['slo_evaluation'] = result['slo_evaluation']
+
+        # Add drift analysis if present
+        if result.get('drift_analysis'):
+            response['drift_analysis'] = result['drift_analysis']
+        if result.get('drift_warning'):
+            response['drift_warning'] = result['drift_warning']
+
+        # Add validation warnings if present
+        if result.get('validation_warnings'):
+            response['validation_warnings'] = result['validation_warnings']
 
         return response
 
@@ -1203,7 +1231,28 @@ class SmartboxMLInferencePipeline:
             self.slo_evaluator = SLOEvaluator(config.slo)
             logger.info("SLO-aware severity evaluation enabled")
 
-        logger.info("Enhanced Smartbox ML Inference Pipeline initialized with explainability")
+        # Initialize exception enrichment service
+        # Uses same VM client to query exception metrics from OpenTelemetry
+        enrichment_enabled = config.inference.exception_enrichment_enabled if hasattr(config.inference, 'exception_enrichment_enabled') else True
+        self.exception_enrichment = ExceptionEnrichmentService(
+            vm_client=self.vm_client,
+            lookback_minutes=5,  # Match detection window
+            enabled=enrichment_enabled,
+        )
+        if enrichment_enabled:
+            logger.info("Exception enrichment enabled for error-related anomalies")
+
+        # Initialize service graph enrichment service
+        # Queries downstream service calls when client_latency is elevated
+        self.service_graph_enrichment = ServiceGraphEnrichmentService(
+            vm_client=self.vm_client,
+            lookback_minutes=5,  # Match detection window
+            enabled=enrichment_enabled,
+        )
+        if enrichment_enabled:
+            logger.info("Service graph enrichment enabled for client latency anomalies")
+
+        logger.info("Enhanced Yaga2 ML Inference Pipeline initialized with explainability")
         if verbose:
             logger.info(f"  VM Endpoint: {vm_endpoint}")
             logger.info(f"  Models Directory: {models_directory}")
@@ -1638,7 +1687,7 @@ class SmartboxMLInferencePipeline:
                 logger.info("Applying SLO-aware severity evaluation")
 
             for service_name, result in results.items():
-                if 'error' not in result and result.get('alert_type') != 'metrics_unavailable':
+                if not result.get('error') and result.get('alert_type') != 'metrics_unavailable':
                     try:
                         # Get timestamp from result for busy period check
                         result_timestamp = None
@@ -1673,9 +1722,149 @@ class SmartboxMLInferencePipeline:
                     f"out of {slo_stats['evaluations_performed']} evaluations"
                 )
 
+        # ===== Exception Enrichment Layer =====
+        # Enrich error-related anomalies with exception breakdown from OpenTelemetry
+        # Only enrich when SLO confirms errors are actually above threshold
+        if self.exception_enrichment.enabled:
+            for service_name, result in results.items():
+                if result.get('error') or result.get('alert_type') == 'metrics_unavailable':
+                    continue
+
+                anomalies = result.get('anomalies', {})
+                if not anomalies:
+                    continue
+
+                # Check SLO evaluation - only enrich if errors are confirmed above threshold
+                slo_eval = result.get('slo_evaluation', {})
+                error_rate_eval = slo_eval.get('error_rate_evaluation', {})
+                error_status = error_rate_eval.get('status', 'unknown')
+
+                # Only enrich if SLO confirms error rate is NOT ok (warning, high, critical, breach)
+                # Skip enrichment if errors are within acceptable SLO thresholds
+                if error_status == 'ok':
+                    continue
+
+                # Check if any anomaly is error-related with high/critical severity
+                should_enrich = False
+                for anomaly_name, anomaly_data in anomalies.items():
+                    severity = anomaly_data.get('severity', 'low')
+                    if severity not in ('high', 'critical'):
+                        continue
+
+                    # Check if error-related by pattern name or root metric
+                    pattern = anomaly_name.lower()
+                    root_metric = anomaly_data.get('root_metric', '').lower()
+                    description = anomaly_data.get('description', '').lower()
+
+                    if any(term in pattern or term in root_metric or term in description
+                           for term in ['error', 'failure', 'outage', 'fail']):
+                        should_enrich = True
+                        break
+
+                if should_enrich:
+                    try:
+                        # Get timestamp from result
+                        anomaly_timestamp = None
+                        if 'timestamp' in result:
+                            try:
+                                ts_str = result['timestamp']
+                                if isinstance(ts_str, str):
+                                    anomaly_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                            except (ValueError, AttributeError):
+                                pass
+
+                        breakdown = self.exception_enrichment.get_exception_breakdown(
+                            service_name=service_name,
+                            anomaly_timestamp=anomaly_timestamp,
+                        )
+
+                        if breakdown.query_successful and breakdown.has_exceptions:
+                            result['exception_context'] = breakdown.to_dict()
+                            if self.verbose:
+                                logger.info(
+                                    f"EXCEPTION_ENRICHMENT - {service_name}: "
+                                    f"{len(breakdown.exceptions)} exception types, "
+                                    f"top: {breakdown.top_exception.short_name if breakdown.top_exception else 'none'}"
+                                )
+                        elif not breakdown.query_successful:
+                            if self.verbose:
+                                logger.warning(f"Exception enrichment query failed for {service_name}: {breakdown.error_message}")
+                    except Exception as e:
+                        if self.verbose:
+                            logger.warning(f"Exception enrichment failed for {service_name}: {e}")
+
+        # ===== Service Graph Enrichment Layer =====
+        # Enrich client_latency anomalies with downstream service call data
+        if self.service_graph_enrichment.enabled:
+            for service_name, result in results.items():
+                if result.get('error') or result.get('alert_type') == 'metrics_unavailable':
+                    continue
+
+                anomalies = result.get('anomalies', {})
+                if not anomalies:
+                    continue
+
+                # Check SLO evaluation - only enrich if latency is elevated
+                slo_eval = result.get('slo_evaluation', {})
+                latency_eval = slo_eval.get('latency_evaluation', {})
+                latency_status = latency_eval.get('status', 'unknown')
+
+                # Only enrich if SLO confirms latency is NOT ok
+                if latency_status == 'ok':
+                    continue
+
+                # Check if any anomaly is latency-related with high/critical severity
+                should_enrich = False
+                for anomaly_name, anomaly_data in anomalies.items():
+                    severity = anomaly_data.get('severity', 'low')
+                    if severity not in ('high', 'critical'):
+                        continue
+
+                    # Check if latency-related by pattern name or root metric
+                    pattern = anomaly_name.lower()
+                    root_metric = anomaly_data.get('root_metric', '').lower()
+                    description = anomaly_data.get('description', '').lower()
+
+                    if any(term in pattern or term in root_metric or term in description
+                           for term in ['latency', 'slow', 'degradation', 'client_latency']):
+                        should_enrich = True
+                        break
+
+                if should_enrich:
+                    try:
+                        # Get timestamp from result
+                        anomaly_timestamp = None
+                        if 'timestamp' in result:
+                            try:
+                                ts_str = result['timestamp']
+                                if isinstance(ts_str, str):
+                                    anomaly_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                            except (ValueError, AttributeError):
+                                pass
+
+                        breakdown = self.service_graph_enrichment.get_service_graph(
+                            service_name=service_name,
+                            anomaly_timestamp=anomaly_timestamp,
+                        )
+
+                        if breakdown.query_successful and breakdown.has_data:
+                            result['service_graph_context'] = breakdown.to_dict()
+                            if self.verbose:
+                                logger.info(
+                                    f"SERVICE_GRAPH_ENRICHMENT - {service_name}: "
+                                    f"{len(breakdown.routes)} routes to {len(breakdown.unique_servers)} servers, "
+                                    f"slowest: {breakdown.slowest_route.display_name if breakdown.slowest_route else 'none'}"
+                                )
+                        elif not breakdown.query_successful:
+                            if self.verbose:
+                                logger.warning(f"Service graph enrichment query failed for {service_name}: {breakdown.error_message}")
+                    except Exception as e:
+                        if self.verbose:
+                            logger.warning(f"Service graph enrichment failed for {service_name}: {e}")
+
         # Process final results and log
         for service_name, result in results.items():
-            if 'error' not in result:
+            if not result.get('error'):
                 self.results_processor.process_result(result)
 
                 anomaly_count = result.get('anomaly_count', len(result.get('anomalies', {})))
@@ -1776,14 +1965,24 @@ class SmartboxMLInferencePipeline:
                 if enhanced_result.get('explainable', False):
                     # Process explainable result
                     anomalies = self._convert_explainable_anomalies(enhanced_result.get('anomalies', []))
-                    
+
                     # Calculate inference time
                     inference_time_ms = (datetime.now() - start_time).total_seconds() * 1000
-                    
+
                     # Get model metadata
                     model_metadata = self.model_manager.get_model_metadata(service_name)
                     model_version = model_metadata.get('model_version', 'enhanced_unknown')
-                    
+
+                    # Enrich with exception context if error-related anomalies detected
+                    exception_context = None
+                    if anomalies and self.exception_enrichment.enabled:
+                        exception_context = self._enrich_with_exceptions(
+                            service_name=service_name,
+                            anomalies=anomalies,
+                            metrics=metrics,
+                            anomaly_timestamp=start_time,
+                        )
+
                     result = ServiceInferenceResult(
                         service_name=service_name,
                         timestamp=start_time,
@@ -1796,14 +1995,15 @@ class SmartboxMLInferencePipeline:
                         historical_context=enhanced_result.get('historical_context'),
                         metric_analysis=enhanced_result.get('metric_analysis'),
                         explanation=enhanced_result.get('explanation'),
-                        recommended_actions=enhanced_result.get('recommended_actions')
+                        recommended_actions=enhanced_result.get('recommended_actions'),
+                        exception_context=exception_context,
                     )
-                    
+
                     if anomalies:
                         logger.info(f"ENHANCED_ANOMALY_DETECTED - {service_name}: {len(anomalies)} anomalies with context")
                     else:
                         logger.info(f"NO_ANOMALIES - {service_name}: No anomalies detected (enhanced)")
-                    
+
                     return result
             
             except Exception as enhanced_error:
@@ -1893,9 +2093,80 @@ class SmartboxMLInferencePipeline:
                     percentile_position=anomaly_data.get('percentile_position')
                 )
                 results.append(result)
-        
+
         return results
-    
+
+    def _enrich_with_exceptions(
+        self,
+        service_name: str,
+        anomalies: List[AnomalyResult],
+        metrics: InferenceMetrics,
+        anomaly_timestamp: datetime,
+    ) -> Optional[Dict[str, Any]]:
+        """Enrich anomaly result with exception context if applicable.
+
+        Queries OpenTelemetry exception metrics when error-related anomalies
+        are detected. The query window is aligned with the anomaly timestamp.
+
+        Args:
+            service_name: Name of the service.
+            anomalies: List of detected anomalies.
+            metrics: Current metrics for the service.
+            anomaly_timestamp: When the anomaly was detected.
+
+        Returns:
+            Exception context dictionary if enrichment was performed, None otherwise.
+        """
+        # Check if any anomaly is error-related and high/critical severity
+        error_related = False
+        high_severity = False
+
+        for anomaly in anomalies:
+            # Check severity
+            if anomaly.severity in (AnomalySeverity.HIGH, AnomalySeverity.CRITICAL):
+                high_severity = True
+
+            # Check if error-related (by type or description)
+            anomaly_type = anomaly.anomaly_type.lower()
+            description = (anomaly.description or "").lower()
+
+            if any(term in anomaly_type or term in description for term in
+                   ["error", "failure", "outage", "fail"]):
+                error_related = True
+
+        # Also check error_rate from metrics
+        error_rate = metrics.error_rate if metrics.error_rate else 0.0
+        if error_rate > 0.01:  # More than 1% errors
+            error_related = True
+
+        # Only enrich if high/critical severity AND error-related
+        if not (high_severity and error_related):
+            return None
+
+        try:
+            breakdown = self.exception_enrichment.get_exception_breakdown(
+                service_name=service_name,
+                anomaly_timestamp=anomaly_timestamp,
+            )
+
+            if breakdown.query_successful and breakdown.has_exceptions:
+                logger.info(
+                    f"EXCEPTION_ENRICHMENT - {service_name}: "
+                    f"{len(breakdown.exceptions)} exception types, "
+                    f"top: {breakdown.top_exception.short_name if breakdown.top_exception else 'none'}"
+                )
+                return breakdown.to_dict()
+            elif not breakdown.query_successful:
+                logger.warning(f"Exception enrichment query failed for {service_name}: {breakdown.error_message}")
+            else:
+                logger.debug(f"No exceptions found for {service_name} in enrichment window")
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Exception enrichment failed for {service_name}: {e}")
+            return None
+
     def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status with explainability info"""
         available_services = self.model_manager.get_available_services()
@@ -1967,8 +2238,8 @@ def main():
     parser.add_argument(
         '--fingerprint-db',
         type=str,
-        default="./anomaly_state.db",
-        help='Path to fingerprinting database (default: ./anomaly_state.db)'
+        default="/app/data/anomaly_state.db",
+        help='Path to fingerprinting database (default: /app/data/anomaly_state.db)'
     )
     
     args = parser.parse_args()
@@ -2027,14 +2298,27 @@ def _initialize_fingerprinting(db_path: str, verbose: bool) -> Optional['Anomaly
     """Initialize anomaly fingerprinting with error handling"""
     try:
         from anomaly_fingerprinter import AnomalyFingerprinter
+        import os
+
+        # Ensure the directory exists
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            # If Docker data directory doesn't exist, fall back to current directory
+            if db_dir == "/app/data":
+                db_path = "./anomaly_state.db"
+                if verbose:
+                    logger.info(f"Docker data directory not found, using local path: {db_path}")
+            else:
+                os.makedirs(db_dir, exist_ok=True)
+
         fingerprinter = AnomalyFingerprinter(db_path=db_path)
-        
+
         if verbose:
-            logger.info("Anomaly fingerprinting enabled")
+            logger.info(f"Anomaly fingerprinting enabled (db: {db_path})")
             _display_fingerprinting_stats(fingerprinter)
-        
+
         return fingerprinter
-        
+
     except ImportError:
         if verbose:
             logger.warning("Fingerprinting module not available - continuing without fingerprinting")
@@ -2179,7 +2463,7 @@ def _apply_fingerprinting(results: Dict, fingerprinter: Optional['AnomalyFingerp
     resolution_summary = {}  # Track by service
     
     for service_name, result in results.items():
-        if isinstance(result, dict) and 'error' not in result:
+        if isinstance(result, dict) and not result.get('error'):
             try:
                 full_service_name = _determine_full_service_name(service_name, result)
                 
@@ -2272,7 +2556,7 @@ def _update_results_processor(pipeline: 'SmartboxMLInferencePipeline', results: 
 
     # Add ACTIVE anomalies (ongoing + new) - format them properly
     for service_name, result in results.items():
-        if isinstance(result, dict) and 'error' not in result:
+        if isinstance(result, dict) and not result.get('error'):
             anomalies = result.get('anomalies', [])
             if isinstance(anomalies, dict):
                 has_anomalies = len(anomalies) > 0
@@ -2323,7 +2607,7 @@ def _display_execution_summary(results: Dict, fp_stats: Dict, verbose: bool) -> 
     explainable_alerts = 0
     
     for result in results.values():
-        if isinstance(result, dict) and 'error' not in result:
+        if isinstance(result, dict) and not result.get('error'):
             successful_services += 1
             
             # Count anomalies (handle both original and fingerprinted formats)

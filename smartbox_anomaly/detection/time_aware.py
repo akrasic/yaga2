@@ -152,6 +152,7 @@ class TimeAwareAnomalyDetector:
             trained_models[period] = model
             self.models[period] = model
             self._available_periods.add(period)
+            self._loaded_periods.add(period)  # Mark as loaded since it's in memory
 
             # Log validation results if available
             val_results = train_result.get("validation_results", {})
@@ -324,6 +325,17 @@ class TimeAwareAnomalyDetector:
 
         # Adjust severity based on time period characteristics
         self._adjust_for_time_period(result, current_period, confidence)
+
+        # Add training baselines for SLO evaluation
+        if model is not None and hasattr(model, "training_statistics") and model.training_statistics:
+            training_baselines = {}
+            for metric_name, stats in model.training_statistics.items():
+                if hasattr(stats, "mean"):
+                    training_baselines[f"{metric_name}_mean"] = stats.mean
+            if training_baselines:
+                result["training_baselines"] = training_baselines
+                # Also add to metrics dict for SLO evaluator compatibility
+                result["metrics"] = {**metrics, **training_baselines}
 
         return result
 
@@ -548,6 +560,21 @@ class TimeAwareAnomalyDetector:
         # Include drift analysis if present
         if "drift_analysis" in result:
             response["drift_analysis"] = result["drift_analysis"]
+
+        # Add training baselines for SLO evaluation
+        # Extract from the model's training_statistics (not validation_metrics!)
+        model_period = metadata.get("model_period")
+        if model_period and model_period in self.models:
+            model = self.models[model_period]
+            if hasattr(model, "training_statistics") and model.training_statistics:
+                training_baselines = {}
+                for metric_name, stats in model.training_statistics.items():
+                    if hasattr(stats, "mean"):
+                        training_baselines[f"{metric_name}_mean"] = stats.mean
+                if training_baselines:
+                    response["training_baselines"] = training_baselines
+                    # Also add to metrics dict for SLO evaluator compatibility
+                    response["metrics"] = {**metrics, **training_baselines}
 
         return response
 

@@ -266,8 +266,11 @@ class AnomalyFingerprinter(IncidentTracker):
             active_incidents = self._get_active_incidents_by_service(service_name)
 
             # Process current anomalies - may create, continue, or confirm incidents
-            enhanced_anomalies, processed_fingerprints, newly_confirmed = self._process_current_anomalies(
-                current_anomalies, service_name, model_name, active_incidents, timestamp
+            # Also returns stale_resolutions for incidents that were auto-closed due to time gap
+            enhanced_anomalies, processed_fingerprints, newly_confirmed, stale_resolutions = (
+                self._process_current_anomalies(
+                    current_anomalies, service_name, model_name, active_incidents, timestamp
+                )
             )
 
             # Process resolutions for incidents not seen this cycle
@@ -275,10 +278,13 @@ class AnomalyFingerprinter(IncidentTracker):
                 active_incidents, processed_fingerprints, timestamp
             )
 
+            # Merge stale resolutions into resolved_incidents so they get sent to the API
+            all_resolved = stale_resolutions + resolved_incidents
+
             return self._build_enhanced_payload(
                 anomaly_result,
                 enhanced_anomalies,
-                resolved_incidents,
+                all_resolved,
                 service_name,
                 model_name,
                 timestamp,
@@ -300,15 +306,16 @@ class AnomalyFingerprinter(IncidentTracker):
         model_name: str,
         active_incidents: dict[str, dict],
         timestamp: datetime,
-    ) -> tuple[list[dict[str, Any]], set[str], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], set[str], list[dict[str, Any]], list[dict[str, Any]]]:
         """Process currently detected anomalies with cycle-based state machine.
 
         Returns:
-            Tuple of (enhanced_anomalies, processed_fingerprints, newly_confirmed_incidents)
+            Tuple of (enhanced_anomalies, processed_fingerprints, newly_confirmed_incidents, stale_resolutions)
         """
         enhanced = []
         processed_fps = set()
         newly_confirmed = []  # Incidents that just transitioned to OPEN
+        stale_resolutions = []  # Stale incidents that were auto-closed
 
         for i, anomaly_data in enumerate(anomalies):
             anomaly_name = generate_anomaly_name(anomaly_data, i)
@@ -324,7 +331,8 @@ class AnomalyFingerprinter(IncidentTracker):
                 # Check if incident is stale (time gap exceeds separation threshold)
                 if self._is_incident_stale(existing, timestamp):
                     # Close stale incident and create new one
-                    self._close_stale_incident(existing, timestamp)
+                    resolution = self._close_stale_incident(existing, timestamp)
+                    stale_resolutions.append(resolution)
                     result = self._create_incident(
                         service_name, anomaly_name, details, fp_id, model_name, timestamp
                     )
@@ -345,7 +353,7 @@ class AnomalyFingerprinter(IncidentTracker):
 
             enhanced.append(enhanced_anomaly)
 
-        return enhanced, processed_fps, newly_confirmed
+        return enhanced, processed_fps, newly_confirmed, stale_resolutions
 
     def _is_incident_stale(self, incident: dict[str, Any], current_time: datetime) -> bool:
         """Check if an incident is stale based on time gap."""
@@ -356,8 +364,15 @@ class AnomalyFingerprinter(IncidentTracker):
         minutes_since_update = calculate_duration_minutes(last_updated, current_time)
         return minutes_since_update > self._config.incident_separation_minutes
 
-    def _close_stale_incident(self, incident: dict[str, Any], timestamp: datetime) -> None:
-        """Close a stale incident with auto-resolution reason."""
+    def _close_stale_incident(
+        self, incident: dict[str, Any], timestamp: datetime
+    ) -> dict[str, Any]:
+        """Close a stale incident with auto-resolution reason.
+
+        Returns resolution data so it can be sent to the API.
+        """
+        duration = calculate_duration_minutes(incident["first_seen"], timestamp)
+
         with self._get_connection() as conn:
             conn.execute(
                 """UPDATE anomaly_incidents
@@ -373,6 +388,23 @@ class AnomalyFingerprinter(IncidentTracker):
             f"Auto-closed stale incident {incident['incident_id']} (gap > {self._config.incident_separation_minutes}min)",
             fingerprint=incident["fingerprint_id"],
         )
+
+        # Return resolution data for API notification
+        return {
+            "fingerprint_id": incident["fingerprint_id"],
+            "incident_id": incident["incident_id"],
+            "anomaly_name": incident["anomaly_name"],
+            "fingerprint_action": IncidentAction.RESOLVE.value,
+            "incident_action": IncidentAction.CLOSE.value,
+            "final_severity": incident["severity"],
+            "resolved_at": timestamp.isoformat(),
+            "total_occurrences": incident["occurrence_count"],
+            "incident_duration_minutes": duration,
+            "first_seen": incident["first_seen"],
+            "service_name": incident["service_name"],
+            "last_detected_by_model": incident.get("detected_by_model", "unknown"),
+            "resolution_reason": "auto_stale",
+        }
 
     def _create_incident(
         self,

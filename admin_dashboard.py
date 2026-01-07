@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Smartbox Anomaly Detection - Configuration Dashboard v2.0
+Yaga2 - Anomaly Detection Control Center v2.1
 
 A mission-control style admin interface for managing the ML anomaly detection system.
 
 Features:
 - Service management with search/filter
-- SLO configuration with validation
+- SLO configuration with validation (latency, errors, database latency, request rate)
+- Exception enrichment configuration
+- Improvement signal filtering
 - Dependency graph visualization
 - Config export/import
 - Unsaved changes tracking
@@ -30,7 +32,7 @@ import uvicorn
 # Configuration
 CONFIG_PATH = Path(__file__).parent / "config.json"
 AUDIT_LOG_PATH = Path(__file__).parent / ".config_audit.log"
-app = FastAPI(title="Smartbox Config Dashboard", version="2.0.0")
+app = FastAPI(title="Yaga2 Control Center", version="2.1.0")
 
 
 def load_config() -> dict[str, Any]:
@@ -185,7 +187,7 @@ async def export_config():
     return FileResponse(
         CONFIG_PATH,
         media_type="application/json",
-        filename=f"smartbox_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filename=f"yaga2_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     )
 
 
@@ -308,7 +310,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smartbox Anomaly Detection — Control Center</title>
+    <title>Yaga2 — Anomaly Detection Control Center</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -699,6 +701,94 @@ DASHBOARD_HTML = """
         .dep-graph-node.critical { border-color: var(--status-critical); }
         .dep-graph-node.standard { border-color: var(--status-info); }
 
+        /* Pipeline Flow Visualization */
+        .pipeline-flow {
+            display: flex; align-items: center; justify-content: center;
+            gap: var(--space-md); padding: var(--space-md) 0;
+            flex-wrap: wrap;
+        }
+        .pipeline-stage {
+            display: flex; flex-direction: column; align-items: center;
+            gap: var(--space-xs); min-width: 120px;
+        }
+        .pipeline-stage-icon {
+            width: 48px; height: 48px; border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            border: 2px solid; transition: all 0.2s ease;
+        }
+        .pipeline-stage-icon.disabled {
+            background: var(--bg-tertiary) !important;
+            border-color: var(--border-default) !important;
+            opacity: 0.5;
+        }
+        .pipeline-stage-label {
+            font-size: 13px; font-weight: 600; color: var(--text-primary);
+        }
+        .pipeline-stage-desc {
+            font-size: 11px; color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .pipeline-arrow {
+            font-size: 20px; color: var(--text-muted);
+            font-weight: 300;
+        }
+
+        /* Config Summary Grid */
+        .config-summary-grid {
+            display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-sm);
+        }
+        .config-summary-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: var(--space-xs) 0;
+            border-bottom: 1px solid var(--border-muted);
+        }
+        .config-summary-item:last-child { border-bottom: none; }
+        .config-summary-label { font-size: 12px; color: var(--text-secondary); }
+        .config-summary-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; font-weight: 500;
+        }
+
+        /* Improvement Badges */
+        .improvement-metrics { display: flex; gap: var(--space-sm); flex-wrap: wrap; }
+        .improvement-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 4px 10px; background: var(--status-success-bg);
+            border: 1px solid var(--status-success);
+            border-radius: 20px; font-size: 11px; font-weight: 500;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--status-success);
+        }
+
+        /* Database Latency Ratios */
+        .ratio-grid {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-sm);
+            margin-top: var(--space-md);
+        }
+        .ratio-item {
+            text-align: center; padding: var(--space-sm);
+            background: var(--bg-tertiary); border-radius: var(--radius-md);
+        }
+        .ratio-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+        .ratio-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 16px; font-weight: 600; margin-top: 2px;
+        }
+        .ratio-value.ok { color: var(--status-success); }
+        .ratio-value.warning { color: var(--status-warning); }
+        .ratio-value.high { color: #f0883e; }
+        .ratio-value.critical { color: var(--status-critical); }
+
+        /* Request Rate Config */
+        .request-rate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+        .request-rate-section { padding: var(--space-md); background: var(--bg-tertiary); border-radius: var(--radius-md); }
+        .request-rate-title {
+            font-size: 12px; font-weight: 600; color: var(--text-primary);
+            margin-bottom: var(--space-sm); display: flex; align-items: center; gap: var(--space-xs);
+        }
+        .surge-icon { color: var(--status-critical); }
+        .cliff-icon { color: var(--status-info); }
+
         .loading-overlay {
             position: fixed; inset: 0; background: rgba(10, 14, 20, 0.8);
             display: none; align-items: center; justify-content: center; z-index: 3000;
@@ -730,8 +820,8 @@ DASHBOARD_HTML = """
         <header class="header">
             <div class="header-left">
                 <div class="logo">
-                    <div class="logo-icon">⚡</div>
-                    <span>Smartbox Anomaly Detection</span>
+                    <div class="logo-icon">🔮</div>
+                    <span>Yaga2</span>
                 </div>
                 <div class="unsaved-indicator" id="unsaved-indicator">
                     <span>●</span> Unsaved changes
@@ -842,11 +932,111 @@ DASHBOARD_HTML = """
                 <div class="page-header">
                     <div class="page-header-text">
                         <h1 class="page-title">System Overview</h1>
-                        <p class="page-description">Current configuration status and quick stats</p>
+                        <p class="page-description">Pipeline status and configuration summary</p>
                     </div>
                 </div>
                 <div id="validation-issues-container"></div>
+
+                <!-- Pipeline Status -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                            </svg>
+                            Inference Pipeline
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="pipeline-flow">
+                            <div class="pipeline-stage">
+                                <div class="pipeline-stage-icon" style="background: var(--status-info-bg); border-color: var(--status-info);">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--status-info)" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"></circle>
+                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                    </svg>
+                                </div>
+                                <div class="pipeline-stage-label">Detection</div>
+                                <div class="pipeline-stage-desc">ML pattern matching</div>
+                            </div>
+                            <div class="pipeline-arrow">→</div>
+                            <div class="pipeline-stage">
+                                <div class="pipeline-stage-icon" id="slo-pipeline-icon" style="background: var(--status-success-bg); border-color: var(--status-success);">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--status-success)" stroke-width="2">
+                                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                                    </svg>
+                                </div>
+                                <div class="pipeline-stage-label">SLO Evaluation</div>
+                                <div class="pipeline-stage-desc" id="slo-pipeline-status">Enabled</div>
+                            </div>
+                            <div class="pipeline-arrow">→</div>
+                            <div class="pipeline-stage">
+                                <div class="pipeline-stage-icon" id="enrichment-pipeline-icon" style="background: var(--status-warning-bg); border-color: var(--status-warning);">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--status-warning)" stroke-width="2">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                        <polyline points="14 2 14 8 20 8"></polyline>
+                                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    </svg>
+                                </div>
+                                <div class="pipeline-stage-label">Exception Enrichment</div>
+                                <div class="pipeline-stage-desc" id="enrichment-pipeline-status">On error breach</div>
+                            </div>
+                            <div class="pipeline-arrow">→</div>
+                            <div class="pipeline-stage">
+                                <div class="pipeline-stage-icon" id="service-graph-pipeline-icon" style="background: rgba(136, 192, 208, 0.15); border-color: #88c0d0;">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#88c0d0" stroke-width="2">
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                    </svg>
+                                </div>
+                                <div class="pipeline-stage-label">Service Graph</div>
+                                <div class="pipeline-stage-desc" id="service-graph-pipeline-status">On latency breach</div>
+                            </div>
+                            <div class="pipeline-arrow">→</div>
+                            <div class="pipeline-stage">
+                                <div class="pipeline-stage-icon" style="background: rgba(163, 113, 247, 0.15); border-color: #a371f7;">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a371f7" stroke-width="2">
+                                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                                        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                                    </svg>
+                                </div>
+                                <div class="pipeline-stage-label">Alert</div>
+                                <div class="pipeline-stage-desc">Fingerprinted</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="stats-grid" id="stats-grid"></div>
+
+                <!-- Quick Config Summary -->
+                <div class="grid-2" style="margin-bottom: var(--space-lg);">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">SLO Thresholds (Defaults)</div>
+                        </div>
+                        <div class="card-body">
+                            <div class="config-summary-grid" id="slo-summary"></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Improvement Filtering</div>
+                        </div>
+                        <div class="card-body">
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: var(--space-md);">
+                                Lower-is-better metrics with improvements (direction=low) are automatically filtered out and don't trigger alerts.
+                            </p>
+                            <div class="improvement-metrics">
+                                <span class="improvement-badge">client_latency ↓</span>
+                                <span class="improvement-badge">database_latency ↓</span>
+                                <span class="improvement-badge">error_rate ↓</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">Services by Category</div>
@@ -1050,6 +1240,95 @@ DASHBOARD_HTML = """
                     </div>
                     <div class="card-body" id="busy-periods-container"></div>
                 </div>
+
+                <div class="section-divider"></div>
+                <div class="grid-2">
+                    <!-- Database Latency Ratios -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+                                </svg>
+                                Database Latency Ratios
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: var(--space-md);">
+                                Thresholds are based on ratio to training baseline (floor + ratio × mean)
+                            </p>
+                            <div class="ratio-grid">
+                                <div class="ratio-item">
+                                    <div class="ratio-label">OK</div>
+                                    <div class="ratio-value ok" id="db-ratio-ok">1.5×</div>
+                                </div>
+                                <div class="ratio-item">
+                                    <div class="ratio-label">Warning</div>
+                                    <div class="ratio-value warning" id="db-ratio-warning">2.0×</div>
+                                </div>
+                                <div class="ratio-item">
+                                    <div class="ratio-label">High</div>
+                                    <div class="ratio-value high" id="db-ratio-high">3.0×</div>
+                                </div>
+                                <div class="ratio-item">
+                                    <div class="ratio-label">Critical</div>
+                                    <div class="ratio-value critical" id="db-ratio-critical">5.0×</div>
+                                </div>
+                            </div>
+                            <div class="form-group" style="margin-top: var(--space-md);">
+                                <label class="form-label">Floor (minimum ms)</label>
+                                <input type="number" class="form-input" id="db-latency-floor" value="5" oninput="markUnsaved()" style="width: 100px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Request Rate SLO -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+                                    <polyline points="17 6 23 6 23 12"></polyline>
+                                </svg>
+                                Request Rate Detection
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="request-rate-grid">
+                                <div class="request-rate-section">
+                                    <div class="request-rate-title">
+                                        <span class="surge-icon">📈</span> Surge Detection
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Surge Threshold (× baseline)</label>
+                                        <input type="number" step="0.1" class="form-input" id="surge-threshold" value="2.0" oninput="markUnsaved()">
+                                    </div>
+                                    <p style="font-size: 11px; color: var(--text-muted);">
+                                        Surge alone → informational<br>
+                                        Surge + latency breach → warning<br>
+                                        Surge + error breach → high
+                                    </p>
+                                </div>
+                                <div class="request-rate-section">
+                                    <div class="request-rate-title">
+                                        <span class="cliff-icon">📉</span> Cliff Detection
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Cliff Threshold (× baseline)</label>
+                                        <input type="number" step="0.1" class="form-input" id="cliff-threshold" value="0.3" oninput="markUnsaved()">
+                                    </div>
+                                    <p style="font-size: 11px; color: var(--text-muted);">
+                                        Cliff off-peak → warning<br>
+                                        Cliff peak hours → high<br>
+                                        Cliff + errors → critical
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Dependencies Page -->
@@ -1224,36 +1503,161 @@ DASHBOARD_HTML = """
                 <div class="page-header">
                     <div class="page-header-text">
                         <h1 class="page-title">Documentation</h1>
-                        <p class="page-description">Quick reference for configuration options</p>
+                        <p class="page-description">Inference pipeline, configuration reference, and system behavior</p>
                     </div>
                 </div>
+
+                <!-- Inference Pipeline -->
                 <div class="card" style="margin-bottom: var(--space-lg);">
-                    <div class="card-header"><div class="card-title">Service Categories & Contamination</div></div>
+                    <div class="card-header"><div class="card-title">🔮 Inference Pipeline</div></div>
                     <div class="card-body">
-                        <table class="services-table">
-                            <thead><tr><th>Category</th><th>Default Contamination</th><th>Use For</th></tr></thead>
-                            <tbody>
-                                <tr><td><span class="category-badge category-critical">Critical</span></td><td><code>0.03 (3%)</code></td><td>High-traffic, revenue-impacting services</td></tr>
-                                <tr><td><span class="category-badge category-standard">Standard</span></td><td><code>0.05 (5%)</code></td><td>Normal production services</td></tr>
-                                <tr><td><span class="category-badge category-core">Core</span></td><td><code>0.04 (4%)</code></td><td>Platform infrastructure services</td></tr>
-                                <tr><td><span class="category-badge category-admin">Admin</span></td><td><code>0.06 (6%)</code></td><td>Administrative interfaces</td></tr>
-                                <tr><td><span class="category-badge category-micro">Micro</span></td><td><code>0.08 (8%)</code></td><td>Small utility services</td></tr>
-                            </tbody>
-                        </table>
+                        <div class="code-block" style="font-size: 11px;">┌───────────────┐    ┌────────────────┐    ┌──────────────────┐    ┌────────────────┐    ┌─────────┐
+│   DETECTION   │───►│ SLO EVALUATION │───►│ EXCEPTION ENRICH │───►│ SERVICE GRAPH  │───►│  ALERT  │
+│ (ML Patterns) │    │  (Thresholds)  │    │ (On Error Breach)│    │(On Lat Breach) │    │(Finger) │
+└───────────────┘    └────────────────┘    └──────────────────┘    └────────────────┘    └─────────┘
+        │                    │                      │                       │
+        ▼                    ▼                      ▼                       ▼
+• Time-aware models    • Latency SLO         • events_total query    • service_graph metrics
+• Pattern matching     • Error Rate SLO      • exception_type        • client→server routes
+• Training baselines   • DB Latency Ratios   • Breakdown by rate     • Latency per route
+• Improvement filter   • Request Rate SLO    • API enrichment        • Top traffic routes</div>
                     </div>
                 </div>
+
+                <!-- Training Baselines -->
                 <div class="card" style="margin-bottom: var(--space-lg);">
-                    <div class="card-header"><div class="card-title">SLO Severity Matrix</div></div>
+                    <div class="card-header"><div class="card-title">📊 Training Baselines</div></div>
                     <div class="card-body">
-                        <table class="services-table">
-                            <thead><tr><th></th><th>Within Acceptable</th><th>Approaching SLO</th><th>SLO Breached</th></tr></thead>
-                            <tbody>
-                                <tr><td><strong>Anomaly Detected</strong></td><td style="color: var(--status-success)">informational</td><td style="color: var(--status-warning)">warning/high</td><td style="color: var(--status-critical)">critical</td></tr>
-                                <tr><td><strong>No Anomaly</strong></td><td style="color: var(--text-muted)">none</td><td style="color: var(--status-warning)">warning</td><td style="color: var(--status-critical)">critical</td></tr>
-                            </tbody>
-                        </table>
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            Each time-period model stores training statistics that are used for SLO evaluation:
+                        </p>
+                        <div class="grid-2">
+                            <div>
+                                <strong style="font-size: 12px;">Metrics with training means:</strong>
+                                <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
+                                    <li><code>application_latency_mean</code></li>
+                                    <li><code>client_latency_mean</code></li>
+                                    <li><code>database_latency_mean</code></li>
+                                    <li><code>error_rate_mean</code></li>
+                                    <li><code>request_rate_mean</code></li>
+                                </ul>
+                            </div>
+                            <div>
+                                <strong style="font-size: 12px;">Used for:</strong>
+                                <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
+                                    <li>Database latency ratio thresholds</li>
+                                    <li>Request rate surge/cliff detection</li>
+                                    <li>Contextual severity adjustment</li>
+                                    <li>Pattern explanation generation</li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
+
+                <div class="grid-2" style="margin-bottom: var(--space-lg);">
+                    <div class="card">
+                        <div class="card-header"><div class="card-title">Service Categories</div></div>
+                        <div class="card-body" style="padding: 0;">
+                            <table class="services-table">
+                                <thead><tr><th>Category</th><th>Contamination</th><th>Use For</th></tr></thead>
+                                <tbody>
+                                    <tr><td><span class="category-badge category-critical">Critical</span></td><td><code>3%</code></td><td>Revenue-impacting</td></tr>
+                                    <tr><td><span class="category-badge category-standard">Standard</span></td><td><code>5%</code></td><td>Production services</td></tr>
+                                    <tr><td><span class="category-badge category-core">Core</span></td><td><code>4%</code></td><td>Infrastructure</td></tr>
+                                    <tr><td><span class="category-badge category-admin">Admin</span></td><td><code>6%</code></td><td>Admin interfaces</td></tr>
+                                    <tr><td><span class="category-badge category-micro">Micro</span></td><td><code>8%</code></td><td>Utility services</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><div class="card-title">SLO Severity Matrix</div></div>
+                        <div class="card-body" style="padding: 0;">
+                            <table class="services-table">
+                                <thead><tr><th></th><th>OK</th><th>Warning</th><th>Breach</th></tr></thead>
+                                <tbody>
+                                    <tr><td><strong>Anomaly</strong></td><td style="color: var(--status-success)">info</td><td style="color: var(--status-warning)">high</td><td style="color: var(--status-critical)">critical</td></tr>
+                                    <tr><td><strong>No Anomaly</strong></td><td style="color: var(--text-muted)">—</td><td style="color: var(--status-warning)">warn</td><td style="color: var(--status-critical)">critical</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Exception Enrichment -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🔍 Exception Enrichment</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            When SLO evaluation confirms error rate is above threshold, Yaga2 queries VictoriaMetrics
+                            for exception breakdown to enrich the alert with actionable context.
+                        </p>
+                        <div class="code-block" style="font-size: 11px;">Query: sum(rate(events_total{service_name="<SERVICE>",
+                 deployment_environment_name=~"production"}[5m])) by (exception_type)
+
+Trigger conditions:
+  ✓ Anomaly severity = HIGH or CRITICAL
+  ✓ Pattern is error-related (error, failure, outage)
+  ✓ SLO error_rate_evaluation.status ≠ "ok"
+
+Result: exception_context added to API payload with:
+  • Top exception types by rate
+  • Percentage breakdown
+  • Short names for readability</div>
+                    </div>
+                </div>
+
+                <!-- Service Graph Enrichment -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🌐 Service Graph Enrichment</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            When SLO evaluation confirms latency is above threshold, Yaga2 queries OpenTelemetry
+                            service graph metrics to show which downstream services and routes are being called.
+                        </p>
+                        <div class="code-block" style="font-size: 11px;">Request Rate Query:
+  sum(rate(traces_service_graph_request_total{client="<SERVICE>"}[5m]))
+      by (client, server, server_http_route)
+
+Latency Query:
+  sum(rate(traces_service_graph_request_server_seconds_sum{client="<SERVICE>"}[5m]))
+      by (client, server, server_http_route)
+  / sum(rate(traces_service_graph_request_server_seconds_count{client="<SERVICE>"}[5m]))
+      by (client, server, server_http_route)
+
+Trigger conditions:
+  ✓ SLO latency_evaluation.status ≠ "ok" (client_latency above threshold)
+  ✓ Service is a client calling downstream services
+
+Result: service_graph_context added to API payload with:
+  • Downstream servers being called
+  • HTTP routes with request rates
+  • Average latency per route
+  • Top route by traffic
+  • Slowest route by latency</div>
+                    </div>
+                </div>
+
+                <!-- Improvement Filtering -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">✨ Improvement Signal Filtering</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            Lower-is-better metrics that show improvement (direction=low) are automatically filtered
+                            and don't trigger alerts. This prevents false positives when performance improves.
+                        </p>
+                        <div class="improvement-metrics">
+                            <span class="improvement-badge">client_latency ↓ = OK</span>
+                            <span class="improvement-badge">database_latency ↓ = OK</span>
+                            <span class="improvement-badge">error_rate ↓ = OK</span>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 11px; margin-top: var(--space-md);">
+                            Example: Client latency drops from 50ms mean to 20ms → No alert (this is an improvement)
+                        </p>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header"><div class="card-title">Incident Lifecycle</div></div>
                     <div class="card-body">
@@ -1385,11 +1789,60 @@ DASHBOARD_HTML = """
 
         function renderAll() {
             renderStats();
+            renderPipelineStatus();
+            renderSLOSummary();
             renderOverviewServices();
             renderServicesTable();
             renderSLOConfig();
             renderSettings();
             renderDependencies();
+        }
+
+        function renderPipelineStatus() {
+            const sloEnabled = config.slos?.enabled ?? true;
+            const sloIcon = document.getElementById('slo-pipeline-icon');
+            const sloStatus = document.getElementById('slo-pipeline-status');
+
+            if (sloEnabled) {
+                sloIcon.style.background = 'var(--status-success-bg)';
+                sloIcon.style.borderColor = 'var(--status-success)';
+                sloStatus.textContent = 'Enabled';
+            } else {
+                sloIcon.classList.add('disabled');
+                sloStatus.textContent = 'Disabled';
+            }
+        }
+
+        function renderSLOSummary() {
+            const defaults = config.slos?.defaults || {};
+            const container = document.getElementById('slo-summary');
+
+            container.innerHTML = `
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Latency OK</span>
+                    <span class="config-summary-value" style="color: var(--status-success)">${defaults.latency_acceptable_ms || 500}ms</span>
+                </div>
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Latency Crit</span>
+                    <span class="config-summary-value" style="color: var(--status-critical)">${defaults.latency_critical_ms || 1000}ms</span>
+                </div>
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Error OK</span>
+                    <span class="config-summary-value" style="color: var(--status-success)">${((defaults.error_rate_acceptable || 0.005) * 100).toFixed(1)}%</span>
+                </div>
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Error Crit</span>
+                    <span class="config-summary-value" style="color: var(--status-critical)">${((defaults.error_rate_critical || 0.02) * 100).toFixed(1)}%</span>
+                </div>
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Min Traffic</span>
+                    <span class="config-summary-value">${defaults.min_traffic_rps || 5} req/s</span>
+                </div>
+                <div class="config-summary-item">
+                    <span class="config-summary-label">Busy Factor</span>
+                    <span class="config-summary-value">${defaults.busy_period_factor || 1.5}×</span>
+                </div>
+            `;
         }
 
         function renderStats() {

@@ -185,6 +185,19 @@ class MetricName:
         """Return all latency-related metrics."""
         return (cls.APPLICATION_LATENCY, cls.CLIENT_LATENCY, cls.DATABASE_LATENCY)
 
+    @classmethod
+    def lower_is_better_metrics(cls) -> tuple[str, ...]:
+        """Return metrics where lower values are improvements, not concerns.
+
+        For these metrics, being flagged as 'low' by IF is desirable behavior:
+        - database_latency: Lower means faster queries or no queries (both fine)
+        - client_latency: Lower means faster downstream responses
+        - error_rate: Lower means fewer errors (0 is ideal)
+
+        These should NOT trigger anomaly patterns when they decrease.
+        """
+        return (cls.DATABASE_LATENCY, cls.CLIENT_LATENCY, cls.ERROR_RATE)
+
 
 # =============================================================================
 # Threshold Constants

@@ -1,0 +1,54 @@
+%% SLO Evaluation Detail
+%% Shows how each metric type is evaluated against SLO thresholds
+
+flowchart TD
+    subgraph Input["Detection Result"]
+        MLSev[ML Severity]
+        Metrics[Current Metrics]
+        Baselines[Training Baselines]
+    end
+
+    subgraph LatencyEval["Latency SLO"]
+        L1{latency vs thresholds}
+        L1 -->|below acceptable| LOK[ok]
+        L1 -->|below warning| LELEV[elevated]
+        L1 -->|below critical| LWARN[warning]
+        L1 -->|above critical| LBREACH[breached]
+    end
+
+    subgraph ErrorEval["Error Rate SLO"]
+        E1{error_rate vs thresholds}
+        E1 -->|below acceptable| EOK[ok]
+        E1 -->|below warning| EELEV[elevated]
+        E1 -->|below critical| EWARN[warning]
+        E1 -->|above critical| EBREACH[breached]
+    end
+
+    subgraph DBEval["Database Latency SLO"]
+        D1{below floor?}
+        D1 -->|yes| DOK[ok - noise filtered]
+        D1 -->|no| D2[compute ratio]
+        D2 --> D3{ratio vs thresholds}
+        D3 -->|below 1.5x| DOK2[ok]
+        D3 -->|1.5x-2x| DINFO[info]
+        D3 -->|2x-3x| DWARN[warning]
+        D3 -->|3x-5x| DHIGH[high]
+        D3 -->|above 5x| DCRIT[critical]
+    end
+
+    subgraph RequestRateEval["Request Rate SLO"]
+        R1[compute ratio]
+        R1 --> R2{ratio >= 200%?}
+        R2 -->|yes| SURGE[SURGE]
+        R2 -->|no| R3{ratio <= 50%?}
+        R3 -->|yes| CLIFF[CLIFF]
+        R3 -->|no| ROK[NORMAL]
+    end
+
+    subgraph Combine["Final Severity"]
+        WORST[worst status wins]
+        WORST --> FINAL[Adjusted Severity]
+    end
+
+    Input --> LatencyEval & ErrorEval & DBEval & RequestRateEval
+    LatencyEval & ErrorEval & DBEval & RequestRateEval --> Combine

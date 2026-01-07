@@ -148,16 +148,29 @@ Unlike ML which asks "is this unusual?", pattern matching asks "does this match 
 
 ### How It Works
 
-1. **Metric Level Classification**: Each metric is classified as:
-   - `very_high` (> p95)
-   - `high` (> p90)
-   - `normal` (p25 - p90)
-   - `low` (< p25)
-   - `very_low` (< p10 estimate)
+1. **Metric Level Classification**: Each metric is classified based on percentile:
 
-2. **Pattern Matching**: Current levels are compared against defined pattern conditions
+   | Percentile Range | Level |
+   |------------------|-------|
+   | > 95 | `very_high` |
+   | 90 - 95 | `high` |
+   | 80 - 90 | `elevated` |
+   | 70 - 80 | `moderate` |
+   | 10 - 70 | direction fallback (`high`/`low`) |
+   | 5 - 10 | `low` |
+   | < 5 | `very_low` |
+   | no IF signal | `normal` |
 
-3. **Interpretation**: Matched patterns provide:
+2. **Semantic Interpretation**: Some metrics have "lower is better" semantics:
+   - `database_latency`: Lower = faster queries (improvement)
+   - `client_latency`: Lower = faster downstream (improvement)
+   - `error_rate`: Lower = fewer errors (ideal is 0%)
+
+   For these metrics, when IF flags them as "low", they are treated as `normal` since low values are desirable, not anomalous.
+
+3. **Pattern Matching**: Current levels are compared against defined pattern conditions
+
+4. **Interpretation**: Matched patterns provide:
    - Human-readable description
    - Root cause interpretation
    - Recommended actions
@@ -553,21 +566,109 @@ MULTIVARIATE_PATTERNS["my_new_pattern"] = PatternDefinition(
 
 ### Condition Types
 
-- **Level conditions**: `"high"`, `"normal"`, `"low"`, `"very_high"`, `"very_low"`
+- **Level conditions**: `"very_high"`, `"high"`, `"elevated"`, `"moderate"`, `"normal"`, `"low"`, `"very_low"`
 - **Ratio conditions**: `"> 0.6"`, `"< 0.3"` (for `*_ratio` metrics)
 - **Any**: `"any"` (always matches)
+- **Dependency context**: `"upstream_anomaly"`, `"chain_degraded"`, `"dependencies_healthy"` (for `_dependency_context`)
+
+**Important**: Unknown conditions will cause the pattern to NOT match (fail-closed behavior for safety).
 
 ### Available Metrics for Conditions
 
-| Metric Name | Variable | Description |
-|-------------|----------|-------------|
-| `request_rate` | Traffic volume | Requests per second |
-| `application_latency` | Response time | Total request processing time (ms) |
-| `error_rate` | Error percentage | Fraction of failed requests (0.0-1.0) |
-| `client_latency` | External call time | Time spent calling external services (ms) |
-| `database_latency` | DB query time | Time spent on database operations (ms) |
-| `client_latency_ratio` | Ratio | `client_latency / application_latency` |
-| `db_latency_ratio` | Ratio | `database_latency / application_latency` |
+| Metric Name | Variable | Description | Lower is Better? |
+|-------------|----------|-------------|------------------|
+| `request_rate` | Traffic volume | Requests per second | No |
+| `application_latency` | Response time | Total request processing time (ms) | Context-dependent* |
+| `error_rate` | Error percentage | Fraction of failed requests (0.0-1.0) | Yes |
+| `client_latency` | External call time | Time spent calling external services (ms) | Yes |
+| `database_latency` | DB query time | Time spent on database operations (ms) | Yes |
+| `client_latency_ratio` | Ratio | `client_latency / application_latency` | - |
+| `db_latency_ratio` | Ratio | `database_latency / application_latency` | - |
+
+*`application_latency` is NOT in the "lower is better" list because low latency combined with high errors indicates fast-fail scenarios (e.g., requests rejected before processing).
+
+---
+
+## Exception Enrichment
+
+When error-related anomalies are detected, the inference engine automatically queries OpenTelemetry exception metrics to identify which exception types are causing the errors.
+
+### How It Works
+
+```
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Anomaly         │     │  Exception       │     │  Enriched        │
+│  Detection       │────▶│  Enrichment      │────▶│  Result          │
+│  (IF + Patterns) │     │  Service         │     │  + Exception     │
+└──────────────────┘     └──────────────────┘     │  Context         │
+                                │                 └──────────────────┘
+                                │
+                                ▼
+                         ┌──────────────────┐
+                         │  VictoriaMetrics │
+                         │  (events_total)  │
+                         └──────────────────┘
+```
+
+### Time-Aligned Queries
+
+Exception queries are aligned with the anomaly detection window:
+
+- **end_time** = anomaly timestamp
+- **start_time** = anomaly timestamp - lookback_minutes (default: 5)
+- **Query**: `sum(rate(events_total{service_name="X"}[5m])) by (exception_type)`
+
+This ensures the exception data matches the exact time window where the anomaly was detected.
+
+### When Enrichment Triggers
+
+Enrichment is performed when ALL of the following are true:
+
+1. **Severity is HIGH or CRITICAL**
+2. **Error-related anomaly detected** (pattern name contains "error", "failure", "outage")
+3. **Error rate > 1%** in current metrics
+
+### Output Format
+
+```json
+{
+  "exception_context": {
+    "service_name": "search",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_exception_rate": 0.35,
+    "exception_count": 3,
+    "top_exceptions": [
+      {
+        "type": "Smartbox\\Search\\R2D2\\Exception\\R2D2Exception",
+        "short_name": "R2D2Exception",
+        "rate": 0.217,
+        "percentage": 62.0
+      },
+      {
+        "type": "Smartbox\\Search\\Exception\\UserInputException",
+        "short_name": "UserInputException",
+        "rate": 0.083,
+        "percentage": 23.7
+      }
+    ],
+    "query_successful": true
+  }
+}
+```
+
+### Configuration
+
+Exception enrichment is enabled by default. It can be disabled via config:
+
+```json
+{
+  "inference": {
+    "exception_enrichment_enabled": false
+  }
+}
+```
+
+---
 
 ### Step-by-Step: Adding a New Pattern
 

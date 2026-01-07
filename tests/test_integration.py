@@ -283,6 +283,79 @@ class TestTimeAwareDetection:
         assert "metadata" in result or "anomalies" in result
         # Result structure depends on whether models are available
 
+    def test_training_baselines_propagated_for_slo_evaluation(
+        self,
+        integration_config: PipelineConfig,
+        temp_model_storage: Path,
+    ) -> None:
+        """Test that training baselines are propagated to response for SLO evaluation."""
+        np.random.seed(42)
+
+        # Generate sufficient time-series data (need 500+ samples per period)
+        # Use 60 days to ensure each time period has enough data
+        dates = pd.date_range(
+            start="2024-01-01",
+            end="2024-03-01",
+            freq="15min",
+        )
+        n_samples = len(dates)
+
+        # Use specific means for verification
+        expected_request_rate_mean = 100.0
+        expected_db_latency_mean = 10.0
+
+        features_df = pd.DataFrame({
+            MetricName.REQUEST_RATE: np.random.exponential(expected_request_rate_mean, n_samples),
+            MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
+            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DATABASE_LATENCY: np.random.exponential(expected_db_latency_mean, n_samples),
+            MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
+        }, index=dates)
+
+        # Create and train time-aware detector
+        time_aware_detector = create_time_aware_detector(
+            "test-service",
+            str(temp_model_storage),
+        )
+
+        # Train time-aware models
+        trained_models = time_aware_detector.train_time_aware_models(features_df)
+        assert len(trained_models) > 0
+
+        # Verify models are in memory after training
+        assert len(time_aware_detector.models) > 0, "Models should be in memory after training"
+
+        # Test detection during business hours using the trained detector directly
+        test_metrics = {
+            MetricName.REQUEST_RATE: 100.0,
+            MetricName.APPLICATION_LATENCY: 50.0,
+            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DATABASE_LATENCY: 10.0,
+            MetricName.ERROR_RATE: 0.01,
+        }
+
+        business_time = datetime(2024, 1, 15, 10, 0)  # Monday 10am
+        result = time_aware_detector.detect(test_metrics, timestamp=business_time)
+
+        # Verify training baselines are included in the response
+        assert "training_baselines" in result, f"training_baselines should be in response, got: {result.keys()}"
+        assert "metrics" in result, "metrics should be in response"
+
+        training_baselines = result["training_baselines"]
+        metrics = result["metrics"]
+
+        # Check that baselines are propagated
+        assert "request_rate_mean" in training_baselines, "request_rate_mean should be in training_baselines"
+        assert "database_latency_mean" in training_baselines, "database_latency_mean should be in training_baselines"
+
+        # Check that metrics dict includes baselines for SLO evaluator
+        assert "request_rate_mean" in metrics, "request_rate_mean should be merged into metrics"
+        assert "database_latency_mean" in metrics, "database_latency_mean should be merged into metrics"
+
+        # Verify values are reasonable (exponential mean is close to scale parameter)
+        assert training_baselines["request_rate_mean"] > 0
+        assert training_baselines["database_latency_mean"] > 0
+
 
 # =============================================================================
 # Test: Fingerprinting Integration

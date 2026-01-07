@@ -6,11 +6,11 @@ This document tracks known issues, limitations, and planned improvements identif
 
 ## Summary
 
-| Category | Issues | Critical | High | Medium |
-|----------|--------|----------|------|--------|
-| Training Pipeline | 10 | 2 | 4 | 4 |
-| Message Semantics | 12 | 1 | 3 | 8 |
-| **Total** | **22** | **3** | **7** | **12** |
+| Category | Issues | Critical | High | Medium | Fixed |
+|----------|--------|----------|------|--------|-------|
+| Training Pipeline | 10 | 2 | 4 | 4 | 0 |
+| Message Semantics | 12 | 1 | 2 | 8 | 1 |
+| **Total** | **22** | **3** | **6** | **12** | **1** |
 
 ---
 
@@ -155,20 +155,25 @@ KNOWN_SERVICE_PARAMS = {
 
 ### 7. Low Latency Misinterpreted as Positive
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
-**Location**: `smartbox_anomaly/detection/interpretations.py`
+**Location**: `smartbox_anomaly/detection/detector.py:632-685`, `smartbox_anomaly/core/constants.py:188-199`
 
 **Problem**: "Unusually fast responses" message sounds positive, but low latency often indicates:
 - Error responses (no processing done)
 - Circuit breaker activations
 - Rate limiting rejections
 
-**Impact**: Operators may dismiss critical issues as "system running fast".
+**Solution Implemented**:
+1. Added `lower_is_better_metrics()` in `constants.py` defining metrics where low values are improvements (`database_latency`, `client_latency`, `error_rate`)
+2. Updated `_signals_to_levels()` to treat low values for these metrics as `"normal"` instead of `"low"`
+3. `application_latency` is intentionally NOT in this list - low latency with high errors should still match fast-fail patterns
+4. Pattern matching now uses fail-closed validation - unknown conditions don't silently pass
 
-**Workaround**: Always check error rate when seeing low latency alerts.
-
-**Fix Required**: Correlate low latency with error rate and escalate severity if both present.
+**Result**:
+- Low `database_latency`/`client_latency`/`error_rate` → treated as normal (no alert)
+- Low `application_latency` + high errors → still matches `fast_failure` pattern (correct alert)
+- Low `application_latency` + normal errors → no pattern match (no false positive)
 
 ---
 
