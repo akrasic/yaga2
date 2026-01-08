@@ -8,9 +8,16 @@ This document tracks known issues, limitations, and planned improvements identif
 
 | Category | Issues | Critical | High | Medium | Fixed |
 |----------|--------|----------|------|--------|-------|
-| Training Pipeline | 10 | 2 | 4 | 4 | 0 |
+| Training Pipeline | 10 | 2 | 4 | 4 | 4 |
 | Message Semantics | 12 | 1 | 2 | 8 | 1 |
-| **Total** | **22** | **3** | **6** | **12** | **1** |
+| **Total** | **22** | **3** | **6** | **12** | **5** |
+
+**Recently Fixed:**
+- Issue #2: No Model Validation → Implemented temporal train/validation split
+- Issue #3: Pattern Overlap → Replaced with distinct patterns
+- Issue #5: No Temporal Validation → Implemented temporal split with config option
+- Issue #6: Insufficient Sample Requirements → Increased to 500/1000
+- Issue #7: Low Latency Misinterpreted → Added lower_is_better_metrics()
 
 ---
 
@@ -46,44 +53,36 @@ model.fit(clean_data)
 
 ### 2. No Model Validation
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Critical
-**Location**: `smartbox_anomaly/detection/detector.py:146-199`
+**Location**: `smartbox_anomaly/detection/time_aware.py:80-168`, `main.py:574-576`
 
-**Problem**: Models are trained on 100% of data with no validation split, cross-validation, or performance metrics.
+**Problem**: Models were trained on 100% of data with no validation split, cross-validation, or performance metrics.
 
-**Impact**:
-- No way to detect overfitting
-- No quality metrics to compare model versions
-- No early warning if model quality degrades
+**Resolution**: Implemented temporal train/validation split in `train_time_aware_models()`:
+- Default validation fraction: 20% (configurable via `validation_fraction` in config.json)
+- Temporal split: First 80% for training, last 20% for validation
+- Validation data used for threshold calibration
+- `ValidationMetrics` dataclass tracks false positive rate and detection rate
+- `_calibrate_on_validation()` method calibrates severity thresholds on held-out data
 
-**Workaround**: Monitor false positive rates manually in production.
-
-**Fix Required**: Implement temporal train/validation split (last 20% for validation).
+The split respects temporal ordering to prevent future data leakage.
 
 ---
 
 ### 3. Pattern Overlap: silent_degradation vs resource_contention
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Critical
 **Location**: `smartbox_anomaly/detection/interpretations.py`
 
-**Problem**: These patterns have overlapping conditions but different interpretations:
+**Problem**: These patterns had overlapping conditions but different interpretations.
 
-| Condition | silent_degradation | resource_contention |
-|-----------|-------------------|---------------------|
-| request_rate | normal | normal |
-| application_latency | high | high |
-| error_rate | normal | low |
+**Resolution**: Both patterns were removed and replaced with better-designed patterns:
+- `latency_spike_recent` - Uses `latency_change=recent_increase` condition to detect recent latency increases
+- `internal_bottleneck` - Requires `client_latency=normal` and `database_latency=normal` to confirm issue is internal
 
-When both match, the wrong diagnosis may be presented.
-
-**Impact**: Misleading root cause analysis in alerts.
-
-**Workaround**: Manually verify root cause when seeing either pattern.
-
-**Fix Required**: Add temporal analysis - recent latency increase = degradation, sustained high = contention.
+The new patterns have distinct conditions and don't overlap. The orphan recommendation entry for `silent_degradation` was also removed.
 
 ---
 
@@ -116,40 +115,36 @@ KNOWN_SERVICE_PARAMS = {
 
 ### 5. No Temporal Validation for Time-Series
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
-**Location**: `smartbox_anomaly/detection/time_aware.py:79-127`
+**Location**: `smartbox_anomaly/detection/time_aware.py:123-137`
 
-**Problem**: Time-series data is split by period but not validated temporally. Random sampling during training can leak future information.
+**Problem**: Time-series data was split by period but not validated temporally. Random sampling during training could leak future information.
 
-**Impact**:
-- Model may not generalize to future patterns
-- Overly optimistic performance expectations
+**Resolution**: Implemented temporal validation split in `train_time_aware_models()`:
+- Data is sorted by datetime index before splitting (`period_data_sorted = period_data.sort_index()`)
+- First (1 - validation_fraction) samples used for training
+- Last validation_fraction samples used for validation
+- No random sampling - strict temporal ordering maintained
+- Configuration option `validation_fraction` in config.json (default: 0.2)
 
-**Workaround**: None. Accept potential generalization issues.
-
-**Fix Required**: Implement walk-forward validation for time series.
+This prevents future data leakage and ensures models are validated on temporally held-out data.
 
 ---
 
 ### 6. Insufficient Minimum Sample Requirements
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
-**Location**: `smartbox_anomaly/detection/detector.py:349,395`
+**Location**: `smartbox_anomaly/core/config.py`, `smartbox_anomaly/core/constants.py`
 
-**Problem**: Current minimums (50 univariate, 100 multivariate) are too low.
+**Problem**: Previous minimums (50 univariate, 100 multivariate) were too low for stable Isolation Forest training.
 
-| Current | Recommended |
-|---------|-------------|
-| Univariate: 50 | 256 (IF recommendation) |
-| Multivariate: 100 | 256 × n_features |
+**Resolution**: Increased minimum sample requirements:
+- `MIN_TRAINING_SAMPLES`: 50 → 500 (univariate)
+- `MIN_MULTIVARIATE_SAMPLES`: 100 → 1000 (multivariate)
 
-**Impact**:
-- Unstable anomaly scores
-- High variance in percentile estimation
-
-**Workaround**: Ensure services have >256 samples per time period before relying on detection.
+These values align with Isolation Forest recommendations for stable tree construction with n_estimators=200.
 
 ---
 
