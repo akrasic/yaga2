@@ -77,6 +77,29 @@ Detection (ML) → SLO Evaluation → Exception Enrichment → Service Graph Enr
 - Database latency < floor (1ms) → anomaly suppressed as operationally insignificant
 - SLO config is in `config.json` under `slos` section
 
+### Severity Adjustment Logic
+
+When SLO evaluation is enabled:
+- **SLO ok** (all metrics within acceptable) → severity adjusted to `low`
+- **SLO warning** → severity stays `high`
+- **SLO breached** → severity stays `critical`
+
+The root `overall_severity` field reflects the SLO-adjusted value.
+
+### Named Pattern Naming Convention
+
+Patterns follow `{metric}_{state}_{modifier}` format:
+
+| Pattern | Severity | Description |
+|---------|----------|-------------|
+| `error_rate_critical` | critical | Very high error rate (replaces `partial_outage`) |
+| `error_rate_elevated` | high | Elevated error rate above baseline |
+| `latency_spike_recent` | high | Recent latency increase (replaces `recent_degradation`) |
+| `internal_latency_issue` | high | High latency with healthy deps (replaces `isolated_service_issue`) |
+| `partial_rejection` | high | Some requests rejected (replaces `partial_fast_fail`) |
+| `traffic_cliff` | critical | Sudden traffic drop |
+| `traffic_surge_failing` | critical | High traffic + high latency + high errors |
+
 ## Docker
 
 ```bash
@@ -104,9 +127,23 @@ Detailed documentation in `docs/` directory:
 @docs/DEPLOYMENT.md - Deployment guide
 @docs/API_SPECIFICATION.md - Full API spec
 @docs/KNOWN_ISSUES.md - Known issues and workarounds
+@docs/API_CHANGELOG.md - API version history and breaking changes
 
-## Recent Changes
+## Recent Changes (v1.3.1)
 
+- **SLO Severity Adjustment**: When SLO status is `ok`, severity is now consistently adjusted to `low` (was `medium`)
+- **Root Severity Fix**: `overall_severity` now correctly reflects SLO-adjusted value
+- **Pattern Naming**: Renamed patterns for clarity (`partial_outage` → `error_rate_critical`, etc.)
 - **Service Graph Enrichment**: Queries downstream service calls when client_latency SLO breached
 - **Database Latency Floor**: Values below 1ms are suppressed as operationally insignificant
 - **SLO-based Alert Suppression**: Anomalies with metrics below operational thresholds are filtered out entirely
+
+## Key Files to Know
+
+| File | Purpose |
+|------|---------|
+| `inference.py` | Main pipeline - runs detection, SLO eval, enrichment |
+| `smartbox_anomaly/slo/evaluator.py` | SLO evaluation and severity adjustment |
+| `smartbox_anomaly/detection/detector.py` | ML detection and pattern matching |
+| `smartbox_anomaly/detection/interpretations.py` | Pattern definitions and recommendations |
+| `config.json` | All configuration (SLOs, services, thresholds) |
