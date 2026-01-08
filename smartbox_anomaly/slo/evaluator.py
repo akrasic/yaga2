@@ -30,6 +30,43 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class SLOEvaluationInput:
+    """Input context for SLO evaluation.
+
+    Groups related parameters that flow through the evaluation process,
+    reducing parameter count in method signatures.
+    """
+
+    service_name: str
+    metrics: dict[str, Any]
+    anomalies: dict[str, Any]
+    original_severity: str
+    slo: "ServiceSLOConfig"
+    is_busy_period: bool = False
+    time_period: str = "business_hours"
+
+
+@dataclass
+class ExplanationContext:
+    """Context for generating human-readable explanations.
+
+    Groups parameters needed for explanation generation, extracted
+    from evaluation results to reduce method parameter count.
+    """
+
+    service_name: str
+    original_severity: str
+    adjusted_severity: str
+    latency: float
+    error_rate: float
+    slo: "ServiceSLOConfig"
+    slo_status: str
+    is_busy_period: bool
+    db_latency_eval: dict[str, Any] | None = None
+    request_rate_eval: dict[str, Any] | None = None
+
+
+@dataclass
 class SLOEvaluationResult:
     """Result of SLO evaluation for a single anomaly or service."""
 
@@ -347,7 +384,7 @@ class SLOEvaluator:
         )
 
         # Generate explanation
-        explanation = self._generate_explanation(
+        explanation_ctx = ExplanationContext(
             service_name=service_name,
             original_severity=original_severity,
             adjusted_severity=adjusted_severity,
@@ -359,6 +396,7 @@ class SLOEvaluator:
             db_latency_eval=db_latency_eval,
             request_rate_eval=request_rate_eval,
         )
+        explanation = self._generate_explanation(explanation_ctx)
 
         return SLOEvaluationResult(
             original_severity=original_severity,
@@ -965,89 +1003,84 @@ class SLOEvaluator:
 
         return evaluated_anomalies
 
-    def _generate_explanation(
-        self,
-        service_name: str,
-        original_severity: str,
-        adjusted_severity: str,
-        latency: float,
-        error_rate: float,
-        slo: ServiceSLOConfig,
-        slo_status: str,
-        is_busy_period: bool,
-        db_latency_eval: dict[str, Any] | None = None,
-        request_rate_eval: dict[str, Any] | None = None,
-    ) -> str:
-        """Generate human-readable explanation of the SLO evaluation."""
+    def _generate_explanation(self, ctx: ExplanationContext) -> str:
+        """Generate human-readable explanation of the SLO evaluation.
+
+        Args:
+            ctx: ExplanationContext containing all parameters needed for explanation.
+
+        Returns:
+            Human-readable explanation string.
+        """
         parts = []
 
-        if original_severity != adjusted_severity:
+        if ctx.original_severity != ctx.adjusted_severity:
             parts.append(
-                f"Severity adjusted from {original_severity} to {adjusted_severity} "
+                f"Severity adjusted from {ctx.original_severity} to {ctx.adjusted_severity} "
                 f"based on SLO evaluation."
             )
 
-        if is_busy_period:
+        if ctx.is_busy_period:
             parts.append(
-                f"Busy period active - thresholds relaxed by {slo.busy_period_factor}x."
+                f"Busy period active - thresholds relaxed by {ctx.slo.busy_period_factor}x."
             )
 
-        if slo_status == "breached":
-            if latency >= slo.latency_critical_ms:
+        if ctx.slo_status == "breached":
+            if ctx.latency >= ctx.slo.latency_critical_ms:
                 parts.append(
-                    f"Latency SLO BREACHED: {latency:.0f}ms exceeds "
-                    f"critical threshold of {slo.latency_critical_ms:.0f}ms."
+                    f"Latency SLO BREACHED: {ctx.latency:.0f}ms exceeds "
+                    f"critical threshold of {ctx.slo.latency_critical_ms:.0f}ms."
                 )
-            if error_rate >= slo.error_rate_critical:
+            if ctx.error_rate >= ctx.slo.error_rate_critical:
                 parts.append(
-                    f"Error rate SLO BREACHED: {error_rate*100:.2f}% exceeds "
-                    f"critical threshold of {slo.error_rate_critical*100:.1f}%."
+                    f"Error rate SLO BREACHED: {ctx.error_rate*100:.2f}% exceeds "
+                    f"critical threshold of {ctx.slo.error_rate_critical*100:.1f}%."
                 )
-        elif slo_status == "warning":
-            if latency >= slo.latency_warning_ms:
+        elif ctx.slo_status == "warning":
+            if ctx.latency >= ctx.slo.latency_warning_ms:
                 parts.append(
-                    f"Latency approaching SLO: {latency:.0f}ms "
-                    f"(warning at {slo.latency_warning_ms:.0f}ms, "
-                    f"critical at {slo.latency_critical_ms:.0f}ms)."
+                    f"Latency approaching SLO: {ctx.latency:.0f}ms "
+                    f"(warning at {ctx.slo.latency_warning_ms:.0f}ms, "
+                    f"critical at {ctx.slo.latency_critical_ms:.0f}ms)."
                 )
-            if error_rate >= slo.error_rate_warning:
+            if ctx.error_rate >= ctx.slo.error_rate_warning:
                 parts.append(
-                    f"Error rate approaching SLO: {error_rate*100:.2f}% "
-                    f"(warning at {slo.error_rate_warning*100:.1f}%)."
+                    f"Error rate approaching SLO: {ctx.error_rate*100:.2f}% "
+                    f"(warning at {ctx.slo.error_rate_warning*100:.1f}%)."
                 )
-        elif slo_status == "ok" and original_severity not in ("none", "informational"):
+        elif ctx.slo_status == "ok" and ctx.original_severity not in ("none", "informational"):
             parts.append(
                 f"Anomaly detected but metrics within acceptable SLO thresholds "
-                f"(latency: {latency:.0f}ms < {slo.latency_acceptable_ms:.0f}ms, "
-                f"errors: {error_rate*100:.2f}% < {slo.error_rate_acceptable*100:.1f}%)."
+                f"(latency: {ctx.latency:.0f}ms < {ctx.slo.latency_acceptable_ms:.0f}ms, "
+                f"errors: {ctx.error_rate*100:.2f}% < {ctx.slo.error_rate_acceptable*100:.1f}%)."
             )
 
         # Add database latency explanation if relevant
-        if db_latency_eval:
-            db_status = db_latency_eval.get("status", "ok")
+        if ctx.db_latency_eval:
+            db_status = ctx.db_latency_eval.get("status", "ok")
             if db_status in ("high", "critical"):
-                db_explanation = db_latency_eval.get("explanation", "")
+                db_explanation = ctx.db_latency_eval.get("explanation", "")
                 if db_explanation:
                     parts.append(f"Database latency issue: {db_explanation}")
             elif db_status == "warning":
-                db_value = db_latency_eval.get("value_ms", 0)
-                db_ratio = db_latency_eval.get("ratio", 0)
+                db_value = ctx.db_latency_eval.get("value_ms", 0)
+                db_ratio = ctx.db_latency_eval.get("ratio", 0)
                 parts.append(
                     f"Database latency elevated: {db_value:.1f}ms ({db_ratio:.1f}x baseline)."
                 )
-            elif db_status == "ok" and db_latency_eval.get("below_floor"):
+            elif db_status == "ok" and ctx.db_latency_eval.get("below_floor"):
                 # Mention that database latency was filtered by noise floor
-                db_value = db_latency_eval.get("value_ms", 0)
-                floor = db_latency_eval.get("floor_ms", 5.0)
-                if db_value > 0 and original_severity not in ("none", "informational"):
+                db_value = ctx.db_latency_eval.get("value_ms", 0)
+                floor = ctx.db_latency_eval.get("floor_ms", 5.0)
+                if db_value > 0 and ctx.original_severity not in ("none", "informational"):
                     parts.append(
                         f"Database latency ({db_value:.1f}ms) below noise floor ({floor:.0f}ms) - operationally insignificant."
                     )
 
         # Add request rate explanation if relevant
-        if request_rate_eval:
-            rr_type = request_rate_eval.get("type", "normal")
-            rr_explanation = request_rate_eval.get("explanation", "")
+        if ctx.request_rate_eval:
+            rr_type = ctx.request_rate_eval.get("type", "normal")
+            rr_explanation = ctx.request_rate_eval.get("explanation", "")
             if rr_type in ("surge", "cliff") and rr_explanation:
                 parts.append(f"Traffic: {rr_explanation}")
             elif rr_type == "low_traffic" and rr_explanation:

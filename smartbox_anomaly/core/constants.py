@@ -217,9 +217,9 @@ class Thresholds:
     MAX_LATENCY_MS: Final[float] = 300_000.0  # Max 5 minutes
     MAX_ERROR_RATE: Final[float] = 1.0  # Max 100%
 
-    # Training thresholds
-    MIN_TRAINING_SAMPLES: Final[int] = 50
-    MIN_MULTIVARIATE_SAMPLES: Final[int] = 100
+    # Training thresholds - minimum samples for statistical significance
+    MIN_TRAINING_SAMPLES: Final[int] = 500  # For stable univariate IF training
+    MIN_MULTIVARIATE_SAMPLES: Final[int] = 1000  # For reliable cross-metric patterns
     CONSTANT_VALUE_THRESHOLD: Final[float] = 1e-10
 
     # Percentile thresholds

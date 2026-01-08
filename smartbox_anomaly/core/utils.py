@@ -8,7 +8,9 @@ reducing code duplication and centralizing shared logic.
 from __future__ import annotations
 
 import hashlib
+import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -211,7 +213,11 @@ def calculate_duration_minutes(
 
         duration = end_dt - start_dt
         return max(0, int(duration.total_seconds() / 60))
-    except Exception:
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        # ValueError: invalid ISO format
+        # TypeError: None or wrong type passed
+        # AttributeError: object doesn't have expected methods
+        # OverflowError: datetime calculation overflow
         return 0
 
 
@@ -303,7 +309,10 @@ def generate_anomaly_name(anomaly_data: dict[str, Any], index: int = 0) -> str: 
 
         # Fallback
         return f"anomaly_{index}_{anomaly_type}"
-    except Exception:
+    except (KeyError, TypeError, AttributeError):
+        # KeyError: missing dictionary key
+        # TypeError: None value or wrong type
+        # AttributeError: object doesn't have expected attribute
         return f"anomaly_{index}_unknown"
 
 
@@ -484,3 +493,273 @@ def timestamp_age_minutes(timestamp: str | datetime) -> int:
         Age in minutes.
     """
     return calculate_duration_minutes(timestamp, datetime.now())
+
+
+# =============================================================================
+# Metric Validation Utilities
+# =============================================================================
+
+
+@dataclass
+class ValidationResult:
+    """Result of metric validation."""
+
+    value: float
+    is_valid: bool
+    was_corrected: bool
+    original_value: float | None
+    warning: str | None
+
+
+def validate_numeric(
+    value: float | int | None,
+    *,
+    default: float = 0.0,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    field_name: str = "value",
+) -> ValidationResult:
+    """Validate and sanitize a numeric value.
+
+    Handles NaN, Inf, None, and out-of-bounds values.
+
+    Args:
+        value: The value to validate.
+        default: Default value for invalid inputs.
+        min_value: Minimum allowed value (None = no minimum).
+        max_value: Maximum allowed value (None = no maximum).
+        field_name: Name of the field for warning messages.
+
+    Returns:
+        ValidationResult with sanitized value and metadata.
+    """
+    original = value
+    warning = None
+    was_corrected = False
+
+    # Handle None
+    if value is None:
+        return ValidationResult(
+            value=default,
+            is_valid=False,
+            was_corrected=True,
+            original_value=None,
+            warning=f"{field_name}: None value, using default {default}",
+        )
+
+    # Handle NaN and Inf
+    if math.isnan(value) or math.isinf(value):
+        return ValidationResult(
+            value=default,
+            is_valid=False,
+            was_corrected=True,
+            original_value=float(value) if not math.isnan(value) else None,
+            warning=f"{field_name}: {'NaN' if math.isnan(value) else 'Inf'} value, using default {default}",
+        )
+
+    result = float(value)
+
+    # Apply bounds
+    if min_value is not None and result < min_value:
+        warning = f"{field_name}: value {result} < {min_value}, capping at {min_value}"
+        result = min_value
+        was_corrected = True
+
+    if max_value is not None and result > max_value:
+        warning = f"{field_name}: value {result} > {max_value}, capping at {max_value}"
+        result = max_value
+        was_corrected = True
+
+    return ValidationResult(
+        value=result,
+        is_valid=not was_corrected,
+        was_corrected=was_corrected,
+        original_value=original if was_corrected else None,
+        warning=warning,
+    )
+
+
+def validate_rate(
+    value: float | int | None,
+    *,
+    field_name: str = "rate",
+    max_rate: float = 1_000_000.0,
+) -> ValidationResult:
+    """Validate a rate metric (requests/second, etc.).
+
+    Rates must be non-negative and below a reasonable maximum.
+
+    Args:
+        value: The rate value.
+        field_name: Name of the field for warnings.
+        max_rate: Maximum allowed rate (default 1M/s).
+
+    Returns:
+        ValidationResult with sanitized rate.
+    """
+    return validate_numeric(
+        value,
+        default=0.0,
+        min_value=0.0,
+        max_value=max_rate,
+        field_name=field_name,
+    )
+
+
+def validate_latency(
+    value: float | int | None,
+    *,
+    field_name: str = "latency",
+    max_latency_ms: float = 300_000.0,  # 5 minutes
+) -> ValidationResult:
+    """Validate a latency metric in milliseconds.
+
+    Latencies must be non-negative and below a reasonable maximum.
+
+    Args:
+        value: The latency value in ms.
+        field_name: Name of the field for warnings.
+        max_latency_ms: Maximum allowed latency (default 5 minutes).
+
+    Returns:
+        ValidationResult with sanitized latency.
+    """
+    return validate_numeric(
+        value,
+        default=0.0,
+        min_value=0.0,
+        max_value=max_latency_ms,
+        field_name=field_name,
+    )
+
+
+def validate_ratio(
+    value: float | int | None,
+    *,
+    field_name: str = "ratio",
+    min_ratio: float = 0.0,
+    max_ratio: float = 1.0,
+) -> ValidationResult:
+    """Validate a ratio/percentage value (0.0 to 1.0).
+
+    Args:
+        value: The ratio value.
+        field_name: Name of the field for warnings.
+        min_ratio: Minimum ratio (default 0.0).
+        max_ratio: Maximum ratio (default 1.0).
+
+    Returns:
+        ValidationResult with sanitized ratio.
+    """
+    return validate_numeric(
+        value,
+        default=0.0,
+        min_value=min_ratio,
+        max_value=max_ratio,
+        field_name=field_name,
+    )
+
+
+def validate_error_rate(
+    value: float | int | None,
+    *,
+    field_name: str = "error_rate",
+) -> ValidationResult:
+    """Validate an error rate metric (0.0 to 1.0).
+
+    Args:
+        value: The error rate value.
+        field_name: Name of the field for warnings.
+
+    Returns:
+        ValidationResult with sanitized error rate.
+    """
+    return validate_ratio(value, field_name=field_name)
+
+
+@dataclass
+class MetricsValidationResult:
+    """Result of validating a complete metrics set."""
+
+    metrics: dict[str, float]
+    warnings: list[str]
+    has_warnings: bool
+
+
+def validate_inference_metrics(
+    metrics: dict[str, float | int | None],
+) -> MetricsValidationResult:
+    """Validate a complete set of inference metrics.
+
+    Applies appropriate validation for each metric type:
+    - request_rate: non-negative rate
+    - *_latency: non-negative latency
+    - error_rate: ratio 0.0-1.0
+
+    Args:
+        metrics: Dictionary of metric name to value.
+
+    Returns:
+        MetricsValidationResult with sanitized metrics and any warnings.
+    """
+    validated: dict[str, float] = {}
+    warnings: list[str] = []
+
+    for name, value in metrics.items():
+        if "latency" in name.lower():
+            result = validate_latency(value, field_name=name)
+        elif "error" in name.lower() and "rate" in name.lower():
+            result = validate_error_rate(value, field_name=name)
+        elif "rate" in name.lower():
+            result = validate_rate(value, field_name=name)
+        else:
+            # Generic numeric validation
+            result = validate_numeric(value, field_name=name, min_value=0.0)
+
+        validated[name] = result.value
+        if result.warning:
+            warnings.append(result.warning)
+
+    return MetricsValidationResult(
+        metrics=validated,
+        warnings=warnings,
+        has_warnings=len(warnings) > 0,
+    )
+
+
+def safe_divide(
+    numerator: float,
+    denominator: float,
+    *,
+    default: float = 0.0,
+) -> float:
+    """Safely divide two numbers, handling zero division.
+
+    Args:
+        numerator: The numerator.
+        denominator: The denominator.
+        default: Default value if denominator is zero.
+
+    Returns:
+        Division result or default.
+    """
+    if denominator == 0 or math.isnan(denominator) or math.isinf(denominator):
+        return default
+    result = numerator / denominator
+    if math.isnan(result) or math.isinf(result):
+        return default
+    return result
+
+
+def clamp(value: float, min_value: float, max_value: float) -> float:
+    """Clamp a value between min and max bounds.
+
+    Args:
+        value: The value to clamp.
+        min_value: Minimum bound.
+        max_value: Maximum bound.
+
+    Returns:
+        Clamped value.
+    """
+    return max(min_value, min(max_value, value))

@@ -164,6 +164,92 @@ class AnomalySignal:
     deviation_sigma: float  # Standard deviations from mean
 
 
+@dataclass
+class MetricQualityInfo:
+    """Quality information for a single metric in training data."""
+
+    metric_name: str
+    sample_count: int
+    missing_count: int
+    missing_percentage: float
+    inf_count: int
+    outlier_count: int
+    outlier_percentage: float
+    has_constant_values: bool
+    constant_value_count: int
+    zero_count: int
+    zero_percentage: float
+    is_zero_dominant: bool
+    value_range: tuple[float, float]
+    is_usable: bool  # Can this metric be used for training?
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "metric_name": self.metric_name,
+            "sample_count": self.sample_count,
+            "missing_count": self.missing_count,
+            "missing_percentage": round(self.missing_percentage, 2),
+            "inf_count": self.inf_count,
+            "outlier_count": self.outlier_count,
+            "outlier_percentage": round(self.outlier_percentage, 2),
+            "has_constant_values": self.has_constant_values,
+            "constant_value_count": self.constant_value_count,
+            "zero_count": self.zero_count,
+            "zero_percentage": round(self.zero_percentage, 2),
+            "is_zero_dominant": self.is_zero_dominant,
+            "value_range": [self.value_range[0], self.value_range[1]],
+            "is_usable": self.is_usable,
+            "warnings": self.warnings,
+        }
+
+
+@dataclass
+class TrainingDataQualityReport:
+    """Comprehensive quality report for training data.
+
+    Provides visibility into training data quality issues that could affect
+    model performance, including missing values, outliers, and gaps.
+    """
+
+    service_name: str
+    total_samples: int
+    usable_samples: int  # After removing invalid rows
+    time_range_start: str | None
+    time_range_end: str | None
+    time_range_hours: float
+    expected_samples_5min: int  # Expected samples at 5-min granularity
+    sample_coverage_percentage: float  # usable / expected
+    metric_quality: dict[str, MetricQualityInfo] = field(default_factory=dict)
+    time_gaps: list[dict[str, Any]] = field(default_factory=list)  # Significant gaps in time series
+    overall_quality_score: float = 0.0  # 0-100 score
+    quality_grade: str = "unknown"  # A/B/C/D/F
+    warnings: list[str] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "service_name": self.service_name,
+            "total_samples": self.total_samples,
+            "usable_samples": self.usable_samples,
+            "time_range": {
+                "start": self.time_range_start,
+                "end": self.time_range_end,
+                "hours": round(self.time_range_hours, 1),
+            },
+            "expected_samples_5min": self.expected_samples_5min,
+            "sample_coverage_percentage": round(self.sample_coverage_percentage, 1),
+            "metric_quality": {k: v.to_dict() for k, v in self.metric_quality.items()},
+            "time_gaps": self.time_gaps,
+            "overall_quality_score": round(self.overall_quality_score, 1),
+            "quality_grade": self.quality_grade,
+            "warnings": self.warnings,
+            "recommendations": self.recommendations,
+        }
+
+
 # Pattern priority order for interpretation (most specific/critical first)
 PATTERN_PRIORITY: list[str] = [
     # Critical - immediate user impact
@@ -337,10 +423,19 @@ class SmartboxAnomalyDetector:
             "validation_samples": len(validation_df) if validation_df is not None else 0,
         }
 
+        # Generate training data quality report
+        quality_report = self.generate_training_quality_report(features_df)
+
         logger.info(
             f"Trained detector for {self.service_name}: "
-            f"{trained_univariate} univariate, multivariate={has_multivariate}"
+            f"{trained_univariate} univariate, multivariate={has_multivariate}, "
+            f"quality={quality_report.quality_grade} ({quality_report.overall_quality_score:.0f}/100)"
         )
+
+        # Log warnings from quality report
+        if quality_report.warnings:
+            for warning in quality_report.warnings:
+                logger.warning(f"Training data quality [{self.service_name}]: {warning}")
 
         return {
             "trained_univariate": trained_univariate,
@@ -349,6 +444,7 @@ class SmartboxAnomalyDetector:
             "calibrated_thresholds": {
                 k: v.to_dict() for k, v in self.calibrated_thresholds.items()
             },
+            "quality_report": quality_report.to_dict(),
         }
 
     def detect(
@@ -1448,6 +1544,256 @@ class SmartboxAnomalyDetector:
         except Exception as e:
             logger.error(f"Failed to train multivariate model: {e}")
             return False
+
+    def generate_training_quality_report(
+        self, features_df: pd.DataFrame
+    ) -> TrainingDataQualityReport:
+        """Generate a comprehensive quality report for training data.
+
+        Analyzes training data for issues that could affect model performance:
+        - Missing values and NaN/inf counts
+        - Outlier detection using IQR method
+        - Constant value detection
+        - Time gaps in time series data
+        - Sample coverage
+
+        Args:
+            features_df: DataFrame with training data.
+
+        Returns:
+            TrainingDataQualityReport with quality metrics and recommendations.
+        """
+        warnings: list[str] = []
+        recommendations: list[str] = []
+        metric_quality: dict[str, MetricQualityInfo] = {}
+
+        total_samples = len(features_df)
+        if total_samples == 0:
+            return TrainingDataQualityReport(
+                service_name=self.service_name,
+                total_samples=0,
+                usable_samples=0,
+                time_range_start=None,
+                time_range_end=None,
+                time_range_hours=0.0,
+                expected_samples_5min=0,
+                sample_coverage_percentage=0.0,
+                overall_quality_score=0.0,
+                quality_grade="F",
+                warnings=["No training data provided"],
+                recommendations=["Ensure VictoriaMetrics is collecting data for this service"],
+            )
+
+        # Detect time range if index is datetime
+        time_range_start = None
+        time_range_end = None
+        time_range_hours = 0.0
+        expected_samples = 0
+        time_gaps: list[dict[str, Any]] = []
+
+        if isinstance(features_df.index, pd.DatetimeIndex):
+            time_range_start = features_df.index.min().isoformat()
+            time_range_end = features_df.index.max().isoformat()
+            time_range_hours = (features_df.index.max() - features_df.index.min()).total_seconds() / 3600
+            # At 5-minute granularity, expect 12 samples per hour
+            expected_samples = max(1, int(time_range_hours * 12))
+
+            # Detect significant time gaps (> 30 minutes)
+            if len(features_df) > 1:
+                time_diffs = features_df.index.to_series().diff().dropna()
+                gap_threshold = pd.Timedelta(minutes=30)
+                significant_gaps = time_diffs[time_diffs > gap_threshold]
+
+                for gap_start, gap_duration in significant_gaps.items():
+                    time_gaps.append({
+                        "start": (gap_start - gap_duration).isoformat(),
+                        "end": gap_start.isoformat(),
+                        "duration_minutes": gap_duration.total_seconds() / 60,
+                    })
+                    if len(time_gaps) >= 10:  # Limit to top 10 gaps
+                        break
+
+                if time_gaps:
+                    warnings.append(f"Found {len(significant_gaps)} time gaps > 30 minutes")
+
+        # Analyze each metric
+        for metric_name in self.CORE_METRICS:
+            if metric_name not in features_df.columns:
+                warnings.append(f"Metric '{metric_name}' not found in training data")
+                continue
+
+            data = features_df[metric_name]
+            sample_count = len(data)
+            missing_count = int(data.isna().sum())
+            inf_count = int(np.isinf(data.replace([np.nan], 0)).sum())
+            missing_percentage = (missing_count / sample_count * 100) if sample_count > 0 else 0.0
+
+            # Clean data for further analysis
+            clean_data = data.dropna().replace([np.inf, -np.inf], np.nan).dropna()
+
+            # Outlier detection using IQR method
+            outlier_count = 0
+            if len(clean_data) > 4:
+                q1 = clean_data.quantile(0.25)
+                q3 = clean_data.quantile(0.75)
+                data_iqr = q3 - q1
+                lower_bound = q1 - 1.5 * data_iqr
+                upper_bound = q3 + 1.5 * data_iqr
+                outlier_count = int(((clean_data < lower_bound) | (clean_data > upper_bound)).sum())
+            outlier_percentage = (outlier_count / len(clean_data) * 100) if len(clean_data) > 0 else 0.0
+
+            # Constant value detection
+            constant_value_count = 0
+            has_constant_values = False
+            if len(clean_data) > 0:
+                value_counts = clean_data.value_counts()
+                if len(value_counts) == 1:
+                    has_constant_values = True
+                    constant_value_count = len(clean_data)
+                elif len(value_counts) > 0:
+                    # Check if any single value dominates (> 90%)
+                    max_count = value_counts.iloc[0]
+                    if max_count / len(clean_data) > 0.90:
+                        has_constant_values = True
+                        constant_value_count = int(max_count)
+
+            # Zero-normal metrics analysis
+            is_zero_normal = metric_name in self.ZERO_NORMAL_METRICS
+            zero_count = int((clean_data == 0).sum()) if len(clean_data) > 0 else 0
+            zero_percentage = (zero_count / len(clean_data) * 100) if len(clean_data) > 0 else 0.0
+            is_zero_dominant = is_zero_normal and zero_percentage > 50
+
+            # Value range
+            value_range = (
+                (float(clean_data.min()), float(clean_data.max()))
+                if len(clean_data) > 0
+                else (0.0, 0.0)
+            )
+
+            # Determine if metric is usable
+            min_samples = 500  # Matches MIN_TRAINING_SAMPLES constant
+            usable_samples = len(clean_data)
+            is_usable = usable_samples >= min_samples and not (has_constant_values and constant_value_count == usable_samples)
+
+            # Generate per-metric warnings
+            metric_warnings: list[str] = []
+            if missing_percentage > 10:
+                metric_warnings.append(f"High missing rate: {missing_percentage:.1f}%")
+            if outlier_percentage > 15:
+                metric_warnings.append(f"High outlier rate: {outlier_percentage:.1f}%")
+            if has_constant_values:
+                metric_warnings.append(f"Constant/dominant value detected ({constant_value_count} samples)")
+            if not is_usable:
+                metric_warnings.append(f"Insufficient samples: {usable_samples} < {min_samples}")
+
+            metric_quality[metric_name] = MetricQualityInfo(
+                metric_name=metric_name,
+                sample_count=sample_count,
+                missing_count=missing_count,
+                missing_percentage=missing_percentage,
+                inf_count=inf_count,
+                outlier_count=outlier_count,
+                outlier_percentage=outlier_percentage,
+                has_constant_values=has_constant_values,
+                constant_value_count=constant_value_count,
+                zero_count=zero_count,
+                zero_percentage=zero_percentage,
+                is_zero_dominant=is_zero_dominant,
+                value_range=value_range,
+                is_usable=is_usable,
+                warnings=metric_warnings,
+            )
+
+        # Calculate usable samples (rows without missing core metrics)
+        usable_samples = total_samples
+        for metric_name in self.CORE_METRICS:
+            if metric_name in features_df.columns:
+                usable_samples = min(usable_samples, len(features_df[metric_name].dropna()))
+
+        sample_coverage = (usable_samples / expected_samples * 100) if expected_samples > 0 else 100.0
+
+        # Calculate overall quality score (0-100)
+        quality_score = 100.0
+
+        # Deduct for missing metrics
+        available_metrics = sum(1 for m in self.CORE_METRICS if m in features_df.columns)
+        missing_metrics_penalty = (5 - available_metrics) * 10  # -10 per missing metric
+        quality_score -= missing_metrics_penalty
+
+        # Deduct for sample coverage
+        if sample_coverage < 80:
+            quality_score -= (80 - sample_coverage) * 0.3
+
+        # Deduct for metric-level issues
+        for mq in metric_quality.values():
+            if not mq.is_usable:
+                quality_score -= 15
+            if mq.missing_percentage > 5:
+                quality_score -= min(10, mq.missing_percentage * 0.5)
+            if mq.outlier_percentage > 10:
+                quality_score -= min(5, mq.outlier_percentage * 0.2)
+            if mq.has_constant_values:
+                quality_score -= 10
+
+        # Deduct for time gaps
+        if time_gaps:
+            quality_score -= min(15, len(time_gaps) * 3)
+
+        quality_score = max(0.0, min(100.0, quality_score))
+
+        # Assign grade
+        if quality_score >= 90:
+            quality_grade = "A"
+        elif quality_score >= 80:
+            quality_grade = "B"
+        elif quality_score >= 70:
+            quality_grade = "C"
+        elif quality_score >= 50:
+            quality_grade = "D"
+        else:
+            quality_grade = "F"
+
+        # Generate recommendations
+        if missing_metrics_penalty > 0:
+            missing_names = [m for m in self.CORE_METRICS if m not in features_df.columns]
+            recommendations.append(f"Add missing metrics: {', '.join(missing_names)}")
+
+        unusable_metrics = [m for m, mq in metric_quality.items() if not mq.is_usable]
+        if unusable_metrics:
+            recommendations.append(f"Collect more data for metrics: {', '.join(unusable_metrics)}")
+
+        if sample_coverage < 80:
+            recommendations.append(
+                f"Sample coverage is {sample_coverage:.1f}% - check for data collection gaps"
+            )
+
+        if time_gaps and len(time_gaps) > 3:
+            recommendations.append(
+                "Multiple time gaps detected - investigate VictoriaMetrics collection stability"
+            )
+
+        high_missing_metrics = [m for m, mq in metric_quality.items() if mq.missing_percentage > 10]
+        if high_missing_metrics:
+            recommendations.append(
+                f"High missing rate for: {', '.join(high_missing_metrics)} - check data pipeline"
+            )
+
+        return TrainingDataQualityReport(
+            service_name=self.service_name,
+            total_samples=total_samples,
+            usable_samples=usable_samples,
+            time_range_start=time_range_start,
+            time_range_end=time_range_end,
+            time_range_hours=time_range_hours,
+            expected_samples_5min=expected_samples,
+            sample_coverage_percentage=sample_coverage,
+            metric_quality=metric_quality,
+            time_gaps=time_gaps,
+            overall_quality_score=quality_score,
+            quality_grade=quality_grade,
+            warnings=warnings,
+            recommendations=recommendations,
+        )
 
     # =========================================================================
     # Calibration and Analysis Methods

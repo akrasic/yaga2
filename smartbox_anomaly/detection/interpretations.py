@@ -809,12 +809,6 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "CONSIDER: Fallback mode if available",
         "REVIEW: Retry policies and backoff settings",
     ],
-    ("silent_degradation", "high"): [
-        "CHECK: Recent deployments in last 2 hours",
-        "CHECK: Database and external dependency performance",
-        "CHECK: Resource utilization (CPU, memory, GC)",
-        "REVIEW: Recent configuration changes",
-    ],
     # Metric-specific recommendations
     ("error_rate_elevated", "critical"): [
         "IMMEDIATE: Check error logs for exception types",

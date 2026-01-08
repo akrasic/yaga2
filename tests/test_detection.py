@@ -172,6 +172,66 @@ class TestSmartboxAnomalyDetector:
         assert stats[MetricName.REQUEST_RATE].std >= 0
         assert stats[MetricName.REQUEST_RATE].p95 > 0
 
+    def test_training_quality_report(self, sample_training_data):
+        """Test training data quality report generation."""
+        detector = create_detector("test-quality-service")
+        result = detector.train(sample_training_data)
+
+        # Check that quality report is included
+        assert "quality_report" in result
+        report = result["quality_report"]
+
+        # Check overall structure
+        assert "service_name" in report
+        assert report["service_name"] == "test-quality-service"
+        assert "total_samples" in report
+        assert report["total_samples"] > 0
+        assert "overall_quality_score" in report
+        assert 0 <= report["overall_quality_score"] <= 100
+        assert "quality_grade" in report
+        assert report["quality_grade"] in ["A", "B", "C", "D", "F"]
+
+        # Check metric quality details
+        assert "metric_quality" in report
+        for metric_name, mq in report["metric_quality"].items():
+            assert "sample_count" in mq
+            assert "missing_count" in mq
+            assert "missing_percentage" in mq
+            assert "outlier_count" in mq
+            assert "is_usable" in mq
+
+        # Verify report can be serialized (to_dict was called)
+        assert isinstance(report, dict)
+
+    def test_training_quality_report_with_issues(self):
+        """Test quality report captures data quality issues."""
+        # Create data with known quality issues
+        np.random.seed(42)
+        data = pd.DataFrame({
+            MetricName.REQUEST_RATE: [100.0] * 600,  # Constant value
+            MetricName.APPLICATION_LATENCY: np.random.normal(100, 10, 600),
+            MetricName.ERROR_RATE: np.random.normal(0.02, 0.01, 600),
+        })
+        # Add some NaN values
+        data.loc[50:70, MetricName.APPLICATION_LATENCY] = np.nan
+
+        detector = create_detector("test-quality-issues")
+        result = detector.train(data)
+        report = result["quality_report"]
+
+        # Should have warnings
+        assert report["quality_grade"] != "A"  # Not perfect due to issues
+
+        # Check constant value detection for request_rate
+        if MetricName.REQUEST_RATE in report["metric_quality"]:
+            mq = report["metric_quality"][MetricName.REQUEST_RATE]
+            assert mq["has_constant_values"] is True
+
+        # Check missing value detection for application_latency
+        if MetricName.APPLICATION_LATENCY in report["metric_quality"]:
+            mq = report["metric_quality"][MetricName.APPLICATION_LATENCY]
+            assert mq["missing_count"] > 0
+
     def test_feature_importance(self, trained_detector):
         """Test feature importance calculation."""
         importance = trained_detector.feature_importance

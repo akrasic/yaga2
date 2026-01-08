@@ -166,8 +166,8 @@ class ModelConfig:
     """Configuration for ML model training and inference."""
 
     models_directory: str = "./smartbox_models/"
-    min_training_samples: int = 50
-    min_multivariate_samples: int = 100
+    min_training_samples: int = 500  # Minimum for statistical significance in univariate IF
+    min_multivariate_samples: int = 1000  # Higher requirement for cross-metric correlations
     default_contamination: float = 0.05
     default_n_estimators: int = 200
     random_state: int = 42
