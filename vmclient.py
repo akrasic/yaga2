@@ -9,6 +9,7 @@ from smartbox_anomaly.core.exceptions import MetricsCollectionError
 from smartbox_anomaly.metrics import (
     CircuitBreakerState,
     InferenceMetrics,
+    QueryResult,
     ValidationResult,
     VictoriaMetricsClient,
     sanitize_metric_value,
@@ -25,6 +26,7 @@ __all__ = [
     "VictoriaMetricsClient",
     "InferenceMetrics",
     "CircuitBreakerState",
+    "QueryResult",
     "ValidationResult",
     "MetricsCollectionError",
     "validate_metrics",

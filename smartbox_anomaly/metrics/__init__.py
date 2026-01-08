@@ -4,12 +4,21 @@ Metrics module - metric collection and validation.
 This module contains:
     - client: VictoriaMetrics client with circuit breaker
     - validation: Metric validation utilities
+    - quality: Data quality analysis utilities
 """
 
 from smartbox_anomaly.metrics.client import (
     CircuitBreakerState,
     InferenceMetrics,
+    QueryResult,
     VictoriaMetricsClient,
+)
+from smartbox_anomaly.metrics.quality import (
+    DataQualityReport,
+    TimeGap,
+    analyze_combined_data_quality,
+    analyze_data_quality,
+    detect_time_gaps,
 )
 from smartbox_anomaly.metrics.validation import (
     ValidationResult,
@@ -28,6 +37,13 @@ __all__ = [
     "VictoriaMetricsClient",
     "InferenceMetrics",
     "CircuitBreakerState",
+    "QueryResult",
+    # Quality analysis
+    "DataQualityReport",
+    "TimeGap",
+    "analyze_data_quality",
+    "analyze_combined_data_quality",
+    "detect_time_gaps",
     # Validation
     "ValidationResult",
     "validate_metrics",

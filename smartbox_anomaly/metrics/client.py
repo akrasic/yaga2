@@ -110,6 +110,80 @@ class InferenceMetrics:
 
 
 @dataclass
+class QueryResult:
+    """Structured result from VictoriaMetrics queries.
+
+    Replaces silent failure pattern with explicit success/failure tracking.
+    This allows callers to distinguish between "no data exists" and "query failed".
+    """
+
+    success: bool
+    data: dict[str, Any]
+    error_message: str | None = None
+    warning_message: str | None = None
+    query: str | None = None
+    duration_ms: float | None = None
+
+    @classmethod
+    def ok(
+        cls,
+        data: dict[str, Any],
+        query: str | None = None,
+        duration_ms: float | None = None,
+    ) -> QueryResult:
+        """Create a successful result."""
+        return cls(success=True, data=data, query=query, duration_ms=duration_ms)
+
+    @classmethod
+    def error(
+        cls,
+        message: str,
+        query: str | None = None,
+        duration_ms: float | None = None,
+    ) -> QueryResult:
+        """Create a failed result."""
+        return cls(
+            success=False,
+            data={"data": {"result": []}},
+            error_message=message,
+            query=query,
+            duration_ms=duration_ms,
+        )
+
+    @classmethod
+    def empty_with_warning(
+        cls,
+        warning: str,
+        query: str | None = None,
+        duration_ms: float | None = None,
+    ) -> QueryResult:
+        """Create successful but empty result with warning."""
+        return cls(
+            success=True,
+            data={"data": {"result": []}},
+            warning_message=warning,
+            query=query,
+            duration_ms=duration_ms,
+        )
+
+    def get_result_data(self) -> list[Any]:
+        """Extract the result array from the response."""
+        return self.data.get("data", {}).get("result", [])
+
+    def is_empty(self) -> bool:
+        """Check if result contains no data."""
+        return len(self.get_result_data()) == 0
+
+    def get_values_count(self) -> int:
+        """Count total data points across all series."""
+        total = 0
+        for series in self.get_result_data():
+            values = series.get("values", [])
+            total += len(values)
+        return total
+
+
+@dataclass
 class CircuitBreakerState:
     """State tracking for circuit breaker pattern."""
 
@@ -410,8 +484,21 @@ class VictoriaMetricsClient(MetricsCollector):
             raise MetricsCollectionError(service_name, reason=str(e), cause=e) from e
 
     def query(self, query: str) -> dict[str, Any]:
-        """Query VictoriaMetrics for current value."""
+        """Query VictoriaMetrics for current value.
+
+        Note: This method returns raw dict for backward compatibility.
+        For new code that needs error tracking, use query_instant() instead.
+        """
+        result = self.query_instant(query)
+        return result.data
+
+    def query_instant(self, query: str) -> QueryResult:
+        """Query VictoriaMetrics for current value with structured result.
+
+        Returns QueryResult with success status and error tracking.
+        """
         params = {"query": query}
+        start_ts = time.time()
 
         try:
             response = self._session.get(
@@ -419,18 +506,63 @@ class VictoriaMetricsClient(MetricsCollector):
                 params=params,
                 timeout=self._config.timeout_seconds,
             )
+            duration_ms = (time.time() - start_ts) * 1000
             response.raise_for_status()
             result: dict[str, Any] = response.json()
 
             if result.get("status") == "error":
-                logger.error(f"VictoriaMetrics error: {result.get('error', 'Unknown')}")
-                return {"data": {"result": []}}
+                error_msg = result.get("error", "Unknown VictoriaMetrics error")
+                logger.error(
+                    "VictoriaMetrics query error: %s (query: %s...)",
+                    error_msg,
+                    query[:100],
+                )
+                return QueryResult.error(
+                    message=f"VictoriaMetrics error: {error_msg}",
+                    query=query,
+                    duration_ms=duration_ms,
+                )
 
-            return result
+            return QueryResult.ok(data=result, query=query, duration_ms=duration_ms)
+
+        except requests.exceptions.Timeout as e:
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query timeout after %.1fs: %s...",
+                duration_ms / 1000,
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Request timed out after {self._config.timeout_seconds}s",
+                query=query,
+                duration_ms=duration_ms,
+            )
+
+        except requests.exceptions.ConnectionError as e:
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query connection error: %s (query: %s...)",
+                str(e)[:100],
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Connection error: {str(e)[:100]}",
+                query=query,
+                duration_ms=duration_ms,
+            )
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {e}")
-            return {"data": {"result": []}}
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query request failed: %s (query: %s...)",
+                str(e)[:100],
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Request failed: {str(e)[:100]}",
+                query=query,
+                duration_ms=duration_ms,
+            )
 
     def query_range(
         self,
@@ -438,8 +570,22 @@ class VictoriaMetricsClient(MetricsCollector):
         start_time: datetime,
         end_time: datetime,
         step: str = "5m",
-    ) -> dict[str, Any]:
-        """Query VictoriaMetrics for a time range."""
+        timeout_seconds: int | None = None,
+    ) -> QueryResult:
+        """Query VictoriaMetrics for a time range.
+
+        Args:
+            query: PromQL query string.
+            start_time: Start of the time range.
+            end_time: End of the time range.
+            step: Query resolution (default: 5m).
+            timeout_seconds: Request timeout. Defaults to config value.
+                Use longer timeouts for training queries (e.g., 120s for 30-day ranges).
+
+        Returns:
+            QueryResult with success status, data, and any error/warning messages.
+        """
+        effective_timeout = timeout_seconds or self._config.timeout_seconds
         params = {
             "query": query,
             "start": start_time.isoformat() + "Z",
@@ -447,23 +593,102 @@ class VictoriaMetricsClient(MetricsCollector):
             "step": step,
         }
 
+        start_ts = time.time()
+
         try:
             response = self._session.get(
                 f"{self._endpoint}/api/v1/query_range",
                 params=params,
-                timeout=30,
+                timeout=effective_timeout,
             )
+            duration_ms = (time.time() - start_ts) * 1000
             response.raise_for_status()
             result: dict[str, Any] = response.json()
 
             if result.get("status") == "error":
-                return {"data": {"result": []}}
+                error_msg = result.get("error", "Unknown VictoriaMetrics error")
+                logger.error(
+                    "VictoriaMetrics query_range error: %s (query: %s...)",
+                    error_msg,
+                    query[:100],
+                )
+                return QueryResult.error(
+                    message=f"VictoriaMetrics error: {error_msg}",
+                    query=query,
+                    duration_ms=duration_ms,
+                )
 
-            return result
+            query_result = QueryResult.ok(data=result, query=query, duration_ms=duration_ms)
+
+            # Log warning if result is unexpectedly empty
+            if query_result.is_empty():
+                logger.debug(
+                    "query_range returned empty result for query: %s... (this may be expected)",
+                    query[:100],
+                )
+
+            return query_result
+
+        except requests.exceptions.Timeout as e:
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query_range timeout after %.1fs (timeout=%ds): %s...",
+                duration_ms / 1000,
+                effective_timeout,
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Request timed out after {effective_timeout}s",
+                query=query,
+                duration_ms=duration_ms,
+            )
+
+        except requests.exceptions.ConnectionError as e:
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query_range connection error: %s (query: %s...)",
+                str(e)[:100],
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Connection error: {str(e)[:100]}",
+                query=query,
+                duration_ms=duration_ms,
+            )
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {e}")
-            return {"data": {"result": []}}
+            duration_ms = (time.time() - start_ts) * 1000
+            logger.error(
+                "query_range request failed: %s (query: %s...)",
+                str(e)[:100],
+                query[:100],
+            )
+            return QueryResult.error(
+                message=f"Request failed: {str(e)[:100]}",
+                query=query,
+                duration_ms=duration_ms,
+            )
+
+    def query_range_raw(
+        self,
+        query: str,
+        start_time: datetime,
+        end_time: datetime,
+        step: str = "5m",
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Query VictoriaMetrics for a time range, returning raw dict.
+
+        Backward-compatible method that returns raw dict format.
+        New code should use query_range() which returns QueryResult.
+        """
+        result = self.query_range(query, start_time, end_time, step, timeout_seconds)
+        if not result.success:
+            logger.warning(
+                "query_range_raw: query failed (%s), returning empty result",
+                result.error_message,
+            )
+        return result.data
 
     def _query_metric_with_retry(self, query: str, service_name: str) -> float:
         """Query single metric with retry logic."""

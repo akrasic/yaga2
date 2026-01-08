@@ -8,9 +8,9 @@ This document tracks known issues, limitations, and planned improvements identif
 
 | Category | Issues | Critical | High | Medium | Fixed |
 |----------|--------|----------|------|--------|-------|
-| Training Pipeline | 10 | 2 | 4 | 4 | 4 |
+| Training Pipeline | 10 | 2 | 4 | 4 | 6 |
 | Message Semantics | 12 | 1 | 2 | 8 | 1 |
-| **Total** | **22** | **3** | **6** | **12** | **5** |
+| **Total** | **22** | **3** | **6** | **12** | **7** |
 
 **Recently Fixed:**
 - Issue #2: No Model Validation → Implemented temporal train/validation split
@@ -18,6 +18,8 @@ This document tracks known issues, limitations, and planned improvements identif
 - Issue #5: No Temporal Validation → Implemented temporal split with config option
 - Issue #6: Insufficient Sample Requirements → Increased to 500/1000
 - Issue #7: Low Latency Misinterpreted → Added lower_is_better_metrics()
+- Issue #11: Missing Training Data Quality Report → Added DataQualityReport with gap detection
+- Issue #19: Silent Query Failures → Added QueryResult with explicit error tracking
 
 ---
 
@@ -220,13 +222,20 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ### 11. Missing Training Data Quality Report
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
-**Location**: Not implemented
+**Location**: `smartbox_anomaly/metrics/quality.py`, `main.py:305-327`
 
 **Problem**: No visibility into training data quality - missing values, outliers, gaps are silently handled.
 
-**Impact**: Can't detect data pipeline issues affecting model quality.
+**Resolution**: Implemented comprehensive data quality analysis module:
+- `DataQualityReport` class with quality scoring (A-F grades)
+- `analyze_combined_data_quality()` for multi-metric analysis
+- `detect_time_gaps()` for identifying gaps in time series data
+- Automatic quality logging during training with per-metric breakdown
+- Coverage percentage tracking (expected vs actual data points)
+- Gap count and maximum gap duration reporting
+- Integration into training pipeline (`_combine_metrics()` method)
 
 ---
 
@@ -316,19 +325,39 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ---
 
+### 19. Silent Query Failures in VictoriaMetrics Client
+
+**Status**: Fixed
+**Severity**: Medium
+**Location**: `smartbox_anomaly/metrics/client.py:509-634`
+
+**Problem**: VictoriaMetrics query failures (timeouts, connection errors, VM errors) were silently returning empty data, making it impossible to distinguish between "no data exists" and "query failed".
+
+**Resolution**: Implemented structured query result pattern:
+- `QueryResult` dataclass with explicit success/failure status
+- `query_range()` now returns `QueryResult` with error tracking
+- `query_instant()` added as new method with same pattern
+- Backward-compatible `query()` and `query_range_raw()` methods preserved
+- Configurable timeout for training queries (default 120s for 30-day ranges)
+- Per-query duration tracking for performance monitoring
+- Detailed error logging for timeout, connection, and VM errors
+- Training pipeline updated to handle query failures and report them
+
+---
+
 ## Recommended Improvements by Priority
 
 ### Immediate (Before Next Release)
 
 1. Fix statistics/training data mismatch
-2. Increase minimum sample requirements to 256
-3. Add training data quality report (logging)
+2. ~~Increase minimum sample requirements to 256~~ (Fixed: now 500/1000)
+3. ~~Add training data quality report (logging)~~ (Fixed: DataQualityReport implemented)
 
 ### Short-Term (Next Sprint)
 
-4. Implement temporal validation split
+4. ~~Implement temporal validation split~~ (Fixed: validation_fraction config option)
 5. Add model performance metrics
-6. Correlate low latency with error rate
+6. ~~Correlate low latency with error rate~~ (Fixed: lower_is_better_metrics)
 
 ### Medium-Term (Next Quarter)
 

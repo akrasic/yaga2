@@ -3,7 +3,8 @@
 
 from smartbox_anomaly.detection.detector import SmartboxAnomalyDetector
 from smartbox_anomaly.detection.time_aware import TimeAwareAnomalyDetector
-from vmclient import VictoriaMetricsClient
+from vmclient import VictoriaMetricsClient, QueryResult
+from smartbox_anomaly.metrics.quality import analyze_combined_data_quality, DataQualityReport
 import pandas as pd
 import numpy as np
 import os
@@ -84,16 +85,25 @@ class SmartboxMetricsExtractor:
         return query_results
     
     def extract_service_metrics(self, service_name: str, lookback_days: int = 30) -> pd.DataFrame:
-        """Extract all metrics for a specific service"""
+        """Extract all metrics for a specific service with robust error handling.
+
+        Uses longer timeouts for training queries (120s) and tracks query failures
+        to distinguish between 'no data exists' and 'query failed'.
+        """
         end_time = datetime.now()
         start_time = end_time - timedelta(days=lookback_days)
 
+        # Calculate expected data points for validation
+        expected_intervals = lookback_days * 24 * 12  # 5-minute intervals
+
         logger.info(
-            "Extracting metrics for %s from %s to %s",
-            service_name, start_time.date(), end_time.date()
+            "Extracting metrics for %s from %s to %s (expecting ~%d data points per metric)",
+            service_name, start_time.date(), end_time.date(), expected_intervals
         )
 
         all_metrics = {}
+        query_failures = []
+        query_stats = []
 
         for metric_name, base_query in self.queries.items():
             # Clean up query and add service filter
@@ -109,20 +119,68 @@ class SmartboxMetricsExtractor:
 
             logger.debug("Querying %s: %s...", metric_name, query[:100])
 
+            # Use longer timeout for training queries (120s instead of default 10s)
             result = self.vm_client.query_range(
                 query=query,
                 start_time=start_time,
                 end_time=end_time,
-                step='5m'
+                step='5m',
+                timeout_seconds=120
             )
 
-            # Parse the result
-            metric_data = self._parse_metric_result(result, metric_name)
-            if not metric_data.empty:
-                all_metrics[metric_name] = metric_data
-                logger.info("  %s: %d data points", metric_name, len(metric_data))
+            # Track query statistics
+            stat = {
+                'metric': metric_name,
+                'success': result.success,
+                'duration_ms': result.duration_ms,
+                'data_points': result.get_values_count() if result.success else 0,
+            }
+
+            if not result.success:
+                query_failures.append({
+                    'metric': metric_name,
+                    'error': result.error_message,
+                })
+                logger.error(
+                    "  %s: Query FAILED - %s",
+                    metric_name, result.error_message
+                )
+                stat['error'] = result.error_message
             else:
-                logger.warning("  %s: No data found", metric_name)
+                # Parse the result
+                metric_data = self._parse_metric_result(result.data, metric_name)
+                if not metric_data.empty:
+                    all_metrics[metric_name] = metric_data
+                    coverage_pct = (len(metric_data) / expected_intervals) * 100
+                    stat['coverage_pct'] = coverage_pct
+
+                    if coverage_pct < 50:
+                        logger.warning(
+                            "  %s: %d data points (%.1f%% coverage - LOW)",
+                            metric_name, len(metric_data), coverage_pct
+                        )
+                    else:
+                        logger.info(
+                            "  %s: %d data points (%.1f%% coverage)",
+                            metric_name, len(metric_data), coverage_pct
+                        )
+                else:
+                    if result.warning_message:
+                        logger.warning("  %s: No data found - %s", metric_name, result.warning_message)
+                    else:
+                        logger.warning("  %s: No data found (query succeeded but returned empty)", metric_name)
+                    stat['coverage_pct'] = 0
+
+            query_stats.append(stat)
+
+        # Log query failures summary if any
+        if query_failures:
+            logger.error(
+                "DATA QUALITY ISSUE: %d/%d metric queries failed for %s",
+                len(query_failures), len(self.queries), service_name
+            )
+            for failure in query_failures:
+                logger.error("  - %s: %s", failure['metric'], failure['error'])
 
         # Combine all metrics
         if all_metrics:
@@ -131,9 +189,18 @@ class SmartboxMetricsExtractor:
                 "Combined dataset: %d rows, %d columns",
                 len(combined_df), len(combined_df.columns)
             )
+
+            # Log overall data quality
+            overall_coverage = (len(combined_df) / expected_intervals) * 100
+            if overall_coverage < 80:
+                logger.warning(
+                    "DATA QUALITY WARNING: Only %.1f%% data coverage for %s (expected ~%d rows, got %d)",
+                    overall_coverage, service_name, expected_intervals, len(combined_df)
+                )
+
             return combined_df
         else:
-            logger.error("No metrics found for %s", service_name)
+            logger.error("No metrics found for %s - cannot proceed with training", service_name)
             return pd.DataFrame()
     
     def _parse_metric_result(self, result: Dict, metric_name: str) -> pd.DataFrame:
@@ -234,6 +301,29 @@ class SmartboxMetricsExtractor:
             logger.warning("Emergency cleanup: replaced remaining invalid values with 0")
 
         logger.debug("Data cleaning completed")
+
+        # Run data quality analysis
+        quality_report = analyze_combined_data_quality(combined, lookback_days=30)
+        logger.info(
+            "Data quality analysis: Overall grade %s (score %d/100), %d rows",
+            quality_report["overall_grade"],
+            quality_report["overall_score"],
+            quality_report["row_count"],
+        )
+
+        # Log per-metric quality issues
+        for metric_name, metric_report in quality_report["metrics"].items():
+            if metric_report["quality_grade"] in ("D", "F"):
+                logger.warning(
+                    "  %s: Grade %s - %.1f%% coverage, %d gaps (max %.0fm)",
+                    metric_name,
+                    metric_report["quality_grade"],
+                    metric_report["coverage_percent"],
+                    metric_report["gap_count"],
+                    metric_report["max_gap_minutes"],
+                )
+                for issue in metric_report.get("issues", []):
+                    logger.warning("    Issue: %s", issue)
 
         return combined
 
