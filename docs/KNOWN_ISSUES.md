@@ -261,15 +261,17 @@ KNOWN_SERVICE_PARAMS = {
 
 ---
 
-### 14. partial_outage Severity May Be Too High
+### 14. error_rate_critical Severity May Be Too High
 
 **Status**: Open
 **Severity**: Medium
 **Location**: `smartbox_anomaly/detection/interpretations.py`
 
-**Problem**: Any "high" error rate triggers critical severity, but 6% errors (just above threshold) isn't as severe as 50% errors.
+**Problem**: Any "very_high" error rate triggers `error_rate_critical` with critical severity, but 6% errors (just above threshold) isn't as severe as 50% errors.
 
 **Impact**: Alert fatigue from minor error elevations.
+
+**Note**: Pattern was renamed from `partial_outage` to `error_rate_critical` for clarity (v1.3.1).
 
 ---
 

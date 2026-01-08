@@ -241,7 +241,7 @@ def _find_matching_pattern(
     pattern_priority = [
         # Critical patterns first
         "traffic_surge_failing",
-        "partial_outage",
+        "error_rate_critical",
         "fast_rejection",
         "traffic_cliff",
         # High severity
@@ -577,7 +577,7 @@ Output → Single "traffic_surge_degrading" anomaly
 
 ```
 IF Detection → [app_latency: high, request_rate: high, error_rate: high]
-Pattern Interpretation → Could match "traffic_surge_failing" OR "partial_outage"
+Pattern Interpretation → Could match "traffic_surge_failing" OR "error_rate_critical"
 Resolution → First match in priority order wins ("traffic_surge_failing")
 ```
 
@@ -625,7 +625,7 @@ Resolution → First match in priority order wins ("traffic_surge_failing")
 PATTERN_PRIORITY = [
     # Critical - immediate user impact
     "traffic_surge_failing",
-    "partial_outage",
+    "error_rate_critical",
     "fast_rejection",
     "traffic_cliff",
     "reduced_traffic_with_errors",
@@ -640,10 +640,10 @@ PATTERN_PRIORITY = [
     "database_bottleneck",
     "downstream_cascade",
     "internal_bottleneck",
-    "isolated_service_issue",
-    "recent_degradation",
+    "internal_latency_issue",
+    "latency_spike_recent",
     "fast_failure",
-    "partial_fast_fail",
+    "partial_rejection",
 
     # Medium - noticeable issues
     "database_degradation",
@@ -705,7 +705,7 @@ Service dependencies are configured in `config.json`:
 |---------|------------|-------------|
 | `upstream_cascade` | high latency + upstream has anomaly | Root cause in dependency |
 | `dependency_chain_degradation` | high latency + multiple deps affected | Chain of services degraded |
-| `isolated_service_issue` | high latency + all deps healthy | Issue is internal to service |
+| `internal_latency_issue` | high latency + all deps healthy | Issue is internal to service |
 
 ### Cascade Analysis Output
 

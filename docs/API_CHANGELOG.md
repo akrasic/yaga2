@@ -63,6 +63,40 @@ Fixed an issue where the root-level `overall_severity` field was not updated to 
 
 The root `overall_severity` now correctly matches `slo_evaluation.adjusted_severity` when SLO evaluation adjusts the severity.
 
+#### Pattern Naming Improvements
+
+Renamed several anomaly patterns to be more descriptive and consistent:
+
+| Old Name | New Name | Reason |
+|----------|----------|--------|
+| `partial_outage` | `error_rate_critical` | "Outage" was misleading - service responds normally, just high errors |
+| `recent_degradation` | `latency_spike_recent` | More specific about what degraded |
+| `isolated_service_issue` | `internal_latency_issue` | Clearer that it's a latency problem internal to service |
+| `partial_fast_fail` | `partial_rejection` | "Rejection" better describes requests failing before processing |
+
+Renamed recommendation keys for consistency:
+
+| Old Key | New Key |
+|---------|---------|
+| `error_rate_high` | `error_rate_elevated` |
+| `application_latency_high` | `latency_elevated` |
+| `request_rate_high` | `traffic_surge` |
+| `request_rate_low` | `traffic_cliff` |
+
+**Naming Convention:**
+```
+{metric}_{state}_{modifier}
+
+Examples:
+- error_rate_critical
+- error_rate_elevated
+- latency_spike_recent
+- latency_elevated
+- internal_latency_issue
+```
+
+**Impact:** Alerts will now use the new pattern names in the `pattern_name` and anomaly key fields. Downstream consumers should update any hardcoded pattern name references.
+
 ---
 
 ## Version 1.3.0

@@ -223,14 +223,15 @@ MULTIVARIATE_PATTERNS = {
 | Pattern | Conditions | Severity | Meaning |
 |---------|------------|----------|---------|
 | `elevated_errors` | normal traffic/latency, high errors | high | Specific endpoint or operation failing |
-| `partial_outage` | normal traffic/latency, very high errors | critical | Significant portion of requests failing |
+| `error_rate_critical` | normal traffic/latency, very high errors | critical | Significant portion of requests failing |
 
 #### Latency Patterns
 
 | Pattern | Conditions | Severity | Meaning |
 |---------|------------|----------|---------|
-| `recent_degradation` | normal traffic, high latency, normal errors | high | Recent change caused slowdown |
+| `latency_spike_recent` | normal traffic, high latency, normal errors | high | Recent change caused slowdown |
 | `internal_bottleneck` | high app latency, normal external deps | high | Application itself is slow |
+| `internal_latency_issue` | high app latency, all deps healthy | high | Issue is internal to service |
 | `database_degradation` | high DB latency, normal app latency | medium | DB slow but app compensating |
 | `database_bottleneck` | high DB latency, DB >70% of total latency | high | DB is primary constraint |
 | `downstream_cascade` | high client latency, >60% of total latency | high | External dependency is bottleneck |
@@ -241,7 +242,7 @@ MULTIVARIATE_PATTERNS = {
 |---------|------------|----------|---------|
 | `fast_rejection` | very low latency, very high errors | critical | Requests rejected before processing |
 | `fast_failure` | low latency, high errors | critical | Quick failures (circuit breaker, auth, etc.) |
-| `partial_fast_fail` | low latency, moderate errors | high | Some operations being rejected |
+| `partial_rejection` | low latency, moderate errors | high | Some operations being rejected |
 
 ### Detection Output
 
@@ -421,7 +422,7 @@ The system includes patterns that detect cascade failures across service depende
 |---------|------------|----------|-------------|
 | `upstream_cascade` | high latency + `_dependency_context: upstream_anomaly` | high | Root cause in upstream dependency |
 | `dependency_chain_degradation` | high latency + `_dependency_context: chain_degraded` | high | Multiple services in chain affected |
-| `isolated_service_issue` | high latency + `_dependency_context: dependencies_healthy` | high | All deps healthy, issue is internal |
+| `internal_latency_issue` | high latency + `_dependency_context: dependencies_healthy` | high | All deps healthy, issue is internal |
 
 ### How Dependency Detection Works
 

@@ -332,8 +332,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "PREPARE: Have rollback ready if recent deployment is contributing",
         ],
     ),
-    "recent_degradation": PatternDefinition(
-        name="recent_degradation",
+    "latency_spike_recent": PatternDefinition(
+        name="latency_spike_recent",
         conditions={
             "request_rate": "normal",
             "application_latency": "high",
@@ -341,7 +341,7 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "latency_change": "recent_increase",  # Distinguishes from sustained high latency
         },
         message_template=(
-            "Recent performance degradation: latency increased to {application_latency:.0f}ms "
+            "Recent latency spike: latency increased to {application_latency:.0f}ms "
             "(was ~{previous_latency:.0f}ms) at normal traffic, errors stable"
         ),
         severity="high",
@@ -383,15 +383,15 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "VERIFY: Is this a temporary spike or sustained elevation?",
         ],
     ),
-    "partial_outage": PatternDefinition(
-        name="partial_outage",
+    "error_rate_critical": PatternDefinition(
+        name="error_rate_critical",
         conditions={
             "request_rate": "normal",
             "application_latency": "normal",
             "error_rate": "very_high",
         },
         message_template=(
-            "Partial outage: {error_rate:.2%} error rate significantly elevated "
+            "Critical error rate: {error_rate:.2%} errors "
             "at normal traffic ({request_rate:.1f} req/s) and latency ({application_latency:.0f}ms)"
         ),
         severity="critical",
@@ -613,14 +613,14 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CHECK: Client-side error rates if available",
         ],
     ),
-    "partial_fast_fail": PatternDefinition(
-        name="partial_fast_fail",
+    "partial_rejection": PatternDefinition(
+        name="partial_rejection",
         conditions={
             "application_latency": "low",
             "error_rate": "moderate",
         },
         message_template=(
-            "Partial fast-fail: {error_rate:.1%} errors failing quickly "
+            "Partial rejection: {error_rate:.1%} errors failing quickly "
             "({application_latency:.0f}ms) - specific operations being rejected"
         ),
         severity="high",
@@ -778,7 +778,7 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "INVESTIGATE: Check if this is legitimate traffic or potential attack",
         "PREPARE: Have rollback ready if recent deployment is cause",
     ],
-    ("partial_outage", "critical"): [
+    ("error_rate_critical", "critical"): [
         "IMMEDIATE: Check error logs for exception stack traces",
         "CORRELATE: Identify if errors are from specific endpoints",
         "TIMELINE: Was there a recent deployment? (check last 30 min)",
@@ -816,30 +816,30 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "REVIEW: Recent configuration changes",
     ],
     # Metric-specific recommendations
-    ("error_rate_high", "critical"): [
+    ("error_rate_elevated", "critical"): [
         "IMMEDIATE: Check error logs for exception types",
         "CORRELATE: Identify affected endpoints",
         "TIMELINE: Check for recent deployments",
         "VERIFY: Dependent service health",
     ],
-    ("error_rate_high", "high"): [
+    ("error_rate_elevated", "high"): [
         "CHECK: Error logs for patterns",
         "IDENTIFY: Most frequent error types",
         "REVIEW: Recent code or config changes",
     ],
-    ("application_latency_high", "high"): [
+    ("latency_elevated", "high"): [
         "CHECK: CPU and memory utilization",
         "CHECK: Database and external API response times",
         "PROFILE: Enable request tracing if not active",
         "COMPARE: Latency breakdown (app vs db vs client)",
     ],
-    ("request_rate_high", "high"): [
+    ("traffic_surge", "high"): [
         "VERIFY: Traffic source (legitimate vs attack)",
         "MONITOR: System resource utilization",
         "CONSIDER: Scaling if sustained",
         "CHECK: Rate limiting thresholds",
     ],
-    ("request_rate_low", "critical"): [
+    ("traffic_cliff", "critical"): [
         "IMMEDIATE: Check upstream connectivity",
         "CHECK: DNS and load balancer health",
         "VERIFY: Service is externally reachable",
@@ -904,14 +904,14 @@ DEPENDENCY_AWARE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "MONITOR: Recovery should propagate back through the chain",
         ],
     ),
-    "isolated_service_issue": PatternDefinition(
-        name="isolated_service_issue",
+    "internal_latency_issue": PatternDefinition(
+        name="internal_latency_issue",
         conditions={
             "application_latency": "high",
             "_dependency_context": "dependencies_healthy",
         },
         message_template=(
-            "Isolated service issue: latency elevated to {application_latency:.0f}ms "
+            "Internal latency issue: latency elevated to {application_latency:.0f}ms "
             "with all dependencies healthy. This indicates an internal service problem."
         ),
         severity="high",

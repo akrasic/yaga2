@@ -91,11 +91,11 @@ The `anomalies` object is a dictionary where keys are anomaly names and values a
 
 | Anomaly Type | Name Format | Examples |
 |--------------|-------------|----------|
-| Named pattern | `{pattern_name}` | `recent_degradation`, `fast_rejection`, `traffic_cliff` |
+| Named pattern | `{pattern_name}` | `latency_spike_recent`, `fast_rejection`, `traffic_cliff` |
 | Latency anomaly | `latency_anomaly` | When consolidated from latency-related detections |
 | Error anomaly | `error_rate_anomaly` | When consolidated from error-related detections |
 | Traffic anomaly | `traffic_anomaly` | When consolidated from request_rate detections |
-| Single detection | `{metric}_{direction}` | `latency_high`, `error_rate_high` |
+| Single detection | `{metric}_{direction}` | `latency_high`, `error_rate_elevated` |
 
 ---
 
@@ -105,7 +105,7 @@ When multiple detection methods identify the same underlying issue, they are con
 
 ```json
 {
-  "recent_degradation": {
+  "latency_spike_recent": {
     "type": "consolidated",
     "root_metric": "application_latency",
     "severity": "high",
@@ -115,7 +115,7 @@ When multiple detection methods identify the same underlying issue, they are con
 
     "description": "Latency degradation: 636ms (92nd percentile). (confirmed by 2 detection methods)",
     "interpretation": "Latency recently increased without traffic change - something changed...",
-    "pattern_name": "recent_degradation",
+    "pattern_name": "latency_spike_recent",
 
     "value": 636.1,
     "detection_signals": [ ... ],
@@ -216,7 +216,7 @@ Each detection method that contributed to the anomaly is recorded:
       "type": "multivariate_pattern",
       "severity": "high",
       "score": -0.5,
-      "pattern": "recent_degradation"
+      "pattern": "latency_spike_recent"
     }
   ]
 }
@@ -733,14 +733,24 @@ Common pattern names and their meanings:
 
 | Pattern Name | Severity | Description |
 |--------------|----------|-------------|
-| `recent_degradation` | high | Latency increased without traffic change |
-| `fast_rejection` | high | Requests rejected rapidly (circuit breaker, rate limit, auth) |
-| `fast_failure` | high | Fast failure mode without full processing |
+| `error_rate_critical` | critical | Very high error rate with normal traffic/latency |
+| `error_rate_elevated` | high | Elevated error rate above baseline |
+| `latency_spike_recent` | high | Latency increased without traffic change |
+| `latency_elevated` | high | Latency above normal threshold |
+| `internal_latency_issue` | high | High latency with healthy dependencies (internal problem) |
+| `fast_rejection` | critical | Requests rejected rapidly (circuit breaker, rate limit, auth) |
+| `partial_rejection` | high | Some requests failing before processing |
+| `fast_failure` | critical | Fast failure mode without full processing |
 | `traffic_cliff` | critical | Sudden traffic drop (upstream issue) |
-| `database_bottleneck` | high | Database latency dominating response time |
-| `external_dependency_slow` | high | External service causing slowdown |
+| `traffic_surge` | high | Traffic significantly above baseline |
 | `traffic_surge_failing` | critical | High traffic + high latency + high errors |
-| `internal_bottleneck` | medium | Internal processing constraint |
+| `traffic_surge_degrading` | high | High traffic causing latency degradation |
+| `traffic_surge_healthy` | low | High traffic absorbed successfully |
+| `database_bottleneck` | high | Database latency dominating response time |
+| `database_degradation` | medium | Database slow but application compensating |
+| `downstream_cascade` | high | External dependency causing slowdown |
+| `upstream_cascade` | high | Upstream dependency failure affecting service |
+| `internal_bottleneck` | high | Internal processing constraint |
 | `gradual_degradation` | medium | Slowly worsening performance |
 | `recovery_in_progress` | low | Metrics returning to normal |
 | `flapping_service` | high | Unstable, oscillating behavior |
@@ -1076,7 +1086,7 @@ The `request_rate_evaluation` object detects sudden traffic surges or cliffs.
   "model_type": "time_aware_5period",
 
   "anomalies": {
-    "recent_degradation": {
+    "latency_spike_recent": {
       "type": "consolidated",
       "root_metric": "application_latency",
       "severity": "high",
@@ -1086,7 +1096,7 @@ The `request_rate_evaluation` object detects sudden traffic surges or cliffs.
 
       "description": "Recent performance degradation: latency increased to 636ms (confirmed by 2 detection methods)",
       "interpretation": "Latency recently increased without traffic change - something changed. Not a capacity issue; likely recent deployment, config change, or dependency degradation.",
-      "pattern_name": "recent_degradation",
+      "pattern_name": "latency_spike_recent",
 
       "value": 636.1,
 
@@ -1104,7 +1114,7 @@ The `request_rate_evaluation` object detects sudden traffic surges or cliffs.
           "type": "multivariate_pattern",
           "severity": "high",
           "score": -0.5,
-          "pattern": "recent_degradation"
+          "pattern": "latency_spike_recent"
         }
       ],
 
@@ -1617,7 +1627,7 @@ If only 1-2 non-critical metrics fail (e.g., `database_latency`), detection proc
 
 ## API Server Implementation Notes
 
-1. **Anomaly identification**: Use the anomaly key (e.g., `"recent_degradation"`) as the primary identifier
+1. **Anomaly identification**: Use the anomaly key (e.g., `"latency_spike_recent"`) as the primary identifier
 2. **Severity handling**: Use the top-level `severity` field for alerting decisions
 3. **Confidence threshold**: Consider using `confidence >= 0.7` for high-confidence alerts
 4. **Signal inspection**: The `detection_signals` array provides audit trail of what triggered the anomaly

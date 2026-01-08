@@ -242,7 +242,7 @@ Reality: Nothing changed - this is resource contention
 
 ---
 
-### ⚠️ ISSUE: `partial_outage` Severity May Be Too High
+### ⚠️ ISSUE: `error_rate_critical` Severity May Be Too High
 
 ```python
 conditions={
@@ -253,7 +253,7 @@ conditions={
 severity="critical"
 ```
 
-**Problem**: "high" error rate starts at p90, but `partial_outage` is marked `critical`.
+**Problem**: "high" error rate starts at p90, but `error_rate_critical` is marked `critical`.
 
 **Real-World Consideration**:
 - 6% error rate (slightly above 5% threshold) affecting one endpoint is NOT the same as
@@ -655,7 +655,7 @@ Now: healthy
 
 | Issue | Current Behavior | Recommended Change |
 |-------|-----------------|-------------------|
-| `partial_outage` severity | Always "critical" | Scale severity with error rate magnitude |
+| `error_rate_critical` severity | Always "critical" | Scale severity with error rate magnitude |
 | `database_bottleneck` threshold | 50% ratio | Increase to 70% OR use relative comparison |
 | Low latency interpretation | "Unusually fast responses" | Correlate with error rate for better interpretation |
 | Duplicate traffic_cliff detection | Two places | Consolidate to one location |

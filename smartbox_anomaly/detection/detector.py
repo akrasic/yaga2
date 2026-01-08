@@ -168,7 +168,7 @@ class AnomalySignal:
 PATTERN_PRIORITY: list[str] = [
     # Critical - immediate user impact
     "traffic_surge_failing",
-    "partial_outage",
+    "error_rate_critical",
     "fast_rejection",
     "traffic_cliff",
     "reduced_traffic_with_errors",
@@ -181,10 +181,10 @@ PATTERN_PRIORITY: list[str] = [
     "database_bottleneck",
     "downstream_cascade",
     "internal_bottleneck",
-    "isolated_service_issue",  # Confirms not a cascade
-    "recent_degradation",
+    "internal_latency_issue",  # Confirms not a cascade
+    "latency_spike_recent",
     "fast_failure",
-    "partial_fast_fail",
+    "partial_rejection",
     # Medium - noticeable issues
     "database_degradation",
     "resource_contention",

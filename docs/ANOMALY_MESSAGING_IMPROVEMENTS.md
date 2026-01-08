@@ -194,13 +194,13 @@ MULTIVARIATE_PATTERNS = {
         "recommended_action": "Check recent deployments, database performance, external dependencies, GC behavior"
     },
 
-    "partial_outage": {
+    "error_rate_critical": {
         "conditions": {
             "request_rate": "normal",
             "application_latency": "normal",
             "error_rate": "high"
         },
-        "message": "Partial outage: {error_rate:.2%} error rate at normal traffic and latency",
+        "message": "Critical error rate: {error_rate:.2%} errors at normal traffic and latency",
         "severity": "critical",
         "interpretation": "Specific code path or dependency failing - not a capacity issue",
         "recommended_action": "Check error logs for specific exception types; identify affected endpoints"
@@ -392,7 +392,7 @@ def _detect_fast_fail_patterns(self, metrics: dict[str, float]) -> dict[str, Any
 
     elif is_fast_fail and error_rate > 0.05 and error_rate < 0.20:
         # Moderate fast failures
-        patterns["partial_fast_fail"] = {
+        patterns["partial_rejection"] = {
             "type": "pattern",
             "severity": "high",
             "description": f"Partial fast-fail: {error_rate:.1%} errors failing quickly ({app_latency:.0f}ms)",
@@ -512,7 +512,7 @@ RECOMMENDATION_RULES = {
     ],
 
     # Metric-specific recommendations
-    ("error_rate_high", "critical"): [
+    ("error_rate_elevated", "critical"): [
         "IMMEDIATE: Check error logs for exception stack traces",
         "CORRELATE: Identify if errors are from specific endpoints",
         "TIMELINE: Was there a recent deployment? (last 30 min)",
