@@ -8,10 +8,14 @@ import pandas as pd
 import numpy as np
 import os
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import warnings
 warnings.filterwarnings('ignore')
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 
 class SmartboxMetricsExtractor:
@@ -47,54 +51,54 @@ class SmartboxMetricsExtractor:
     
     def test_queries(self, service_name: str) -> Dict[str, bool]:
         """Test all queries for a service to see which ones work"""
-        print(f"🧪 Testing queries for {service_name}")
-        
+        logger.info("Testing queries for %s", service_name)
+
         query_results = {}
-        
+
         for metric_name, base_query in self.queries.items():
             # Clean up query and add service filter
             clean_query = ' '.join(base_query.split())
-            
+
             if 'service_name' in clean_query and 'by (service_name)' in clean_query:
                 query = clean_query.replace('deployment_environment_name=~"production"', f'deployment_environment_name=~"production", service_name="{service_name}"')
             else:
                 query = f'{clean_query}{{service_name="{service_name}"}}'
-            
-            print(f"   Testing {metric_name}...")
-            print(f"   Query: {query}")
-            
+
+            logger.debug("Testing %s with query: %s", metric_name, query)
+
             # Test with a simple instant query first
             result = self.vm_client.query(query)
-            
+
             if result.get('data', {}).get('result'):
                 query_results[metric_name] = True
-                print(f"   ✅ {metric_name}: Working")
+                logger.info("  %s: OK", metric_name)
             else:
                 query_results[metric_name] = False
-                print(f"   ❌ {metric_name}: No data or error")
-                
+                logger.warning("  %s: No data or error", metric_name)
+
                 # Try without service filter to see if the base query works
                 base_result = self.vm_client.query(clean_query)
                 if base_result.get('data', {}).get('result'):
-                    print(f"      (Base query works, but no data for {service_name})")
-                else:
-                    print()
-        
+                    logger.debug("    Base query works, but no data for %s", service_name)
+
         return query_results
     
     def extract_service_metrics(self, service_name: str, lookback_days: int = 30) -> pd.DataFrame:
         """Extract all metrics for a specific service"""
         end_time = datetime.now()
         start_time = end_time - timedelta(days=lookback_days)
-        
-        print(f"📊 Extracting metrics for {service_name} from {start_time.date()} to {end_time.date()}")
-        
+
+        logger.info(
+            "Extracting metrics for %s from %s to %s",
+            service_name, start_time.date(), end_time.date()
+        )
+
         all_metrics = {}
-        
+
         for metric_name, base_query in self.queries.items():
             # Clean up query and add service filter
             clean_query = ' '.join(base_query.split())  # Remove extra whitespace
-            
+
             # Add service filter to queries that support it
             if 'service_name' in clean_query and 'by (service_name)' in clean_query:
                 # For aggregated queries, filter before aggregation
@@ -102,32 +106,34 @@ class SmartboxMetricsExtractor:
             else:
                 # For simple metrics like request_rate, add service filter
                 query = f'{clean_query}{{service_name="{service_name}"}}'
-            
-            print(f"   Querying {metric_name}...")
-            print(f"   Query: {query[:100]}{'...' if len(query) > 100 else ''}")
-            
+
+            logger.debug("Querying %s: %s...", metric_name, query[:100])
+
             result = self.vm_client.query_range(
                 query=query,
                 start_time=start_time,
                 end_time=end_time,
                 step='5m'
             )
-            
+
             # Parse the result
             metric_data = self._parse_metric_result(result, metric_name)
             if not metric_data.empty:
                 all_metrics[metric_name] = metric_data
-                print(f"   ✅ {metric_name}: {len(metric_data)} data points")
+                logger.info("  %s: %d data points", metric_name, len(metric_data))
             else:
-                print(f"   ⚠️ {metric_name}: No data found")
-        
+                logger.warning("  %s: No data found", metric_name)
+
         # Combine all metrics
         if all_metrics:
             combined_df = self._combine_metrics(all_metrics)
-            print(f"✅ Combined dataset: {len(combined_df)} rows, {len(combined_df.columns)} columns")
+            logger.info(
+                "Combined dataset: %d rows, %d columns",
+                len(combined_df), len(combined_df.columns)
+            )
             return combined_df
         else:
-            print(f"❌ No metrics found for {service_name}")
+            logger.error("No metrics found for %s", service_name)
             return pd.DataFrame()
     
     def _parse_metric_result(self, result: Dict, metric_name: str) -> pd.DataFrame:
@@ -157,24 +163,24 @@ class SmartboxMetricsExtractor:
     def _combine_metrics(self, metrics_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         """Combine multiple metric DataFrames with robust data cleaning"""
         combined = None
-        
+
         for metric_name, df in metrics_dict.items():
             if combined is None:
                 combined = df
             else:
                 combined = combined.join(df, how='outer')
-        
+
         # Robust data cleaning
-        print(f"   🧹 Cleaning data...")
-        
+        logger.debug("Cleaning data...")
+
         # Replace infinite values with NaN
         combined = combined.replace([np.inf, -np.inf], np.nan)
-        
+
         # Log data quality issues
         inf_count = np.isinf(combined.select_dtypes(include=[np.number])).sum().sum()
         if inf_count > 0:
-            print(f"   ⚠️ Replaced {inf_count} infinite values with NaN")
-        
+            logger.warning("Replaced %d infinite values with NaN", inf_count)
+
         # Handle extremely large values (likely errors)
         numeric_cols = combined.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
@@ -187,17 +193,20 @@ class SmartboxMetricsExtractor:
                 max_reasonable = 1.0  # Error rate should be <= 1
             else:
                 max_reasonable = 1e6  # Generic large number
-            
+
             # Replace unreasonable values
             mask = combined[col] > max_reasonable
             outlier_count = mask.sum()
             if outlier_count > 0:
-                print(f"   ⚠️ Capped {outlier_count} outlier values in {col} (>{max_reasonable})")
+                logger.warning(
+                    "Capped %d outlier values in %s (>%s)",
+                    outlier_count, col, max_reasonable
+                )
                 combined.loc[mask, col] = np.nan
-        
+
         # Forward fill missing values (common in time series)
         combined = combined.fillna(method='ffill')
-        
+
         # For remaining NaNs, use column median or 0
         for col in combined.columns:
             remaining_nans = combined[col].isna().sum()
@@ -206,20 +215,26 @@ class SmartboxMetricsExtractor:
                     median_val = combined[col].median()
                     fill_value = median_val if not pd.isna(median_val) else 0.0
                     combined[col] = combined[col].fillna(fill_value)
-                    print(f"   🔧 Filled {remaining_nans} missing values in {col} with {fill_value:.3f}")
-        
+                    logger.debug(
+                        "Filled %d missing values in %s with %.3f",
+                        remaining_nans, col, fill_value
+                    )
+
         # Final validation - ensure no inf/nan values remain
         final_inf_count = np.isinf(combined.select_dtypes(include=[np.number])).sum().sum()
         final_nan_count = combined.isna().sum().sum()
-        
+
         if final_inf_count > 0 or final_nan_count > 0:
-            print(f"   ❌ Data cleaning incomplete: {final_inf_count} inf, {final_nan_count} NaN values remain")
+            logger.error(
+                "Data cleaning incomplete: %d inf, %d NaN values remain",
+                final_inf_count, final_nan_count
+            )
             # As last resort, fill with zeros
             combined = combined.replace([np.inf, -np.inf], 0).fillna(0)
-            print(f"   🚑 Emergency cleanup: replaced remaining invalid values with 0")
-        
-        print(f"   ✅ Data cleaning completed")
-        
+            logger.warning("Emergency cleanup: replaced remaining invalid values with 0")
+
+        logger.debug("Data cleaning completed")
+
         return combined
 
 class SmartboxFeatureEngineer:
@@ -242,7 +257,7 @@ class SmartboxFeatureEngineer:
         if metrics_df.empty:
             return metrics_df
 
-        print(f"   🔧 Engineering features...")
+        logger.debug("Engineering features...")
 
         features = metrics_df.copy()
 
@@ -281,13 +296,16 @@ class SmartboxFeatureEngineer:
         # Only add rolling features if explicitly requested
         # WARNING: Rolling features computed on full dataset cause leakage
         if include_rolling:
-            print(f"   ⚠️ Computing rolling features on full dataset (potential leakage)")
+            logger.warning("Computing rolling features on full dataset (potential leakage)")
             features = self._add_rolling_features(features)
 
         # Final cleanup
         features = self._cleanup_features(features)
 
-        print(f"   ✅ Feature engineering completed: {len(features)} rows, {len(features.columns)} features")
+        logger.info(
+            "Feature engineering completed: %d rows, %d features",
+            len(features), len(features.columns)
+        )
 
         return features
 
@@ -312,7 +330,7 @@ class SmartboxFeatureEngineer:
         if metrics_df.empty:
             return pd.DataFrame(), pd.DataFrame()
 
-        print(f"   🔧 Engineering features with temporal split (no leakage)...")
+        logger.debug("Engineering features with temporal split (no leakage)...")
 
         # First, compute base features (no leakage risk)
         base_features = self.engineer_features(metrics_df, include_rolling=False)
@@ -322,14 +340,14 @@ class SmartboxFeatureEngineer:
         train_base = base_features.iloc[:split_idx].copy()
         validation_base = base_features.iloc[split_idx:].copy()
 
-        print(f"   📊 Split: {len(train_base)} train, {len(validation_base)} validation samples")
+        logger.info("Split: %d train, %d validation samples", len(train_base), len(validation_base))
 
         # Add rolling features separately to each split
-        print(f"   🔄 Computing rolling features on train set...")
+        logger.debug("Computing rolling features on train set...")
         train_features = self._add_rolling_features(train_base)
         train_features = self._cleanup_features(train_features)
 
-        print(f"   🔄 Computing rolling features on validation set...")
+        logger.debug("Computing rolling features on validation set...")
         validation_features = self._add_rolling_features(validation_base)
         validation_features = self._cleanup_features(validation_features)
 
@@ -338,9 +356,12 @@ class SmartboxFeatureEngineer:
         warmup_periods = 12  # 1 hour of 5-min data
         if len(validation_features) > warmup_periods:
             validation_features = validation_features.iloc[warmup_periods:]
-            print(f"   ⏭️ Dropped {warmup_periods} warm-up rows from validation")
+            logger.debug("Dropped %d warm-up rows from validation", warmup_periods)
 
-        print(f"   ✅ Leakage-free features: {len(train_features)} train, {len(validation_features)} validation")
+        logger.info(
+            "Leakage-free features: %d train, %d validation",
+            len(train_features), len(validation_features)
+        )
 
         return train_features, validation_features
 
@@ -367,7 +388,10 @@ class SmartboxFeatureEngineer:
                         features[f'{metric}_pct_change_{window}'] = pct_change
 
                     except Exception as e:
-                        print(f"     ⚠️ Failed to create rolling features for {metric}_{window}: {e}")
+                        logger.warning(
+                            "Failed to create rolling features for %s_%s: %s",
+                            metric, window, e
+                        )
 
         # Anomaly indicators using rolling percentiles (within this split only)
         if all(col in features.columns for col in ['request_rate', 'application_latency', 'error_rate']):
@@ -376,7 +400,7 @@ class SmartboxFeatureEngineer:
                 features['high_latency'] = features['application_latency'] > features['application_latency'].rolling('1H', min_periods=1).quantile(0.95)
                 features['traffic_spike'] = features['request_rate'] > features['request_rate'].rolling('1H', min_periods=1).quantile(0.95)
             except Exception as e:
-                print(f"     ⚠️ Failed to create anomaly indicators: {e}")
+                logger.warning("Failed to create anomaly indicators: %s", e)
 
         return features
 
@@ -435,9 +459,9 @@ class ParquetTrainingDataStorage:
         metadata_path = f"{service_path}/metadata/date={date_str}/metadata.json"
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, default=str, indent=2)
-        
-        print(f"💾 Saved training data for {service_name} at {date_str}")
-        
+
+        logger.info("Saved training data for %s at %s", service_name, date_str)
+
         return {
             'raw_data_path': raw_data_path,
             'features_path': features_path,
@@ -456,10 +480,13 @@ class EnhancedSmartboxTrainingPipeline:
         # Load training configuration from config.json
         self.config = self._load_training_config(config_path)
 
-        print("🚀 Enhanced Smartbox Training Pipeline initialized")
-        print("   ✨ Explainable anomaly detection enabled by default")
-        print(f"   📊 Validation fraction: {self.config.get('validation_fraction', 0.2)}")
-        print(f"   📊 Threshold calibration: {'enabled' if self.config.get('threshold_calibration', {}).get('enabled', True) else 'disabled'}")
+        logger.info("Enhanced Smartbox Training Pipeline initialized")
+        logger.info("  Explainable anomaly detection enabled by default")
+        logger.info("  Validation fraction: %s", self.config.get('validation_fraction', 0.2))
+        logger.info(
+            "  Threshold calibration: %s",
+            'enabled' if self.config.get('threshold_calibration', {}).get('enabled', True) else 'disabled'
+        )
 
     def _load_training_config(self, config_path: str) -> Dict:
         """Load training configuration from config.json."""
@@ -489,7 +516,7 @@ class EnhancedSmartboxTrainingPipeline:
             return training_config
 
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"⚠️ Could not load training config: {e}, using defaults")
+            logger.warning("Could not load training config: %s, using defaults", e)
             return default_config
 
     def load_services_from_config(self, config_path: str = "./config.json") -> List[str]:
@@ -519,20 +546,20 @@ class EnhancedSmartboxTrainingPipeline:
                     unique_services.append(svc)
 
             if unique_services:
-                print(f"📋 Loaded {len(unique_services)} services from {config_path}")
+                logger.info("Loaded %d services from %s", len(unique_services), config_path)
                 return unique_services
             else:
-                print(f"⚠️ No services found in {config_path}, will discover from VictoriaMetrics")
+                logger.warning("No services found in %s, will discover from VictoriaMetrics", config_path)
                 return []
 
         except FileNotFoundError:
-            print(f"⚠️ Config file not found: {config_path}, will discover from VictoriaMetrics")
+            logger.warning("Config file not found: %s, will discover from VictoriaMetrics", config_path)
             return []
         except json.JSONDecodeError as e:
-            print(f"⚠️ Invalid JSON in {config_path}: {e}, will discover from VictoriaMetrics")
+            logger.warning("Invalid JSON in %s: %s, will discover from VictoriaMetrics", config_path, e)
             return []
         except Exception as e:
-            print(f"⚠️ Error loading config: {e}, will discover from VictoriaMetrics")
+            logger.warning("Error loading config: %s, will discover from VictoriaMetrics", e)
             return []
     
     def test_service_queries(self, service_name: str) -> Dict[str, bool]:
@@ -542,17 +569,20 @@ class EnhancedSmartboxTrainingPipeline:
     def discover_services(self) -> List[str]:
         """Discover available services from VictoriaMetrics"""
         services = self.metrics_extractor.get_available_services()
-        print(f"🔍 Discovered {len(services)} services: {services[:10]}{'...' if len(services) > 10 else ''}")
+        logger.info(
+            "Discovered %d services: %s%s",
+            len(services), services[:10], '...' if len(services) > 10 else ''
+        )
         return services
-    
+
     def train_service_model(self, service_name: str, lookback_days: Optional[int] = None) -> Dict:
         """Train enhanced anomaly detection model with explainability for a single service"""
         # Use custom lookback_days if provided, otherwise use config default
         training_days = lookback_days or self.config['lookback_days']
-        
-        print(f"\n🚀 Training enhanced model for service: {service_name}")
-        print(f"📅 Using {training_days} days of training data")
-        print(f"✨ Explainability features will be automatically included")
+
+        logger.info("Training enhanced model for service: %s", service_name)
+        logger.info("Using %d days of training data", training_days)
+        logger.debug("Explainability features will be automatically included")
         
         try:
             # 1. Extract raw metrics
@@ -594,17 +624,17 @@ class EnhancedSmartboxTrainingPipeline:
 
             # Log calibration results
             if train_result.get("validation_results"):
-                print(f"   📊 Thresholds calibrated on {len(validation_features)} validation samples")
+                logger.info("Thresholds calibrated on %d validation samples", len(validation_features))
 
             # 4. Validate model using properly split validation data (no leakage)
             validation_results = self._validate_enhanced_model_split(model, train_features, validation_features)
-            
+
             if not validation_results['passed']:
                 return {
                     'status': 'validation_failed',
                     'validation_results': validation_results
                 }
-            
+
             # 5. Save training data
             metadata = {
                 'service': service_name,
@@ -622,18 +652,21 @@ class EnhancedSmartboxTrainingPipeline:
                 'model_version': f"enhanced_v{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 'training_config': self.config
             }
-            
+
             storage_result = self.storage.save_training_data(
                 service_name, raw_data, features, metadata
             )
-            
+
             # 6. Save enhanced model (now includes explainability data)
             model_path = self.save_enhanced_model(service_name, model, metadata)
-            
+
             # Log explainability status
-            explainability_status = "✅" if model.training_statistics else "❌"
-            print(f"   🧠 Explainability features: {explainability_status} ({len(model.training_statistics)} metrics)")
-            
+            logger.info(
+                "Explainability features: %s (%d metrics)",
+                "enabled" if model.training_statistics else "disabled",
+                len(model.training_statistics)
+            )
+
             return {
                 'status': 'success',
                 'model_path': model_path,
@@ -642,9 +675,9 @@ class EnhancedSmartboxTrainingPipeline:
                 'validation_results': validation_results,
                 'explainability_metrics': len(model.training_statistics)
             }
-            
+
         except Exception as e:
-            print(f"❌ Enhanced training failed for {service_name}: {e}")
+            logger.error("Enhanced training failed for %s: %s", service_name, e)
             return {
                 'status': 'error',
                 'error': str(e)
@@ -653,32 +686,32 @@ class EnhancedSmartboxTrainingPipeline:
     def train_service_model_time_aware(self, service_name: str, lookback_days: Optional[int] = None) -> Dict:
         """Train enhanced time-aware anomaly detection model with explainability"""
         training_days = lookback_days or self.config['lookback_days']
-    
-        print(f"\n🚀 Training enhanced time-aware model for service: {service_name}")
-        print(f"📅 Using {training_days} days of training data")
-        print(f"✨ Time-aware + explainability features will be included")
-    
+
+        logger.info("Training enhanced time-aware model for service: %s", service_name)
+        logger.info("Using %d days of training data", training_days)
+        logger.debug("Time-aware + explainability features will be included")
+
         try:
             # Extract raw metrics (same as before)
             raw_data = self.metrics_extractor.extract_service_metrics(
                 service_name, lookback_days=training_days
             )
-        
+
             if raw_data.empty:
                 return {'status': 'no_data', 'message': 'No metrics data found'}
-        
+
             if len(raw_data) < self.config['min_data_points']:
                 return {
-                    'status': 'insufficient_data', 
+                    'status': 'insufficient_data',
                     'message': f'Only {len(raw_data)} data points, need {self.config["min_data_points"]}'
                 }
-        
+
             # Engineer features
             features = self.feature_engineer.engineer_features(raw_data)
-        
+
             if features.empty:
                 return {'status': 'feature_engineering_failed', 'message': 'Feature engineering produced no features'}
-        
+
             # Train enhanced time-aware models with temporal validation split per period
             time_aware_detector = TimeAwareAnomalyDetector(service_name)
             validation_fraction = self.config.get('validation_fraction', 0.2)
@@ -686,16 +719,16 @@ class EnhancedSmartboxTrainingPipeline:
                 features,
                 validation_fraction=validation_fraction
             )
-        
+
             # Enhanced validation for time-aware models
             validation_results = self._validate_enhanced_time_aware_models(time_aware_detector, features)
-        
+
             # Count explainability features across all time periods
             total_explainability_metrics = 0
             for period, model in time_aware_detector.models.items():
                 if hasattr(model, 'training_statistics'):
                     total_explainability_metrics += len(model.training_statistics)
-        
+
             # Save models with enhanced metadata
             metadata = {
                 'service': service_name,
@@ -705,21 +738,24 @@ class EnhancedSmartboxTrainingPipeline:
                 'training_end': str(raw_data.index.max()),
                 'data_points': len(raw_data),
                 'feature_count': len(features.columns),
-                'total_explainability_metrics': total_explainability_metrics,  # NEW
+                'total_explainability_metrics': total_explainability_metrics,
                 'validation_results': validation_results,
                 'model_version': f"enhanced_time_aware_v{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 'training_config': self.config
             }
-        
+
             saved_paths = time_aware_detector.save_models("./smartbox_models/", metadata)
-        
+
             # Log explainability status for each time period
-            print(f"   🧠 Explainability features across {len(time_aware_detector.models)} time periods:")
+            logger.info(
+                "Explainability features across %d time periods:",
+                len(time_aware_detector.models)
+            )
             for period, model in time_aware_detector.models.items():
                 explainability_count = len(model.training_statistics) if hasattr(model, 'training_statistics') else 0
-                status = "✅" if explainability_count > 0 else "❌"
-                print(f"      {status} {period}: {explainability_count} metrics")
-        
+                status = "enabled" if explainability_count > 0 else "disabled"
+                logger.info("  %s: %s (%d metrics)", period, status, explainability_count)
+
             return {
                 'status': 'success',
                 'model_paths': saved_paths,
@@ -727,9 +763,9 @@ class EnhancedSmartboxTrainingPipeline:
                 'validation_results': validation_results,
                 'total_explainability_metrics': total_explainability_metrics
             }
-        
+
         except Exception as e:
-            print(f"❌ Enhanced time-aware training failed for {service_name}: {e}")
+            logger.error("Enhanced time-aware training failed for %s: %s", service_name, e)
             return {'status': 'error', 'error': str(e)}
 
     
@@ -749,7 +785,7 @@ class EnhancedSmartboxTrainingPipeline:
         Returns:
             Validation results dictionary.
         """
-        print("   🔍 Validating enhanced model (leakage-free)...")
+        logger.info("Validating enhanced model (leakage-free)...")
 
         # Use the split validation method
         validation_result = self._validate_model_split(model, train_features, validation_features)
@@ -768,12 +804,12 @@ class EnhancedSmartboxTrainingPipeline:
         validation_result['leakage_free'] = True
 
         if validation_result['explainability_passed']:
-            print(f"     ✅ Explainability validation passed! ({validation_result['explainability_metrics']} metrics)")
+            logger.info("  Explainability validation passed (%d metrics)", validation_result['explainability_metrics'])
         else:
-            print(f"     ❌ Explainability validation failed:")
+            logger.warning("  Explainability validation failed:")
             for check, passed in explainability_checks.items():
-                status = "✅" if passed else "❌"
-                print(f"       {status} {check}")
+                status = "OK" if passed else "FAILED"
+                logger.warning("    %s: %s", check, status)
 
         return validation_result
 
@@ -793,7 +829,7 @@ class EnhancedSmartboxTrainingPipeline:
         Returns:
             Validation results dictionary.
         """
-        print("   🔍 Validating model with split data (no leakage)...")
+        logger.info("Validating model with split data (no leakage)...")
 
         if len(validation_features) < 50:
             return {
@@ -806,7 +842,7 @@ class EnhancedSmartboxTrainingPipeline:
         total_tests = min(100, len(validation_features))
         test_errors = []
 
-        print(f"     Testing on {total_tests} validation samples (properly split)...")
+        logger.debug("  Testing on %d validation samples (properly split)...", total_tests)
 
         # Test 1: Normal validation data (should have low anomaly rate)
         normal_anomalies = 0
@@ -832,7 +868,7 @@ class EnhancedSmartboxTrainingPipeline:
             except Exception as e:
                 test_errors.append(str(e))
                 if len(test_errors) <= 3:
-                    print(f"     ⚠️ Validation test {i} failed: {e}")
+                    logger.warning("  Validation test %d failed: %s", i, e)
 
         # Test 2: Synthetic anomalies based on TRAINING statistics (no leakage)
         # Use training data statistics to create realistic synthetic anomalies
@@ -897,22 +933,22 @@ class EnhancedSmartboxTrainingPipeline:
         }
 
         if not validation_passed:
-            print(f"     ❌ Validation failed:")
+            logger.warning("  Validation failed:")
             for check, passed in validation_checks.items():
-                status = "✅" if passed else "❌"
-                print(f"       {status} {check}: {passed}")
-            print(f"     Normal data anomaly rate: {normal_anomaly_rate:.1%}")
-            print(f"     Synthetic detection rate: {synthetic_detection_rate:.1%}")
+                status = "OK" if passed else "FAILED"
+                logger.warning("    %s: %s", check, passed)
+            logger.warning("  Normal data anomaly rate: %.1f%%", normal_anomaly_rate * 100)
+            logger.warning("  Synthetic detection rate: %.1f%%", synthetic_detection_rate * 100)
         else:
-            print(f"     ✅ Validation passed! (leakage-free)")
-            print(f"       Normal data anomaly rate: {normal_anomaly_rate:.1%}")
-            print(f"       Synthetic detection rate: {synthetic_detection_rate:.1%}")
+            logger.info("  Validation passed (leakage-free)")
+            logger.info("    Normal data anomaly rate: %.1f%%", normal_anomaly_rate * 100)
+            logger.info("    Synthetic detection rate: %.1f%%", synthetic_detection_rate * 100)
 
         return validation_result
 
     def _validate_enhanced_model(self, model: SmartboxAnomalyDetector, features: pd.DataFrame) -> Dict:
         """Enhanced validation including explainability features (legacy method)."""
-        print("   🔍 Validating enhanced model...")
+        logger.info("Validating enhanced model...")
 
         # Standard validation
         validation_result = self._validate_model(model, features)
@@ -931,20 +967,20 @@ class EnhancedSmartboxTrainingPipeline:
         
         # Overall pass includes explainability
         validation_result['enhanced_passed'] = validation_result['passed'] and validation_result['explainability_passed']
-        
+
         if validation_result['explainability_passed']:
-            print(f"     ✅ Explainability validation passed! ({validation_result['explainability_metrics']} metrics)")
+            logger.info("  Explainability validation passed (%d metrics)", validation_result['explainability_metrics'])
         else:
-            print(f"     ❌ Explainability validation failed:")
+            logger.warning("  Explainability validation failed:")
             for check, passed in explainability_checks.items():
-                status = "✅" if passed else "❌"
-                print(f"       {status} {check}")
-        
+                status = "OK" if passed else "FAILED"
+                logger.warning("    %s: %s", check, status)
+
         return validation_result
-    
+
     def _validate_enhanced_time_aware_models(self, detector: TimeAwareAnomalyDetector, features_df: pd.DataFrame) -> Dict:
         """Enhanced validation for time-aware models with 5-period approach"""
-        print("   🔍 Validating enhanced time-aware models with 5-period approach...")
+        logger.info("Validating enhanced time-aware models with 5-period approach...")
         validation_results = {}
         
         # Add time period column
@@ -955,10 +991,9 @@ class EnhancedSmartboxTrainingPipeline:
         thresholds = detector.validation_thresholds
         service_type = detector._get_service_type()
         
-        print(f"     Using {service_type} thresholds for 5 periods:")
+        logger.debug("  Using %s thresholds for 5 periods:", service_type)
         for period, threshold in thresholds.items():
-            period_emoji = "🌅" if period == 'weekend_day' else "🌙" if period == 'weekend_night' else "🕒"
-            print(f"       {period_emoji} {period}: {threshold:.1%} max anomaly rate")
+            logger.debug("    %s: %.1f%% max anomaly rate", period, threshold * 100)
         
         # All 5 periods
         all_periods = ['business_hours', 'night_hours', 'evening_hours', 'weekend_day', 'weekend_night']
@@ -979,7 +1014,7 @@ class EnhancedSmartboxTrainingPipeline:
                 }
                 continue
             
-            print(f"     Testing enhanced {period} model...")
+            logger.debug("  Testing enhanced %s model...", period)
             
             # Enhanced validation with realistic expectations
             model = detector.models[period]
@@ -1018,7 +1053,7 @@ class EnhancedSmartboxTrainingPipeline:
                 except Exception as e:
                     test_errors += 1
                     if test_errors <= 2:  # Only log first few errors
-                        print(f"       ⚠️ Test error for {period} sample {i}: {str(e)[:50]}...")
+                        logger.warning("    Test error for %s sample %d: %s...", period, i, str(e)[:50])
             
             normal_anomaly_rate = normal_anomaly_count / test_samples if test_samples > 0 else 0
             
@@ -1061,33 +1096,29 @@ class EnhancedSmartboxTrainingPipeline:
                 'period_type': detector._get_period_type(period)
             }
             
-            # Enhanced status reporting with period-specific emojis
-            period_emoji = "🌅" if period == 'weekend_day' else "🌙" if period == 'weekend_night' else "🕒"
-            
+            # Enhanced status reporting
             if validation_passed:
-                status_icon = "✅"
-                status_msg = f"{normal_anomaly_rate:.1%} anomaly rate (≤{period_threshold:.1%})"
+                status_msg = f"{normal_anomaly_rate:.1%} anomaly rate (<={period_threshold:.1%})"
+                explainability_str = "explainability: OK" if explainability_passed else "explainability: MISSING"
+                logger.info("  %s: OK - %s, %s", period, status_msg, explainability_str)
             else:
-                status_icon = "❌"
                 failed_checks = [check for check, passed in validation_checks.items() if not passed]
                 if not validation_checks['anomaly_rate_acceptable']:
                     status_msg = f"{normal_anomaly_rate:.1%} anomaly rate (>{period_threshold:.1%} threshold)"
                 else:
                     status_msg = f"Failed: {', '.join(failed_checks)}"
-            
-            explainability_icon = "🧠" if explainability_passed else "❌"
-            print(f"     {status_icon} {period_emoji} {period}: {status_msg} {explainability_icon}")
+                logger.warning("  %s: FAILED - %s", period, status_msg)
             
             # Additional context for failures with 5-period awareness
             if not validation_passed:
                 if period == 'weekend_night':
-                    print(f"       💡 Weekend nights have the highest natural variability")
+                    logger.debug("    Note: Weekend nights have the highest natural variability")
                 elif period == 'weekend_day':
-                    print(f"       💡 Weekend days have moderate variability compared to weekdays")
+                    logger.debug("    Note: Weekend days have moderate variability compared to weekdays")
                 elif period.startswith('weekend_') and service_type == 'micro_service':
-                    print(f"       💡 Micro-services often have irregular weekend patterns")
+                    logger.debug("    Note: Micro-services often have irregular weekend patterns")
                 elif period.startswith('weekend_') and service_type == 'admin_service':
-                    print(f"       💡 Admin services typically have minimal weekend activity")
+                    logger.debug("    Note: Admin services typically have minimal weekend activity")
         
         # Enhanced overall assessment with 5-period logic
         total_periods = len(validation_results)
@@ -1128,42 +1159,45 @@ class EnhancedSmartboxTrainingPipeline:
         explainability_periods = sum(1 for result in validation_results.values() if result.get('explainability_passed', False))
         explainability_overall = explainability_periods > 0
         
-        print(f"   {'✅' if overall_passed else '❌'} Enhanced 5-period validation: {overall_message}")
-        print(f"   {'🧠' if explainability_overall else '❌'} Explainability: {explainability_periods}/{total_periods} periods enabled")
+        if overall_passed:
+            logger.info("Enhanced 5-period validation: %s", overall_message)
+        else:
+            logger.warning("Enhanced 5-period validation FAILED: %s", overall_message)
+        logger.info("Explainability: %d/%d periods enabled", explainability_periods, total_periods)
         
         # Show period type breakdown
         if validation_results:
-            print(f"   📊 Period breakdown:")
-            weekday_passed = sum(1 for period in ['business_hours', 'night_hours', 'evening_hours'] 
+            logger.info("Period breakdown:")
+            weekday_passed = sum(1 for period in ['business_hours', 'night_hours', 'evening_hours']
                                if period in validation_results and validation_results[period].get('enhanced_passed', False))
-            weekday_total = sum(1 for period in ['business_hours', 'night_hours', 'evening_hours'] 
+            weekday_total = sum(1 for period in ['business_hours', 'night_hours', 'evening_hours']
                               if period in validation_results)
-            
-            weekend_passed = sum(1 for period in ['weekend_day', 'weekend_night'] 
+
+            weekend_passed = sum(1 for period in ['weekend_day', 'weekend_night']
                                if period in validation_results and validation_results[period].get('enhanced_passed', False))
-            weekend_total = sum(1 for period in ['weekend_day', 'weekend_night'] 
+            weekend_total = sum(1 for period in ['weekend_day', 'weekend_night']
                               if period in validation_results)
-            
+
             if weekday_total > 0:
-                print(f"     🕒 Weekday periods: {weekday_passed}/{weekday_total} passed")
+                logger.info("  Weekday periods: %d/%d passed", weekday_passed, weekday_total)
             if weekend_total > 0:
-                print(f"     🌅 Weekend periods: {weekend_passed}/{weekend_total} passed")
+                logger.info("  Weekend periods: %d/%d passed", weekend_passed, weekend_total)
         
         # Add service-specific recommendations for 5-period approach
         if not overall_passed:
-            print(f"   💡 Recommendations for {service_type} with 5-period approach:")
+            logger.info("Recommendations for %s with 5-period approach:", service_type)
             if service_type == 'micro_service':
-                print(f"      - Consider increasing training data collection period")
-                print(f"      - Focus on getting business_hours and night_hours models working first")
-                print(f"      - Weekend models may need higher tolerance for variability")
+                logger.info("  - Consider increasing training data collection period")
+                logger.info("  - Focus on getting business_hours and night_hours models working first")
+                logger.info("  - Weekend models may need higher tolerance for variability")
             elif service_type == 'admin_service':
-                print(f"      - Admin services often have minimal weekend activity")
-                print(f"      - Consider focusing on weekday period models (business/night/evening hours)")
-                print(f"      - Weekend periods may not be reliable for admin services")
+                logger.info("  - Admin services often have minimal weekend activity")
+                logger.info("  - Consider focusing on weekday period models (business/night/evening hours)")
+                logger.info("  - Weekend periods may not be reliable for admin services")
             else:
-                print(f"      - Ensure adequate data collection across all time periods")
-                print(f"      - Weekend periods require different expectations than weekdays")
-                print(f"      - Consider adjusting anomaly detection sensitivity for weekend periods")
+                logger.info("  - Ensure adequate data collection across all time periods")
+                logger.info("  - Weekend periods require different expectations than weekdays")
+                logger.info("  - Consider adjusting anomaly detection sensitivity for weekend periods")
         
         # Add summary to validation results
         validation_results['_summary'] = {
@@ -1185,34 +1219,34 @@ class EnhancedSmartboxTrainingPipeline:
         """Train enhanced models for all services"""
         if service_list is None:
             service_list = self.discover_services()
-        
-        print(f"\n🎯 Training enhanced models for {len(service_list)} services")
-        print(f"✨ All models will include explainability features")
+
+        logger.info("Training enhanced models for %d services", len(service_list))
+        logger.info("All models will include explainability features")
         
         results = {}
         successful_trainings = 0
         explainable_models = 0
         
         for i, service in enumerate(service_list, 1):
-            print(f"\n[{i}/{len(service_list)}] Processing {service}")
-            
+            logger.info("[%d/%d] Processing %s", i, len(service_list), service)
+
             result = self.train_service_model(service)
             results[service] = result
-            
+
             if result['status'] == 'success':
                 successful_trainings += 1
                 if result.get('explainability_metrics', 0) > 0:
                     explainable_models += 1
-                print(f"✅ {service}: Enhanced training successful")
-                print(f"   🧠 Explainability: {result.get('explainability_metrics', 0)} metrics")
+                logger.info("%s: Enhanced training successful", service)
+                logger.info("  Explainability: %d metrics", result.get('explainability_metrics', 0))
             else:
-                print(f"❌ {service}: {result['status']} - {result.get('message', '')}")
-        
-        print("\n📊 Enhanced Training Summary:")
-        print(f"   Total services: {len(service_list)}")
-        print(f"   Successful: {successful_trainings}")
-        print(f"   With explainability: {explainable_models}")
-        print(f"   Failed: {len(service_list) - successful_trainings}")
+                logger.error("%s: %s - %s", service, result['status'], result.get('message', ''))
+
+        logger.info("Enhanced Training Summary:")
+        logger.info("  Total services: %d", len(service_list))
+        logger.info("  Successful: %d", successful_trainings)
+        logger.info("  With explainability: %d", explainable_models)
+        logger.info("  Failed: %d", len(service_list) - successful_trainings)
         
         return results
 
@@ -1220,11 +1254,11 @@ class EnhancedSmartboxTrainingPipeline:
         """Train enhanced time-aware models for all services with 5-period approach"""
         if service_list is None:
             service_list = self.discover_services()
-        
-        print(f"\n🎯 Training enhanced time-aware models for {len(service_list)} services")
-        print(f"🕒 Using 5-period approach: business_hours, night_hours, evening_hours, weekend_day, weekend_night")
-        print(f"✨ All models will include time-awareness + explainability features")
-        print(f"🎚️ Using service-specific validation thresholds for realistic assessment")
+
+        logger.info("Training enhanced time-aware models for %d services", len(service_list))
+        logger.info("Using 5-period approach: business_hours, night_hours, evening_hours, weekend_day, weekend_night")
+        logger.info("All models will include time-awareness + explainability features")
+        logger.info("Using service-specific validation thresholds for realistic assessment")
         
         results = {}
         successful_trainings = 0
@@ -1239,80 +1273,79 @@ class EnhancedSmartboxTrainingPipeline:
         }
         
         for i, service in enumerate(service_list, 1):
-            print(f"\n[{i}/{len(service_list)}] Processing {service}")
-            
+            logger.info("[%d/%d] Processing %s", i, len(service_list), service)
+
             result = self.train_service_model_time_aware(service)
             results[service] = result
-            
+
             if result['status'] == 'success':
                 successful_trainings += 1
                 explainability_count = result.get('total_explainability_metrics', 0)
                 total_explainability_metrics += explainability_count
-                
+
                 # Check if validation passed with new 5-period logic
                 validation_results = result.get('validation_results', {})
                 summary = validation_results.get('_summary', {})
                 validation_passed = summary.get('overall_passed', False)
                 service_type = summary.get('service_type', 'unknown')
                 approach = summary.get('approach', 'unknown')
-                
+
                 # Track period-specific statistics
                 for period in period_stats.keys():
                     if period in validation_results and validation_results[period].get('status') != 'insufficient_data':
                         period_stats[period]['trained'] += 1
                         if validation_results[period].get('enhanced_passed', False):
                             period_stats[period]['passed'] += 1
-                
+
                 if validation_passed:
                     validation_passed_services += 1
-                    print(f"✅ {service} ({service_type}): Enhanced 5-period training successful")
-                    
+                    logger.info("%s (%s): Enhanced 5-period training successful", service, service_type)
+
                     # Show period breakdown
                     weekday_periods = summary.get('critical_periods_passed', 0)
                     weekend_periods = summary.get('weekend_periods_passed', 0)
                     total_periods = summary.get('passed_periods', 0)
-                    print(f"   🕒 Weekday coverage: {weekday_periods}/3, 🌅 Weekend coverage: {weekend_periods}/2")
+                    logger.info("  Weekday coverage: %d/3, Weekend coverage: %d/2", weekday_periods, weekend_periods)
                 else:
-                    print(f"⚠️ {service} ({service_type}): Training successful but validation concerns")
+                    logger.warning("%s (%s): Training successful but validation concerns", service, service_type)
                     overall_message = summary.get('overall_message', 'Validation issues')
-                    print(f"   📋 {overall_message}")
-                
-                print(f"   🧠 Total explainability metrics: {explainability_count}")
+                    logger.warning("  %s", overall_message)
+
+                logger.info("  Total explainability metrics: %d", explainability_count)
             else:
-                print(f"❌ {service}: {result['status']} - {result.get('message', '')}")
+                logger.error("%s: %s - %s", service, result['status'], result.get('message', ''))
         
-        print("\n📊 Enhanced 5-Period Time-aware Training Summary:")
-        print(f"   Total services: {len(service_list)}")
-        print(f"   Successful trainings: {successful_trainings}")
-        print(f"   Validation passed: {validation_passed_services}/{successful_trainings}")
-        print(f"   Total explainability metrics: {total_explainability_metrics}")
-        print(f"   Failed trainings: {len(service_list) - successful_trainings}")
+        logger.info("Enhanced 5-Period Time-aware Training Summary:")
+        logger.info("  Total services: %d", len(service_list))
+        logger.info("  Successful trainings: %d", successful_trainings)
+        logger.info("  Validation passed: %d/%d", validation_passed_services, successful_trainings)
+        logger.info("  Total explainability metrics: %d", total_explainability_metrics)
+        logger.info("  Failed trainings: %d", len(service_list) - successful_trainings)
         
         # Enhanced summary with 5-period validation insights
         if successful_trainings > 0:
             validation_rate = validation_passed_services / successful_trainings
-            print(f"\n🎯 5-Period Validation Summary:")
-            print(f"   Validation success rate: {validation_rate:.1%}")
-            
+            logger.info("5-Period Validation Summary:")
+            logger.info("  Validation success rate: %.1f%%", validation_rate * 100)
+
             if validation_rate >= 0.8:
-                print("   🟢 Excellent validation performance")
+                logger.info("  Excellent validation performance")
             elif validation_rate >= 0.6:
-                print("   🟡 Good validation performance - some services need attention")
+                logger.info("  Good validation performance - some services need attention")
             else:
-                print("   🔴 Many services have validation concerns - review thresholds")
-                print("   💡 Consider:")
-                print("      - Increasing training data collection period")
-                print("      - Reviewing service-specific patterns")
-                print("      - Adjusting anomaly detection sensitivity for weekend periods")
+                logger.warning("  Many services have validation concerns - review thresholds")
+                logger.info("  Consider:")
+                logger.info("    - Increasing training data collection period")
+                logger.info("    - Reviewing service-specific patterns")
+                logger.info("    - Adjusting anomaly detection sensitivity for weekend periods")
         
         # Show detailed period-by-period breakdown
-        print(f"\n📈 Period-by-Period Training Success:")
+        logger.info("Period-by-Period Training Success:")
         for period, stats in period_stats.items():
             if stats['trained'] > 0:
                 success_rate = stats['passed'] / stats['trained']
-                period_emoji = "🌅" if period == 'weekend_day' else "🌙" if period == 'weekend_night' else "🕒"
-                status_color = "🟢" if success_rate >= 0.8 else "🟡" if success_rate >= 0.6 else "🔴"
-                print(f"   {period_emoji} {period}: {stats['passed']}/{stats['trained']} ({success_rate:.1%}) {status_color}")
+                status = "excellent" if success_rate >= 0.8 else "good" if success_rate >= 0.6 else "needs attention"
+                logger.info("  %s: %d/%d (%.1f%%) - %s", period, stats['passed'], stats['trained'], success_rate * 100, status)
         
         # Show service type breakdown
         service_types = {}
@@ -1341,44 +1374,44 @@ class EnhancedSmartboxTrainingPipeline:
                     service_types[service_type]['weekend_coverage'] += 1
         
         if service_types:
-            print(f"\n📈 Validation by Service Type (5-Period Approach):")
+            logger.info("Validation by Service Type (5-Period Approach):")
             for service_type, stats in service_types.items():
                 total = stats['total']
                 passed = stats['passed']
                 weekday_cov = stats['weekday_coverage']
                 weekend_cov = stats['weekend_coverage']
-                
+
                 rate = passed / total if total > 0 else 0
                 weekday_rate = weekday_cov / total if total > 0 else 0
                 weekend_rate = weekend_cov / total if total > 0 else 0
-                
-                print(f"   {service_type}: {passed}/{total} ({rate:.1%}) overall")
-                print(f"     🕒 Weekday coverage: {weekday_cov}/{total} ({weekday_rate:.1%})")
-                print(f"     🌅 Weekend coverage: {weekend_cov}/{total} ({weekend_rate:.1%})")
+
+                logger.info("  %s: %d/%d (%.1f%%) overall", service_type, passed, total, rate * 100)
+                logger.info("    Weekday coverage: %d/%d (%.1f%%)", weekday_cov, total, weekday_rate * 100)
+                logger.info("    Weekend coverage: %d/%d (%.1f%%)", weekend_cov, total, weekend_rate * 100)
         
         # 5-period specific insights
         total_weekend_models = period_stats['weekend_day']['trained'] + period_stats['weekend_night']['trained']
-        total_weekday_models = (period_stats['business_hours']['trained'] + 
-                               period_stats['night_hours']['trained'] + 
+        total_weekday_models = (period_stats['business_hours']['trained'] +
+                               period_stats['night_hours']['trained'] +
                                period_stats['evening_hours']['trained'])
-        
+
         if total_weekend_models > 0 and total_weekday_models > 0:
             weekend_vs_weekday_ratio = total_weekend_models / total_weekday_models
-            print(f"\n🌅 Weekend vs Weekday Model Distribution:")
-            print(f"   Weekend models: {total_weekend_models}")
-            print(f"   Weekday models: {total_weekday_models}")
-            print(f"   Ratio: {weekend_vs_weekday_ratio:.2f}")
-            
+            logger.info("Weekend vs Weekday Model Distribution:")
+            logger.info("  Weekend models: %d", total_weekend_models)
+            logger.info("  Weekday models: %d", total_weekday_models)
+            logger.info("  Ratio: %.2f", weekend_vs_weekday_ratio)
+
             if weekend_vs_weekday_ratio < 0.5:
-                print("   💡 Many services lack sufficient weekend data")
+                logger.info("  Note: Many services lack sufficient weekend data")
             elif weekend_vs_weekday_ratio > 0.8:
-                print("   ✅ Good weekend data coverage across services")
+                logger.info("  Good weekend data coverage across services")
         
         return results
         
     def _validate_model(self, model: SmartboxAnomalyDetector, features: pd.DataFrame) -> Dict:
         """Validate trained model with detailed diagnostics"""
-        print("   🔍 Validating model...")
+        logger.info("Validating model...")
         
         validation_split = int(len(features) * self.config['validation_split'])
         validation_data = features[validation_split:]
@@ -1394,7 +1427,7 @@ class EnhancedSmartboxTrainingPipeline:
         total_tests = min(100, len(validation_data))
         test_errors = []
         
-        print(f"     Testing on {total_tests} validation samples...")
+        logger.debug("  Testing on %d validation samples...", total_tests)
         
         # Test 1: Normal validation data
         normal_anomalies = 0
@@ -1421,8 +1454,8 @@ class EnhancedSmartboxTrainingPipeline:
             except Exception as e:
                 test_errors.append(str(e))
                 if len(test_errors) <= 3:
-                    print(f"     ⚠️ Validation test {i} failed: {e}")
-        
+                    logger.warning("  Validation test %d failed: %s", i, e)
+
         # Test 2: Synthetic anomalies (should be detected)
         synthetic_anomalies = 0
         synthetic_tests = total_tests // 2
@@ -1489,20 +1522,20 @@ class EnhancedSmartboxTrainingPipeline:
         normal_rate = validation_result['normal_anomaly_rate']
         
         if not validation_passed:
-            print(f"     ❌ Validation failed:")
+            logger.warning("  Validation failed:")
             for check, passed in validation_checks.items():
-                status = "✅" if passed else "❌"
-                print(f"       {status} {check}: {passed}")
-            print(f"     Overall anomaly rate: {anomaly_rate:.3f}")
-            print(f"     Normal data anomaly rate: {normal_rate:.1%} ({normal_anomalies}/{total_tests//2})")
-            print(f"     Synthetic anomaly detection: {synthetic_anomalies}/{synthetic_tests} ({synthetic_detection_rate:.1%})")
-            print(f"     Test errors: {len(test_errors)}/{total_tests_run}")
+                status = "OK" if passed else "FAILED"
+                logger.warning("    %s: %s", check, passed)
+            logger.warning("  Overall anomaly rate: %.3f", anomaly_rate)
+            logger.warning("  Normal data anomaly rate: %.1f%% (%d/%d)", normal_rate * 100, normal_anomalies, total_tests//2)
+            logger.warning("  Synthetic anomaly detection: %d/%d (%.1f%%)", synthetic_anomalies, synthetic_tests, synthetic_detection_rate * 100)
+            logger.warning("  Test errors: %d/%d", len(test_errors), total_tests_run)
         else:
-            print(f"     ✅ Validation passed!")
-            print(f"       Overall anomaly rate: {anomaly_rate:.3f}")
-            print(f"       Normal data anomaly rate: {normal_rate:.1%}")
-            print(f"       Synthetic detection rate: {synthetic_detection_rate:.1%}")
-            print(f"       Models: {len(model.models)}, Thresholds: {len(model.thresholds)}")
+            logger.info("  Validation passed")
+            logger.info("    Overall anomaly rate: %.3f", anomaly_rate)
+            logger.info("    Normal data anomaly rate: %.1f%%", normal_rate * 100)
+            logger.info("    Synthetic detection rate: %.1f%%", synthetic_detection_rate * 100)
+            logger.info("    Models: %d, Thresholds: %d", len(model.models), len(model.thresholds))
         
         return validation_result
     
@@ -1510,14 +1543,14 @@ class EnhancedSmartboxTrainingPipeline:
         """Save enhanced model with explainability data"""
         models_dir = "./smartbox_models/"
         os.makedirs(models_dir, exist_ok=True)
-        
+
         # The enhanced SmartboxAnomalyDetector automatically saves explainability data
         model_dir = model.save_model_secure(models_dir, metadata)
-        
-        print(f"💾 Enhanced model saved: {model_dir}")
+
+        logger.info("Enhanced model saved: %s", model_dir)
         if hasattr(model, 'training_statistics'):
-            print(f"   🧠 Explainability data included for {len(model.training_statistics)} metrics")
-        
+            logger.info("  Explainability data included for %d metrics", len(model.training_statistics))
+
         return str(model_dir)
 
 
@@ -1526,42 +1559,48 @@ SmartboxTrainingPipeline = EnhancedSmartboxTrainingPipeline
 
 # Example usage
 if __name__ == "__main__":
+    # Configure logging for the main module
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
     # Initialize enhanced training pipeline
     training_pipeline = EnhancedSmartboxTrainingPipeline()
 
     # Load services from config.json (falls back to discovery if not found)
     services = training_pipeline.load_services_from_config()
     if not services:
-        print("🔍 Discovering services from VictoriaMetrics...")
+        logger.info("Discovering services from VictoriaMetrics...")
         services = training_pipeline.discover_services()
 
     if not services:
-        print("❌ No services found to train. Please check config.json or VictoriaMetrics connection.")
+        logger.error("No services found to train. Please check config.json or VictoriaMetrics connection.")
         exit(1)
 
     # Choose training type
     use_time_aware = True  # Set to True to use enhanced time-aware models
 
     if use_time_aware:
-        print("🕐 Using enhanced time-aware anomaly detection with explainability")
+        logger.info("Using enhanced time-aware anomaly detection with explainability")
 
         results = training_pipeline.train_all_services_time_aware(services)
 
         # Print enhanced results summary
-        print(f"\n📊 Final Results Summary:")
+        logger.info("Final Results Summary:")
         for service, result in results.items():
-            status_icon = "✅" if result['status'] == 'success' else "❌"
+            status = "OK" if result['status'] == 'success' else "FAILED"
             explainability_count = result.get('total_explainability_metrics', 0)
-            explainability_status = "🧠" if explainability_count > 0 else "❌"
-            print(f"{status_icon} {service}: {result['status']} {explainability_status} ({explainability_count} metrics)")
+            explainability_status = "with explainability" if explainability_count > 0 else "no explainability"
+            logger.info("  %s: %s - %s (%d metrics)", service, status, explainability_status, explainability_count)
     else:
         # Enhanced regular training
         results = training_pipeline.train_all_services(services)
 
         # Print enhanced results summary
-        print(f"\n📊 Final Results Summary:")
+        logger.info("Final Results Summary:")
         for service, result in results.items():
-            status_icon = "✅" if result['status'] == 'success' else "❌"
+            status = "OK" if result['status'] == 'success' else "FAILED"
             explainability_count = result.get('explainability_metrics', 0)
-            explainability_status = "🧠" if explainability_count > 0 else "❌"
-            print(f"{status_icon} {service}: {result['status']} {explainability_status} ({explainability_count} metrics)")
+            explainability_status = "with explainability" if explainability_count > 0 else "no explainability"
+            logger.info("  %s: %s - %s (%d metrics)", service, status, explainability_status, explainability_count)
