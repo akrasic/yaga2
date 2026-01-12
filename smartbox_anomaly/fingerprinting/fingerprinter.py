@@ -346,10 +346,21 @@ class AnomalyFingerprinter(IncidentTracker):
                     if is_newly_confirmed:
                         newly_confirmed.append(result)
             else:
-                # Create new suspected incident
-                enhanced_anomaly.update(
-                    self._create_incident(service_name, anomaly_name, details, fp_id, model_name, timestamp)
+                # Check if there's a recently-closed incident we should reopen
+                recently_closed = self._get_recently_closed_incident(
+                    fp_id, timestamp, self._config.incident_separation_minutes
                 )
+                if recently_closed:
+                    # Reopen the recently-closed incident instead of creating new one
+                    result = self._reopen_incident(
+                        recently_closed, details, fp_id, anomaly_name, model_name, timestamp
+                    )
+                    enhanced_anomaly.update(result)
+                else:
+                    # Create new suspected incident
+                    enhanced_anomaly.update(
+                        self._create_incident(service_name, anomaly_name, details, fp_id, model_name, timestamp)
+                    )
 
             enhanced.append(enhanced_anomaly)
 
@@ -404,6 +415,120 @@ class AnomalyFingerprinter(IncidentTracker):
             "service_name": incident["service_name"],
             "last_detected_by_model": incident.get("detected_by_model", "unknown"),
             "resolution_reason": "auto_stale",
+        }
+
+    def _get_recently_closed_incident(
+        self,
+        fingerprint_id: str,
+        current_time: datetime,
+        max_age_minutes: int,
+    ) -> dict[str, Any] | None:
+        """Find a recently-closed incident with the same fingerprint.
+
+        This allows reopening incidents that were briefly resolved but the anomaly
+        reappeared within the incident_separation_minutes threshold.
+
+        Args:
+            fingerprint_id: The fingerprint ID to search for.
+            current_time: Current timestamp.
+            max_age_minutes: Maximum age (in minutes) since resolution to consider.
+
+        Returns:
+            The recently-closed incident dict if found, None otherwise.
+        """
+        cutoff = current_time - timedelta(minutes=max_age_minutes)
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """SELECT * FROM anomaly_incidents
+                   WHERE fingerprint_id = ?
+                     AND status = 'CLOSED'
+                     AND resolved_at >= ?
+                   ORDER BY resolved_at DESC
+                   LIMIT 1""",
+                (fingerprint_id, cutoff),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def _reopen_incident(
+        self,
+        closed_incident: dict[str, Any],
+        details: dict[str, Any],
+        fp_id: str,
+        anomaly_name: str,
+        model_name: str,
+        timestamp: datetime,
+    ) -> dict[str, Any]:
+        """Reopen a recently-closed incident.
+
+        Instead of creating a new incident, we reopen the existing one,
+        preserving incident history and avoiding fragmentation.
+
+        The incident transitions back to OPEN status (not SUSPECTED) since
+        it was previously confirmed.
+        """
+        new_count = closed_incident["occurrence_count"] + 1
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """UPDATE anomaly_incidents
+                   SET status = 'OPEN',
+                       resolved_at = NULL,
+                       last_updated = ?,
+                       occurrence_count = ?,
+                       consecutive_detections = 1,
+                       missed_cycles = 0,
+                       severity = ?,
+                       current_value = ?,
+                       threshold_value = ?,
+                       confidence_score = ?,
+                       description = ?,
+                       detected_by_model = ?,
+                       metadata = json_set(COALESCE(metadata, '{}'), '$.reopened_at', ?)
+                   WHERE incident_id = ?""",
+                (
+                    timestamp,
+                    new_count,
+                    details["severity"],
+                    details["current_value"],
+                    details["threshold_value"],
+                    details["confidence_score"],
+                    details["description"],
+                    details["detected_by_model"],
+                    timestamp.isoformat(),
+                    closed_incident["incident_id"],
+                ),
+            )
+            conn.commit()
+
+        log_event(
+            logger, 20, EventType.INCIDENT_CONTINUED, closed_incident["service_name"],
+            f"Reopened incident {closed_incident['incident_id']} (was closed {calculate_duration_minutes(closed_incident['resolved_at'], timestamp):.0f} min ago)",
+            fingerprint=fp_id,
+        )
+
+        return {
+            "fingerprint_id": fp_id,
+            "incident_id": closed_incident["incident_id"],
+            "anomaly_name": anomaly_name,
+            "status": "OPEN",
+            "previous_status": "CLOSED",
+            "fingerprint_action": IncidentAction.UPDATE.value,
+            "incident_action": "REOPEN",  # New action type for tracking
+            "occurrence_count": new_count,
+            "consecutive_detections": 1,
+            "first_seen": closed_incident["first_seen"],
+            "last_updated": timestamp.isoformat(),
+            "incident_duration_minutes": calculate_duration_minutes(
+                closed_incident["first_seen"], timestamp
+            ),
+            "detected_by_model": model_name,
+            "is_confirmed": True,  # Was previously confirmed
+            "reopened": True,
+            "time_since_closure_minutes": calculate_duration_minutes(
+                closed_incident["resolved_at"], timestamp
+            ),
         }
 
     def _create_incident(
