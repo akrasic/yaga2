@@ -80,7 +80,7 @@ def sample_metrics() -> InferenceMetrics:
         timestamp=datetime.now(),
         request_rate=100.0,
         application_latency=50.0,
-        client_latency=30.0,
+        dependency_latency=30.0,
         database_latency=20.0,
         error_rate=0.01,
     )
@@ -92,7 +92,7 @@ def sample_metrics_dict() -> dict[str, float]:
     return {
         MetricName.REQUEST_RATE: 100.0,
         MetricName.APPLICATION_LATENCY: 50.0,
-        MetricName.CLIENT_LATENCY: 30.0,
+        MetricName.DEPENDENCY_LATENCY: 30.0,
         MetricName.DATABASE_LATENCY: 20.0,
         MetricName.ERROR_RATE: 0.01,
     }
@@ -104,7 +104,7 @@ def anomalous_metrics_dict() -> dict[str, float]:
     return {
         MetricName.REQUEST_RATE: 10000.0,  # Very high
         MetricName.APPLICATION_LATENCY: 5000.0,  # Very high
-        MetricName.CLIENT_LATENCY: 1000.0,
+        MetricName.DEPENDENCY_LATENCY: 1000.0,
         MetricName.DATABASE_LATENCY: 500.0,
         MetricName.ERROR_RATE: 0.3,  # 30% error rate
     }
@@ -124,7 +124,7 @@ def sample_training_data() -> pd.DataFrame:
     return pd.DataFrame({
         MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
         MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-        MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+        MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
         MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
         MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
     })
@@ -145,7 +145,7 @@ def time_series_training_data() -> pd.DataFrame:
     return pd.DataFrame({
         MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
         MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-        MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+        MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
         MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
         MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
     }, index=dates)
@@ -161,8 +161,8 @@ def realistic_training_data() -> pd.DataFrame:
     request_rate = np.random.lognormal(4, 0.5, n_samples)
     app_latency = np.random.lognormal(3.5, 0.8, n_samples)
 
-    # Client and DB latency often zero
-    client_latency = np.where(
+    # Dependency and DB latency often zero
+    dependency_latency = np.where(
         np.random.random(n_samples) > 0.3,
         np.random.exponential(30, n_samples),
         0,
@@ -179,7 +179,7 @@ def realistic_training_data() -> pd.DataFrame:
     return pd.DataFrame({
         MetricName.REQUEST_RATE: request_rate,
         MetricName.APPLICATION_LATENCY: app_latency,
-        MetricName.CLIENT_LATENCY: client_latency,
+        MetricName.DEPENDENCY_LATENCY: dependency_latency,
         MetricName.DATABASE_LATENCY: db_latency,
         MetricName.ERROR_RATE: error_rate,
     })
@@ -397,7 +397,7 @@ def generate_training_data_for_period(
     return pd.DataFrame({
         MetricName.REQUEST_RATE: np.random.exponential(100 * mult["rate"], n_samples),
         MetricName.APPLICATION_LATENCY: np.random.exponential(50 * mult["latency"], n_samples),
-        MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+        MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
         MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
         MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
     })

@@ -29,7 +29,7 @@ class SmartboxMetricsExtractor:
             
             'application_latency': 'sum(rate(duration_milliseconds_sum{span_kind="SPAN_KIND_SERVER", deployment_environment_name=~"production"}[1m])) by (service_name) / sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_SERVER", deployment_environment_name=~"production"}[1m])) by (service_name)',
             
-            'client_latency': 'sum(rate(duration_milliseconds_sum{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system="", db_system_name=""}[1m])) by (service_name) / sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system="", db_system_name=""}[1m])) by (service_name)',
+            'dependency_latency': 'sum(rate(duration_milliseconds_sum{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system="", db_system_name=""}[1m])) by (service_name) / sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system="", db_system_name=""}[1m])) by (service_name)',
             
             'database_latency': 'sum(rate(duration_milliseconds_sum{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system_name!=""}[1m])) by (service_name) / sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_CLIENT", deployment_environment_name=~"production", db_system_name!=""}[1m])) by (service_name)',
             
@@ -330,7 +330,7 @@ class SmartboxMetricsExtractor:
 class SmartboxFeatureEngineer:
     def __init__(self):
         self.feature_windows = ['5T', '15T', '1H']  # 5min, 15min, 1hour
-        self.base_metrics = ['request_rate', 'application_latency', 'client_latency', 'database_latency', 'error_rate']
+        self.base_metrics = ['request_rate', 'application_latency', 'dependency_latency', 'database_latency', 'error_rate']
 
     def engineer_features(self, metrics_df: pd.DataFrame, include_rolling: bool = True) -> pd.DataFrame:
         """Create ML features from raw metrics with robust data handling.
@@ -942,7 +942,7 @@ class EnhancedSmartboxTrainingPipeline:
                 current_metrics = {
                     'request_rate': row.get('request_rate', 0),
                     'application_latency': row.get('application_latency', 0),
-                    'client_latency': row.get('client_latency', 0),
+                    'dependency_latency': row.get('dependency_latency', 0),
                     'database_latency': row.get('database_latency', 0),
                     'error_rate': row.get('error_rate', 0)
                 }
@@ -973,7 +973,7 @@ class EnhancedSmartboxTrainingPipeline:
                 current_metrics = {
                     'request_rate': row.get('request_rate', 0) * 3,
                     'application_latency': row.get('application_latency', 0) * 5,
-                    'client_latency': row.get('client_latency', 0) * 2,
+                    'dependency_latency': row.get('dependency_latency', 0) * 2,
                     'database_latency': row.get('database_latency', 0) * 2,
                     'error_rate': min(1.0, row.get('error_rate', 0) * 10)
                 }
@@ -1126,7 +1126,7 @@ class EnhancedSmartboxTrainingPipeline:
                     test_metrics = {
                         'request_rate': max(0, row.get('request_rate', 0)),
                         'application_latency': max(0, row.get('application_latency', 0)),
-                        'client_latency': max(0, row.get('client_latency', 0)),
+                        'dependency_latency': max(0, row.get('dependency_latency', 0)),
                         'database_latency': max(0, row.get('database_latency', 0)),
                         'error_rate': max(0, min(1.0, row.get('error_rate', 0)))
                     }
@@ -1527,7 +1527,7 @@ class EnhancedSmartboxTrainingPipeline:
                 current_metrics = {
                     'request_rate': row.get('request_rate', 0),
                     'application_latency': row.get('application_latency', 0),
-                    'client_latency': row.get('client_latency', 0),
+                    'dependency_latency': row.get('dependency_latency', 0),
                     'database_latency': row.get('database_latency', 0),
                     'error_rate': row.get('error_rate', 0)
                 }
@@ -1558,7 +1558,7 @@ class EnhancedSmartboxTrainingPipeline:
                 current_metrics = {
                     'request_rate': row.get('request_rate', 0) * 3,  # 3x normal traffic
                     'application_latency': row.get('application_latency', 0) * 5,  # 5x normal latency
-                    'client_latency': row.get('client_latency', 0) * 2,
+                    'dependency_latency': row.get('dependency_latency', 0) * 2,
                     'database_latency': row.get('database_latency', 0) * 2,
                     'error_rate': min(1.0, row.get('error_rate', 0) * 10)  # 10x errors, capped at 100%
                 }

@@ -191,6 +191,174 @@ class TestAnomalyNameGeneration:
         name = generate_anomaly_name({}, index=0)
         assert name == "anomaly_0_unknown"
 
+    def test_generate_anomaly_name_dependency_latency_from_description(self):
+        """Test dependency latency naming from description."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "description": "External dependency slow: 191ms (p90: 68ms)",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_dependency_latency_from_root_metric(self):
+        """Test dependency latency naming from root_metric."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "root_metric": "dependency_latency",
+            "description": "Some generic description",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_application_latency_fast_responses(self):
+        """Test application latency naming for fast responses."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "low",
+            "description": "Unusually fast responses: 46ms (normally 72ms)",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "application_latency_low"
+
+    def test_generate_anomaly_name_database_latency(self):
+        """Test database latency naming."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "root_metric": "database_latency",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "database_latency_high"
+
+    def test_generate_anomaly_name_pattern_takes_precedence(self):
+        """Test that pattern_name takes precedence over other naming."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "pattern_name": "traffic_surge_failing",
+            "description": "External dependency slow",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "traffic_surge_failing"
+
+    def test_generate_anomaly_name_anomaly_key_highest_priority(self):
+        """Test that _anomaly_key (preserved from detector) takes highest priority."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "_anomaly_key": "dependency_latency_high",
+            "pattern_name": "some_pattern",  # Should be ignored
+            "root_metric": "application_latency",  # Should be ignored
+            "description": "Some description",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_ignores_generic_anomaly_key(self):
+        """Test that generic _anomaly_key values (anomaly_*, metric_*) are skipped."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "_anomaly_key": "anomaly_0_consolidated",  # Generic, should skip
+            "root_metric": "dependency_latency",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_ignores_metric_key(self):
+        """Test that _anomaly_key starting with metric_ is skipped."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "low",
+            "_anomaly_key": "metric_low",  # Generic, should skip
+            "root_metric": "database_latency",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "database_latency_low"
+
+    def test_generate_anomaly_name_comparison_data_fallback(self):
+        """Test using comparison_data to find most anomalous metric."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "comparison_data": {
+                "application_latency": {"deviation_sigma": 0.5},
+                "dependency_latency": {"deviation_sigma": 3.2},  # Most anomalous
+                "error_rate": {"deviation_sigma": 0.1},
+            },
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_comparison_data_ignores_low_deviation(self):
+        """Test that comparison_data with low deviations falls through."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "description": "External dependency slow",
+            "comparison_data": {
+                "application_latency": {"deviation_sigma": 0.3},  # Not significant
+                "error_rate": {"deviation_sigma": 0.5},  # Not significant
+            },
+        }
+        name = generate_anomaly_name(data)
+        # Falls through to description inference
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_consolidated_type(self):
+        """Test naming for consolidated anomaly type."""
+        data = {
+            "type": "consolidated",
+            "direction": "high",
+            "root_metric": "dependency_latency",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "dependency_latency_high"
+
+    def test_generate_anomaly_name_consolidated_with_comparison_data(self):
+        """Test consolidated type falls back to comparison_data."""
+        data = {
+            "type": "consolidated",
+            "direction": "low",
+            "comparison_data": {
+                "database_latency": {"deviation_sigma": 2.5},
+                "application_latency": {"deviation_sigma": 0.8},
+            },
+        }
+        name = generate_anomaly_name(data)
+        assert name == "database_latency_low"
+
+    def test_generate_anomaly_name_consolidated_fallback(self):
+        """Test consolidated type fallback when no root_metric or comparison_data."""
+        data = {
+            "type": "consolidated",
+            "direction": "high",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "consolidated_high"
+
+    def test_generate_anomaly_name_error_rate_from_root_metric(self):
+        """Test error_rate naming from root_metric."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "high",
+            "root_metric": "error_rate",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "error_rate_high"
+
+    def test_generate_anomaly_name_request_rate_from_root_metric(self):
+        """Test request_rate naming from root_metric."""
+        data = {
+            "type": "ml_isolation",
+            "direction": "low",
+            "root_metric": "request_rate",
+        }
+        name = generate_anomaly_name(data)
+        assert name == "request_rate_low"
+
 
 class TestDataUtilities:
     """Tests for data utility functions."""

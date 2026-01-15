@@ -485,7 +485,7 @@ def _build_unknown_anomaly(
         "request_rate": 850.0,
         "application_latency": 450.0,
         "error_rate": 0.015,
-        "client_latency": 120.0,
+        "dependency_latency": 120.0,
         "database_latency": 80.0
       }
     }
@@ -503,12 +503,12 @@ def _build_unknown_anomaly(
       "type": "unknown",
       "severity": "medium",
       "score": -0.28,
-      "description": "Unusual behavior detected in 2 metric(s): client_latency, database_latency",
+      "description": "Unusual behavior detected in 2 metric(s): dependency_latency, database_latency",
       "interpretation": "Isolation Forest detected anomalous behavior that doesn't match any known pattern.",
       "detection_method": "isolation_forest",
 
       "signals": [
-        {"metric": "client_latency", "score": -0.28, "direction": "high", "percentile": 94.0},
+        {"metric": "dependency_latency", "score": -0.28, "direction": "high", "percentile": 94.0},
         {"metric": "database_latency", "score": -0.19, "direction": "low", "percentile": 8.0}
       ],
 

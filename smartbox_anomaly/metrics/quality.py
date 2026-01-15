@@ -212,7 +212,7 @@ def analyze_data_quality(
     if inf_count > 0:
         issues.append(f"Invalid values: {inf_count} infinite values")
 
-    if negative_count > 0 and metric_name in ("request_rate", "application_latency", "client_latency", "database_latency"):
+    if negative_count > 0 and metric_name in ("request_rate", "application_latency", "dependency_latency", "database_latency"):
         issues.append(f"Invalid values: {negative_count} negative values")
 
     # Calculate quality score

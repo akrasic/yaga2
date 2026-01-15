@@ -1,14 +1,15 @@
 # Smartbox Anomaly Fingerprinting System
 
-**Version**: 2.0 (Cycle-Based State Machine)
-**Date**: December 2025
+**Version**: 2.1 (Confirmed-Only Web API Integration)
+**Date**: January 2026
 **Owner**: ML Platform Team
 
 ## Overview
 
 The Anomaly Fingerprinting System provides stateful tracking and lifecycle management for anomalies detected by the Smartbox ML inference pipeline. It enables the observability service to track individual incidents over time, reducing noise from flapping alerts and providing rich historical context.
 
-**Key Features in v2.0:**
+**Key Features in v2.1:**
+- **Confirmed-only web API alerts**: Only OPEN/RECOVERING incidents are sent to the web API (SUSPECTED incidents are filtered)
 - **Cycle-based confirmation**: Incidents require multiple consecutive detections before alerting
 - **Grace period resolution**: Incidents don't close immediately when anomaly clears
 - **Staleness detection**: Long time gaps create new incidents instead of continuing stale ones
@@ -486,6 +487,50 @@ for service_name, result in results.items():
 - 🆕 **Added**: Fingerprinting metadata
 - 🆕 **Added**: Anomaly IDs and lifecycle info
 
+#### Confirmed-Only Alerts (v2.1)
+
+**Important**: Only **confirmed** anomalies (status = OPEN or RECOVERING) are sent to the web API. SUSPECTED anomalies are filtered out before the API call.
+
+This prevents orphaned incidents in the web API:
+
+```
+❌ OLD BEHAVIOR (before v2.1):
+   Inference detects anomaly → Creates SUSPECTED incident
+   → Sends alert to web API → Web API creates OPEN incident
+   → Anomaly not detected again → Inference closes as "suspected_expired"
+   → NO resolution sent → Web API incident stays OPEN forever (orphaned!)
+
+✅ NEW BEHAVIOR (v2.1):
+   Inference detects anomaly → Creates SUSPECTED incident
+   → Waits for confirmation (not sent to web API yet)
+   → If confirmed (2+ consecutive detections):
+       → Status becomes OPEN → NOW sends alert to web API
+   → If NOT confirmed (expires as suspected_expired):
+       → Silently closed → Web API never knew about it (no orphan)
+```
+
+**Implementation** (`inference.py:_update_results_processor()`):
+```python
+# Filter to only confirmed anomalies (OPEN or RECOVERING status)
+confirmed_anomalies = {
+    name: anomaly for name, anomaly in anomalies.items()
+    if anomaly.get('is_confirmed', False) or
+       anomaly.get('status') in ('OPEN', 'RECOVERING')
+}
+
+if confirmed_anomalies:
+    # Only send confirmed anomalies to web API
+    filtered_result = {**result, 'anomalies': confirmed_anomalies}
+    formatted_payload = pipeline.results_processor._format_time_aware_alert_json(filtered_result)
+```
+
+**Resolution Reasons**:
+| Resolution Reason | Sent to Web API | Description |
+|-------------------|-----------------|-------------|
+| `resolved` | Yes | Confirmed incident that cleared normally |
+| `suspected_expired` | No | Never confirmed, silently closed |
+| `auto_stale` | Yes | Confirmed incident closed due to time gap |
+
 ### Time-Aware Model Integration
 
 **Model Name Inference**:
@@ -686,4 +731,4 @@ grep "Database error" inference.log
 
 ---
 
-*This documentation covers the Anomaly Fingerprinting System v1.0. For questions or issues, please contact the ML Platform team.*
+*This documentation covers the Anomaly Fingerprinting System v2.1. For questions or issues, please contact the ML Platform team.*

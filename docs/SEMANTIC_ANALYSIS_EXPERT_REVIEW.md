@@ -188,7 +188,7 @@ conditions={
     "request_rate": "normal",
     "application_latency": "high",
     "error_rate": "low",
-    "client_latency": "normal",
+    "dependency_latency": "normal",
     "database_latency": "normal",
 }
 ```
@@ -212,7 +212,7 @@ Scenario: CPU throttling due to Kubernetes limits
 - request_rate: normal
 - latency: high (2x normal)
 - errors: normal (0.5%, within range)
-- client_latency: normal
+- dependency_latency: normal
 - db_latency: normal
 
 Current: Would match `silent_degradation` first
@@ -315,7 +315,7 @@ Both patterns check latency ratios but could both match:
 ```python
 # Service with DB and external calls where both are slow:
 app_latency: 1000ms
-client_latency: 400ms (40% of total)
+dependency_latency: 400ms (40% of total)
 db_latency: 350ms (35% of total)
 ```
 
@@ -488,7 +488,7 @@ if app_latency > high_lat_threshold and error_rate <= low_error_threshold:
 ### ✅ CORRECT: `external_service_impact` Correlation
 
 ```python
-if client_latency > client_stats.p90 and client_ratio > 0.6:
+if dependency_latency > dependency_stats.p90 and dependency_ratio > 0.6:
     pattern = "external_service_impact"
 ```
 

@@ -8,7 +8,222 @@ dependency relationships and their status at inference time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict, NotRequired
+
+
+# =============================================================================
+# TypedDict definitions for inference pipeline
+# =============================================================================
+
+
+class MetricsDict(TypedDict):
+    """Current metrics at detection time."""
+
+    request_rate: float
+    application_latency: float
+    dependency_latency: float
+    database_latency: float
+    error_rate: float
+
+
+class ComparisonMetric(TypedDict):
+    """Statistical comparison for a single metric."""
+
+    current: float
+    training_mean: float
+    training_std: NotRequired[float]
+    training_p95: NotRequired[float]
+    deviation_sigma: float
+    percentile_estimate: float
+    status: NotRequired[str]  # "normal", "elevated", "high", "low", "very_low"
+
+
+class DetectionSignalDict(TypedDict):
+    """Single detection signal from a detection method."""
+
+    method: str  # "isolation_forest", "named_pattern_matching", etc.
+    type: str  # "ml_isolation", "multivariate_pattern", etc.
+    severity: str
+    score: float
+    direction: NotRequired[str]  # "high", "low", "activated"
+    percentile: NotRequired[float]
+    pattern: NotRequired[str]
+
+
+class AnomalyData(TypedDict):
+    """Single anomaly with all detection and fingerprinting data."""
+
+    type: str
+    root_metric: NotRequired[str]
+    severity: str
+    confidence: NotRequired[float]
+    score: float
+    signal_count: NotRequired[int]
+    description: str
+    interpretation: NotRequired[str]
+    pattern_name: NotRequired[str]
+    value: NotRequired[float]
+    detection_signals: NotRequired[list[DetectionSignalDict]]
+    possible_causes: NotRequired[list[str]]
+    recommended_actions: NotRequired[list[str]]
+    checks: NotRequired[list[str]]
+    comparison_data: NotRequired[dict[str, ComparisonMetric]]
+    business_impact: NotRequired[str]
+    # Fingerprinting fields
+    fingerprint_id: NotRequired[str]
+    fingerprint_action: NotRequired[str]  # "CREATE", "UPDATE", "RESOLVE"
+    incident_id: NotRequired[str]
+    incident_action: NotRequired[str]  # "CREATE", "CONTINUE", "CLOSE"
+    status: NotRequired[str]  # "SUSPECTED", "OPEN", "RECOVERING", "CLOSED"
+    previous_status: NotRequired[str]
+    incident_duration_minutes: NotRequired[int]
+    first_seen: NotRequired[str]
+    last_updated: NotRequired[str]
+    occurrence_count: NotRequired[int]
+    consecutive_detections: NotRequired[int]
+    confirmation_pending: NotRequired[bool]
+    cycles_to_confirm: NotRequired[int]
+    is_confirmed: NotRequired[bool]
+    newly_confirmed: NotRequired[bool]
+
+
+class FingerprintingActionSummary(TypedDict):
+    """Summary of fingerprinting actions in a detection cycle."""
+
+    incident_creates: int
+    incident_continues: int
+    incident_closes: int
+    newly_confirmed: NotRequired[int]
+
+
+class FingerprintingStatusSummary(TypedDict):
+    """Count of incidents by status."""
+
+    suspected: int
+    confirmed: int
+    recovering: int
+
+
+class ResolvedIncidentData(TypedDict):
+    """Data for a resolved incident."""
+
+    fingerprint_id: str
+    incident_id: str
+    anomaly_name: str
+    fingerprint_action: str
+    incident_action: str
+    final_severity: str
+    resolved_at: str
+    total_occurrences: int
+    incident_duration_minutes: int
+    first_seen: str
+    service_name: str
+    last_detected_by_model: NotRequired[str]
+    resolution_reason: str  # "resolved", "auto_stale", "suspected_expired"
+    resolution_context: NotRequired[dict[str, Any]]
+
+
+class FingerprintingData(TypedDict):
+    """Fingerprinting metadata in detection result."""
+
+    service_name: str
+    model_name: str
+    timestamp: str
+    overall_action: str  # "CREATE", "CONFIRMED", "UPDATE", "MIXED", "RESOLVE", "NO_CHANGE"
+    total_active_incidents: int
+    total_alerting_incidents: int
+    action_summary: FingerprintingActionSummary
+    status_summary: NotRequired[FingerprintingStatusSummary]
+    detection_context: NotRequired[dict[str, Any]]
+    resolved_incidents: list[ResolvedIncidentData]
+    newly_confirmed_incidents: NotRequired[list[dict[str, Any]]]
+
+
+class SLOLatencyEvaluation(TypedDict):
+    """SLO evaluation for latency metrics."""
+
+    status: str  # "ok", "warning", "breached"
+    proximity: float
+    value: float
+    threshold_acceptable: float
+    threshold_warning: float
+    threshold_critical: float
+
+
+class SLOErrorRateEvaluation(TypedDict):
+    """SLO evaluation for error rate."""
+
+    status: str
+    proximity: float
+    value: float
+    value_percent: str
+    threshold_acceptable: float
+    threshold_warning: float
+    within_acceptable: bool
+
+
+class SLOEvaluationData(TypedDict):
+    """Full SLO evaluation result."""
+
+    original_severity: NotRequired[str]
+    adjusted_severity: NotRequired[str]
+    severity_changed: bool
+    slo_status: str  # "ok", "elevated", "warning", "breached"
+    slo_proximity: float
+    operational_impact: str  # "none", "informational", "actionable", "critical"
+    is_busy_period: bool
+    latency_evaluation: NotRequired[SLOLatencyEvaluation]
+    error_rate_evaluation: NotRequired[SLOErrorRateEvaluation]
+    database_latency_evaluation: NotRequired[dict[str, Any]]
+    request_rate_evaluation: NotRequired[dict[str, Any]]
+    explanation: NotRequired[str]
+
+
+class InferenceResultDict(TypedDict):
+    """Complete inference result for a service."""
+
+    alert_type: str  # "anomaly_detected", "no_anomaly", "metrics_unavailable"
+    service_name: str
+    timestamp: str
+    time_period: str
+    model_name: str
+    model_type: str
+    anomalies: dict[str, AnomalyData]
+    anomaly_count: int
+    overall_severity: str
+    original_severity: NotRequired[str]
+    current_metrics: MetricsDict
+    exception_context: NotRequired[dict[str, Any]]
+    service_graph_context: NotRequired[dict[str, Any]]
+    fingerprinting: NotRequired[FingerprintingData]
+    performance_info: NotRequired[dict[str, Any]]
+    metadata: NotRequired[dict[str, Any]]
+    drift_warning: NotRequired[dict[str, Any]]
+    validation_warnings: NotRequired[list[str]]
+    drift_analysis: NotRequired[dict[str, Any]]
+    slo_evaluation: NotRequired[SLOEvaluationData]
+    # Error cases
+    error: NotRequired[str]
+    skipped_reason: NotRequired[str]
+    failed_metrics: NotRequired[list[str]]
+    collection_errors: NotRequired[dict[str, str]]
+
+
+class FingerprintingStats(TypedDict):
+    """Statistics from fingerprinting pass."""
+
+    enhanced_services: int
+    creates: int
+    updates: int
+    resolves: int
+    fingerprinting_errors: int
+    resolved_incidents: list[ResolvedIncidentData]
+    resolution_summary: NotRequired[dict[str, int]]
+
+
+# =============================================================================
+# Dataclass definitions for dependency tracking
+# =============================================================================
 
 
 @dataclass

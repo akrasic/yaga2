@@ -81,7 +81,7 @@ The system monitors five core metrics per service:
 |--------|-------------|------|
 | `request_rate` | Incoming requests per second | req/s |
 | `application_latency` | Server-side processing time | ms |
-| `client_latency` | Total round-trip time seen by clients | ms |
+| `dependency_latency` | Total round-trip time seen by clients | ms |
 | `database_latency` | Time spent on database operations | ms |
 | `error_rate` | Percentage of failed requests | % (0-1) |
 

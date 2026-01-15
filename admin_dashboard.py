@@ -1029,7 +1029,7 @@ DASHBOARD_HTML = """
                                 Lower-is-better metrics with improvements (direction=low) are automatically filtered out and don't trigger alerts.
                             </p>
                             <div class="improvement-metrics">
-                                <span class="improvement-badge">client_latency ↓</span>
+                                <span class="improvement-badge">dependency_latency ↓</span>
                                 <span class="improvement-badge">database_latency ↓</span>
                                 <span class="improvement-badge">error_rate ↓</span>
                             </div>
@@ -1536,7 +1536,7 @@ DASHBOARD_HTML = """
                                 <strong style="font-size: 12px;">Metrics with training means:</strong>
                                 <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
                                     <li><code>application_latency_mean</code></li>
-                                    <li><code>client_latency_mean</code></li>
+                                    <li><code>dependency_latency_mean</code></li>
                                     <li><code>database_latency_mean</code></li>
                                     <li><code>error_rate_mean</code></li>
                                     <li><code>request_rate_mean</code></li>
@@ -1627,7 +1627,7 @@ Latency Query:
       by (client, server, server_http_route)
 
 Trigger conditions:
-  ✓ SLO latency_evaluation.status ≠ "ok" (client_latency above threshold)
+  ✓ SLO latency_evaluation.status ≠ "ok" (dependency_latency above threshold)
   ✓ Service is a client calling downstream services
 
 Result: service_graph_context added to API payload with:
@@ -1648,12 +1648,12 @@ Result: service_graph_context added to API payload with:
                             and don't trigger alerts. This prevents false positives when performance improves.
                         </p>
                         <div class="improvement-metrics">
-                            <span class="improvement-badge">client_latency ↓ = OK</span>
+                            <span class="improvement-badge">dependency_latency ↓ = OK</span>
                             <span class="improvement-badge">database_latency ↓ = OK</span>
                             <span class="improvement-badge">error_rate ↓ = OK</span>
                         </div>
                         <p style="color: var(--text-muted); font-size: 11px; margin-top: var(--space-md);">
-                            Example: Client latency drops from 50ms mean to 20ms → No alert (this is an improvement)
+                            Example: Dependency latency drops from 50ms mean to 20ms → No alert (this is an improvement)
                         </p>
                     </div>
                 </div>

@@ -239,7 +239,7 @@ def _train_multivariate_model(self, core_metrics_df: pd.DataFrame) -> bool:
 ```
 
 **Impact:**
-- Highly correlated features (app_latency & client_latency) may dominate
+- Highly correlated features (app_latency & dependency_latency) may dominate
 - Redundant features reduce model effectiveness
 - Harder to interpret which features drive anomaly
 

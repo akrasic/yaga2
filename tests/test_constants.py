@@ -94,7 +94,7 @@ class TestMetricName:
     def test_zero_normal_metrics(self):
         """Test zero-normal metrics list."""
         zero_normal = MetricName.zero_normal_metrics()
-        assert MetricName.CLIENT_LATENCY in zero_normal
+        assert MetricName.DEPENDENCY_LATENCY in zero_normal
         assert MetricName.DATABASE_LATENCY in zero_normal
         assert MetricName.REQUEST_RATE not in zero_normal
 
@@ -103,7 +103,7 @@ class TestMetricName:
         latency = MetricName.latency_metrics()
         assert len(latency) == 3
         assert MetricName.APPLICATION_LATENCY in latency
-        assert MetricName.CLIENT_LATENCY in latency
+        assert MetricName.DEPENDENCY_LATENCY in latency
         assert MetricName.DATABASE_LATENCY in latency
 
 

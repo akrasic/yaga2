@@ -30,7 +30,7 @@ class MetricsData(Protocol):
     timestamp: datetime
     request_rate: float
     application_latency: float | None
-    client_latency: float | None
+    dependency_latency: float | None
     database_latency: float | None
     error_rate: float | None
 

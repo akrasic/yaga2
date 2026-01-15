@@ -61,12 +61,12 @@ METRIC_INTERPRETATIONS = {
             "severity_modifier": lambda v, _: "critical" if v > 0.10 else "high" if v > 0.05 else "medium"
         }
     },
-    "client_latency": {
+    "dependency_latency": {
         "high": {
             "message": "External dependency slow: {value:.0f}ms (p90: {p90:.0f}ms)",
             "interpretations": [
                 "Possible causes: third-party API degradation, network issues, DNS latency",
-                "Check: specific client endpoints, network path, third-party status pages"
+                "Check: specific dependency endpoints, network path, third-party status pages"
             ]
         },
         "activated": {  # Special case: normally zero
@@ -220,11 +220,11 @@ MULTIVARIATE_PATTERNS = {
 
     "downstream_cascade": {
         "conditions": {
-            "client_latency": "high",
+            "dependency_latency": "high",
             "application_latency": "high",
-            "client_latency_ratio": "> 0.6"  # client_latency/app_latency
+            "dependency_latency_ratio": "> 0.6"  # dependency_latency/app_latency
         },
-        "message": "Downstream cascade: external calls ({client_latency:.0f}ms) causing {client_latency_ratio:.0%} of total latency",
+        "message": "Downstream cascade: external calls ({dependency_latency:.0f}ms) causing {dependency_latency_ratio:.0%} of total latency",
         "severity": "high",
         "interpretation": "External dependency is the bottleneck",
         "recommended_action": "Check third-party status; consider circuit breaker or fallback; increase timeout awareness"
@@ -268,7 +268,7 @@ def _detect_multivariate_patterns(self, metrics: dict[str, float]) -> dict[str, 
             # Calculate ratios for message formatting
             format_values = {
                 **metrics,
-                "client_latency_ratio": metrics.get("client_latency", 0) / (metrics.get("application_latency", 1) + 1e-8),
+                "dependency_latency_ratio": metrics.get("dependency_latency", 0) / (metrics.get("application_latency", 1) + 1e-8),
                 "db_latency_ratio": metrics.get("database_latency", 0) / (metrics.get("application_latency", 1) + 1e-8),
                 "normal_rate": self.training_statistics.get("request_rate", {}).mean
             }
@@ -308,9 +308,9 @@ def _pattern_matches(self, metrics: dict, conditions: dict) -> bool:
             return False
 
     # Check ratio conditions
-    if "client_latency_ratio" in conditions:
-        ratio = metrics.get("client_latency", 0) / (metrics.get("application_latency", 1) + 1e-8)
-        threshold = float(conditions["client_latency_ratio"].split()[-1])
+    if "dependency_latency_ratio" in conditions:
+        ratio = metrics.get("dependency_latency", 0) / (metrics.get("application_latency", 1) + 1e-8)
+        threshold = float(conditions["dependency_latency_ratio"].split()[-1])
         if ratio <= threshold:
             return False
 
@@ -552,7 +552,7 @@ def _generate_recommendations(
                 recommendations.extend(RECOMMENDATION_RULES[metric_key])
 
     # Add contextual recommendations based on ratios
-    if pattern_data.get("client_latency_ratio", 0) > 0.6:
+    if pattern_data.get("dependency_latency_ratio", 0) > 0.6:
         recommendations.append("FOCUS: External dependency is primary bottleneck - investigate third-party status")
 
     if pattern_data.get("db_latency_ratio", 0) > 0.5:
@@ -615,7 +615,7 @@ def _generate_recommendations(
             "request_rate": 450.2,
             "application_latency": 2340,
             "error_rate": 0.123,
-            "client_latency": 120,
+            "dependency_latency": 120,
             "database_latency": 890
         },
         "comparison": {
@@ -625,7 +625,7 @@ def _generate_recommendations(
         },
         "ratios": {
             "db_latency_ratio": 0.38,
-            "client_latency_ratio": 0.05
+            "dependency_latency_ratio": 0.05
         }
     },
 

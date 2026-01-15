@@ -45,7 +45,7 @@ class TestInferenceMetrics:
         result = metrics.to_dict()
         assert result["request_rate"] == 100.0
         assert result["application_latency"] == 50.0
-        assert result["client_latency"] == 0.0  # Default for None
+        assert result["dependency_latency"] == 0.0  # Default for None
 
     def test_validation_valid(self):
         """Test validation of valid metrics."""

@@ -334,7 +334,7 @@ Thresholds for anomaly severity classification.
       "high": 1000
     },
     "ratios": {
-      "client_latency_bottleneck": 0.6,
+      "dependency_latency_bottleneck": 0.6,
       "database_latency_bottleneck": 0.7,
       "traffic_cliff_threshold": 0.3
     },
@@ -362,7 +362,7 @@ Thresholds for anomaly severity classification.
 - `very_high` (20%): Extreme error rate
 
 **Ratios**:
-- `client_latency_bottleneck` (0.6): Client vs server latency ratio for bottleneck detection
+- `dependency_latency_bottleneck` (0.6): Client vs server latency ratio for bottleneck detection
 - `database_latency_bottleneck` (0.7): Database latency as fraction of total
 - `traffic_cliff_threshold` (0.3): Sudden traffic drop threshold
 
@@ -668,10 +668,38 @@ SLO-aware severity evaluation adjusts ML-detected severity based on operational 
 | `error_rate_acceptable` | float | 0.005 | Error rate below this is acceptable (0.5%) |
 | `error_rate_warning` | float | 0.01 | Error rate approaching SLO (1%) |
 | `error_rate_critical` | float | 0.02 | Error rate SLO breach (2%) |
+| `error_rate_floor` | float | 0.0 | Error rate noise floor - below this, suppress anomaly entirely (0 = use acceptable) |
 | `min_traffic_rps` | float | 1.0 | Services below this traffic level get relaxed alerting |
 | `busy_period_factor` | float | 1.5 | Multiply thresholds by this during busy periods |
 | `database_latency_floor_ms` | float | 1.0 | Database latency noise floor - below this is always OK |
 | `database_latency_ratios` | object | see below | Ratio-based thresholds relative to training baseline |
+
+**Error Rate Floor (Suppression):**
+
+The `error_rate_floor` setting suppresses error-related anomalies when the error rate is below the specified threshold. This prevents alert noise from statistically significant but operationally meaningless error rate deviations.
+
+- **Default behavior** (`error_rate_floor: 0`): Uses `error_rate_acceptable` as the suppression threshold
+- **Custom floor**: Set a specific value to suppress anomalies below that error rate
+
+**Example:**
+```json
+{
+  "services": {
+    "booking": {
+      "error_rate_acceptable": 0.002,
+      "error_rate_floor": 0.002
+    }
+  }
+}
+```
+
+With this configuration:
+- Error rate of 0.01% (0.0001) → **Suppressed** (below 0.2% floor)
+- Error rate of 0.15% (0.0015) → **Suppressed** (below 0.2% floor)
+- Error rate of 0.25% (0.0025) → **Alert fires** (above floor, but below acceptable = low severity)
+- Error rate of 0.6% (0.006) → **Alert fires** (above warning threshold)
+
+This is particularly useful for services with very low baseline error rates where the ML model may detect tiny deviations that are not operationally significant.
 
 **Database Latency Ratio Thresholds:**
 
@@ -756,6 +784,65 @@ Override default thresholds for specific services based on their criticality and
   }
 }
 ```
+
+### Alerting Configuration (`alerting`)
+
+Controls which anomalies are sent to the Web API and how they are grouped. This enables noise reduction by filtering low-severity alerts or non-actionable patterns.
+
+```json
+{
+  "alerting": {
+    "severity_threshold": "low",
+    "log_below_threshold": true,
+    "below_threshold_log_level": "INFO",
+    "non_alerting_patterns": [
+      "traffic_surge_healthy",
+      "request_rate_surge_healthy"
+    ],
+    "correlation": {
+      "enabled": false,
+      "window_seconds": 300,
+      "primary_selection": "highest_confidence",
+      "min_anomalies_to_correlate": 2
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `severity_threshold` | string | `"low"` | Only anomalies at or above this severity are sent to API. Valid values: `"low"`, `"medium"`, `"high"`, `"critical"` |
+| `log_below_threshold` | bool | true | Log anomalies that are filtered out (for analytics) |
+| `below_threshold_log_level` | string | `"INFO"` | Log level for filtered anomalies |
+| `non_alerting_patterns` | array | see above | Pattern names that are logged but never sent to API |
+
+**Severity Threshold Examples:**
+
+| Setting | Effect |
+|---------|--------|
+| `"low"` | All anomalies sent (current default behavior) |
+| `"medium"` | Only medium, high, and critical sent |
+| `"high"` | Only high and critical sent |
+| `"critical"` | Only critical anomalies sent |
+
+**Non-Alerting Patterns:**
+
+Some patterns indicate healthy behavior that doesn't require alerting:
+- `traffic_surge_healthy` - High traffic being handled well (no latency/error impact)
+- `request_rate_surge_healthy` - Same as above with standardized naming
+
+These are logged for analytics but never create incidents in the Web API.
+
+**Alert Correlation (Experimental):**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | false | Enable grouping of related anomalies |
+| `window_seconds` | int | 300 | Time window for correlation (5 minutes) |
+| `primary_selection` | string | `"highest_confidence"` | How to select the primary anomaly |
+| `min_anomalies_to_correlate` | int | 2 | Minimum anomalies needed for correlation |
+
+When correlation is enabled, multiple anomalies for the same service within the time window are grouped into a single incident.
 
 ### Logging (`logging`)
 

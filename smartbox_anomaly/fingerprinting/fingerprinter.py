@@ -15,12 +15,16 @@ Features:
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from smartbox_anomaly.slo.evaluator import SLOEvaluator
 
 from smartbox_anomaly.core.config import FingerprintingConfig, get_config
 from smartbox_anomaly.core.constants import IncidentAction
@@ -234,6 +238,8 @@ class AnomalyFingerprinter(IncidentTracker):
         anomaly_result: dict[str, Any],
         current_metrics: dict[str, Any] | None = None,
         timestamp: datetime | None = None,
+        slo_evaluator: "SLOEvaluator | None" = None,
+        training_statistics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Process anomaly detection result with cycle-based incident tracking.
 
@@ -248,6 +254,8 @@ class AnomalyFingerprinter(IncidentTracker):
             anomaly_result: Detection result with anomalies.
             current_metrics: Optional current metric values.
             timestamp: Optional timestamp for this detection.
+            slo_evaluator: Optional SLO evaluator for building resolution context.
+            training_statistics: Optional training statistics for baseline comparison.
 
         Returns:
             Enhanced payload with fingerprinting and incident tracking.
@@ -274,8 +282,15 @@ class AnomalyFingerprinter(IncidentTracker):
             )
 
             # Process resolutions for incidents not seen this cycle
+            # Pass metrics and SLO evaluator for building resolution context
             resolved_incidents = self._process_resolutions(
-                active_incidents, processed_fingerprints, timestamp
+                active_incidents,
+                processed_fingerprints,
+                timestamp,
+                current_metrics=current_metrics,
+                slo_evaluator=slo_evaluator,
+                training_statistics=training_statistics,
+                time_period=model_name,  # model_name is the time period
             )
 
             # Merge stale resolutions into resolved_incidents so they get sent to the API
@@ -292,9 +307,18 @@ class AnomalyFingerprinter(IncidentTracker):
             )
 
     def _normalize_anomalies(self, anomalies: Any) -> list[dict[str, Any]]:
-        """Normalize anomalies to list format."""
+        """Normalize anomalies to list format, preserving anomaly names.
+
+        When anomalies come as a dict (key=anomaly_name, value=anomaly_data),
+        the key is preserved as '_anomaly_key' in the data so it can be used
+        for naming instead of re-deriving from description heuristics.
+        """
         if isinstance(anomalies, dict):
-            return list(anomalies.values())
+            # Preserve the key (anomaly name) in the data
+            return [
+                {**data, "_anomaly_key": name}
+                for name, data in anomalies.items()
+            ]
         if isinstance(anomalies, list):
             return [a for a in anomalies if isinstance(a, dict)]
         return []
@@ -708,6 +732,10 @@ class AnomalyFingerprinter(IncidentTracker):
         active_incidents: dict[str, dict],
         processed_fps: set[str],
         timestamp: datetime,
+        current_metrics: dict[str, Any] | None = None,
+        slo_evaluator: "SLOEvaluator | None" = None,
+        training_statistics: dict[str, Any] | None = None,
+        time_period: str = "business_hours",
     ) -> list[dict[str, Any]]:
         """Process resolution grace period for incidents not detected this cycle.
 
@@ -720,6 +748,18 @@ class AnomalyFingerprinter(IncidentTracker):
 
         Only returns resolutions for OPEN/RECOVERING incidents that are actually closed,
         since SUSPECTED incidents never had an alert sent.
+
+        Args:
+            active_incidents: Dict of active incidents keyed by fingerprint_id.
+            processed_fps: Set of fingerprint IDs detected this cycle.
+            timestamp: Current detection timestamp.
+            current_metrics: Optional current metric values for resolution context.
+            slo_evaluator: Optional SLO evaluator for building resolution context.
+            training_statistics: Optional training statistics for baseline comparison.
+            time_period: Current time period (e.g., "business_hours").
+
+        Returns:
+            List of resolution dicts for incidents that were closed.
         """
         resolved = []
 
@@ -754,6 +794,16 @@ class AnomalyFingerprinter(IncidentTracker):
                             duration_min=duration,
                         )
 
+                        # Build resolution context with metrics and SLO evaluation
+                        resolution_context = self._build_resolution_context(
+                            metrics=current_metrics,
+                            slo_evaluator=slo_evaluator,
+                            training_stats=training_statistics,
+                            service_name=incident["service_name"],
+                            timestamp=timestamp,
+                            time_period=time_period,
+                        )
+
                         resolved.append({
                             "fingerprint_id": fp_id,
                             "incident_id": incident["incident_id"],
@@ -768,6 +818,7 @@ class AnomalyFingerprinter(IncidentTracker):
                             "service_name": incident["service_name"],
                             "last_detected_by_model": incident.get("detected_by_model", "unknown"),
                             "missed_cycles_before_close": missed_cycles,
+                            "resolution_context": resolution_context,
                         })
                     else:
                         # Still within grace period - transition to RECOVERING
@@ -784,6 +835,187 @@ class AnomalyFingerprinter(IncidentTracker):
                         )
 
         return resolved
+
+    def _build_resolution_context(
+        self,
+        metrics: dict[str, Any] | None,
+        slo_evaluator: "SLOEvaluator | None",
+        training_stats: dict[str, Any] | None,
+        service_name: str,
+        timestamp: datetime,
+        time_period: str,
+    ) -> dict[str, Any] | None:
+        """Build resolution context with metrics, SLO evaluation, and baseline comparison.
+
+        This provides comprehensive context about the service state at resolution time,
+        enabling Web UI to show WHY an incident was closed and what "healthy" looks like.
+
+        Args:
+            metrics: Current metric values at resolution time.
+            slo_evaluator: Optional SLO evaluator for SLO status.
+            training_stats: Optional training statistics for baseline comparison.
+            service_name: Service name for SLO config lookup.
+            timestamp: Resolution timestamp.
+            time_period: Current time period for SLO evaluation.
+
+        Returns:
+            Resolution context dict or None if no metrics available.
+        """
+        if not metrics:
+            return None
+
+        context: dict[str, Any] = {
+            "metrics_at_resolution": metrics,
+            "health_summary": {
+                "all_metrics_normal": True,
+                "slo_compliant": True,
+                "summary": "",
+            },
+        }
+
+        # Add SLO evaluation if evaluator is available
+        if slo_evaluator:
+            try:
+                slo_result = slo_evaluator.evaluate_metrics(
+                    metrics=metrics,
+                    service_name=service_name,
+                    original_severity="none",  # No anomaly at resolution
+                    timestamp=timestamp,
+                    time_period=time_period,
+                )
+                context["slo_evaluation"] = slo_result.to_dict()
+                context["health_summary"]["slo_compliant"] = slo_result.slo_status == "ok"
+            except Exception as e:
+                logger.warning(f"Failed to evaluate SLO for resolution context: {e}")
+
+        # Add baseline comparison if training statistics available
+        if training_stats:
+            context["comparison_to_baseline"] = self._build_baseline_comparison(
+                metrics, training_stats
+            )
+            # Update all_metrics_normal based on comparison
+            comparison = context.get("comparison_to_baseline", {})
+            if comparison:
+                all_normal = all(
+                    m.get("status") in ("normal", "low")
+                    for m in comparison.values()
+                )
+                context["health_summary"]["all_metrics_normal"] = all_normal
+
+        # Build summary message
+        context["health_summary"]["summary"] = self._build_health_summary_message(context)
+
+        return context
+
+    def _build_baseline_comparison(
+        self,
+        metrics: dict[str, Any],
+        training_stats: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build comparison of current metrics to training baseline.
+
+        Args:
+            metrics: Current metric values.
+            training_stats: Training statistics with mean, std, etc.
+
+        Returns:
+            Per-metric comparison dict.
+        """
+        comparison = {}
+
+        for metric_name, current_value in metrics.items():
+            if not isinstance(current_value, (int, float)):
+                continue
+
+            stats = training_stats.get(metric_name, {})
+            if not stats:
+                continue
+
+            mean = stats.get("mean", stats.get("training_mean"))
+            std = stats.get("std", stats.get("training_std"))
+
+            if mean is None:
+                continue
+
+            # Calculate deviation in sigma units
+            deviation_sigma = 0.0
+            if std and std > 0:
+                deviation_sigma = (current_value - mean) / std
+
+            # Estimate percentile position (assuming roughly normal distribution)
+            percentile = 50.0
+            if std and std > 0:
+                # Use error function for percentile approximation
+                percentile = 50.0 * (1 + math.erf(deviation_sigma / math.sqrt(2)))
+                percentile = max(0.0, min(100.0, percentile))
+
+            # Determine status based on deviation (check higher thresholds first)
+            status = "normal"
+            if abs(deviation_sigma) > 3:
+                status = "high" if deviation_sigma > 0 else "very_low"
+            elif abs(deviation_sigma) > 2:
+                status = "elevated" if deviation_sigma > 0 else "low"
+
+            comparison[metric_name] = {
+                "current": current_value,
+                "training_mean": mean,
+                "training_std": std,
+                "deviation_sigma": round(deviation_sigma, 2),
+                "percentile_estimate": round(percentile, 1),
+                "status": status,
+            }
+
+        return comparison
+
+    def _build_health_summary_message(self, context: dict[str, Any]) -> str:
+        """Build human-readable health summary message.
+
+        Args:
+            context: Resolution context dict with metrics and evaluations.
+
+        Returns:
+            Human-readable summary string.
+        """
+        parts = []
+
+        metrics = context.get("metrics_at_resolution", {})
+        slo_eval = context.get("slo_evaluation", {})
+
+        # Check SLO status
+        slo_status = slo_eval.get("slo_status", "unknown")
+        if slo_status == "ok":
+            parts.append("All metrics within acceptable SLO thresholds.")
+        elif slo_status == "warning":
+            parts.append("Some metrics approaching SLO thresholds.")
+        elif slo_status == "breached":
+            parts.append("Warning: Some metrics may still be elevated.")
+
+        # Add specific metric context
+        latency_eval = slo_eval.get("latency_evaluation", {})
+        if latency_eval:
+            latency_val = latency_eval.get("value")
+            latency_acceptable = latency_eval.get("threshold_acceptable")
+            if latency_val is not None and latency_acceptable is not None:
+                parts.append(f"Latency {latency_val:.0f}ms (acceptable < {latency_acceptable}ms).")
+
+        error_eval = slo_eval.get("error_rate_evaluation", {})
+        if error_eval:
+            error_pct = error_eval.get("value_percent")
+            error_acceptable = error_eval.get("threshold_acceptable")
+            if error_pct and error_acceptable is not None:
+                parts.append(f"Errors {error_pct} (acceptable < {error_acceptable * 100:.1f}%).")
+
+        if not parts:
+            # Fallback if no SLO evaluation
+            if metrics:
+                latency = metrics.get("application_latency")
+                error_rate = metrics.get("error_rate")
+                if latency is not None:
+                    parts.append(f"Latency: {latency:.0f}ms.")
+                if error_rate is not None:
+                    parts.append(f"Error rate: {error_rate * 100:.2f}%.")
+
+        return " ".join(parts) if parts else "Service metrics at resolution time."
 
     def _close_incident(self, incident_id: str, timestamp: datetime, reason: str = "resolved") -> None:
         """Close an incident in the database."""
@@ -922,6 +1154,7 @@ class AnomalyFingerprinter(IncidentTracker):
             "detected_by_model": model,
             "metadata": json.dumps({
                 "type": data.get("type"),
+                "root_metric": data.get("root_metric"),
                 "business_impact": data.get("business_impact"),
                 "feature_contributions": data.get("feature_contributions"),
                 "comparison_data": data.get("comparison_data"),

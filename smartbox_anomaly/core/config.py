@@ -20,7 +20,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +387,7 @@ class ServiceSLOConfig:
     error_rate_acceptable: float = 0.005    # 0.5% - anomaly but fine
     error_rate_warning: float = 0.01        # 1% - approaching SLO
     error_rate_critical: float = 0.02       # 2% - SLO breach
+    error_rate_floor: float = 0.0           # Below this, suppress anomaly entirely (0 = use acceptable)
 
     # Traffic thresholds (requests per second)
     min_traffic_rps: float = 1.0            # Below this = low traffic, relax alerting
@@ -469,6 +470,7 @@ class SLOConfig:
             error_rate_acceptable=defaults_dict.get("error_rate_acceptable", 0.005),
             error_rate_warning=defaults_dict.get("error_rate_warning", 0.01),
             error_rate_critical=defaults_dict.get("error_rate_critical", 0.02),
+            error_rate_floor=defaults_dict.get("error_rate_floor", 0.0),
             min_traffic_rps=defaults_dict.get("min_traffic_rps", 1.0),
             busy_period_factor=defaults_dict.get("busy_period_factor", 1.5),
             database_latency_floor_ms=defaults_dict.get("database_latency_floor_ms", 1.0),
@@ -518,6 +520,7 @@ class SLOConfig:
                 error_rate_acceptable=svc_config.get("error_rate_acceptable", defaults.error_rate_acceptable),
                 error_rate_warning=svc_config.get("error_rate_warning", defaults.error_rate_warning),
                 error_rate_critical=svc_config.get("error_rate_critical", defaults.error_rate_critical),
+                error_rate_floor=svc_config.get("error_rate_floor", defaults.error_rate_floor),
                 min_traffic_rps=svc_config.get("min_traffic_rps", defaults.min_traffic_rps),
                 busy_period_factor=svc_config.get("busy_period_factor", defaults.busy_period_factor),
                 database_latency_floor_ms=svc_config.get(
@@ -573,6 +576,128 @@ class ObservabilityConfig:
     def from_env(cls) -> ObservabilityConfig:
         """Create configuration from environment variables (backward compatible)."""
         return cls.from_config(_load_config_file())
+
+
+@dataclass(frozen=True)
+class CorrelationConfig:
+    """Configuration for alert correlation (grouping related anomalies)."""
+
+    enabled: bool = False  # Disabled by default until fully implemented
+    window_seconds: int = 300  # 5 minute correlation window
+    primary_selection: str = "highest_confidence"  # How to select primary anomaly
+    min_anomalies_to_correlate: int = 2  # Minimum anomalies to trigger correlation
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CorrelationConfig:
+        """Create from config dict."""
+        return cls(
+            enabled=data.get("enabled", False),
+            window_seconds=data.get("window_seconds", 300),
+            primary_selection=data.get("primary_selection", "highest_confidence"),
+            min_anomalies_to_correlate=data.get("min_anomalies_to_correlate", 2),
+        )
+
+
+@dataclass(frozen=True)
+class AlertingConfig:
+    """Configuration for alert filtering and correlation.
+
+    This controls which anomalies are sent to the Web API and how they are grouped.
+    """
+
+    # Severity threshold: only anomalies at or above this level are sent to API
+    # Valid values: "low", "medium", "high", "critical"
+    # Default "low" means all anomalies are sent (current behavior)
+    severity_threshold: str = "low"
+
+    # Whether to log anomalies below threshold (for analytics)
+    log_below_threshold: bool = True
+
+    # Log level for below-threshold anomalies
+    below_threshold_log_level: str = "INFO"
+
+    # Non-alerting patterns: these patterns are logged but never sent to API
+    # regardless of severity (e.g., "healthy" patterns that indicate normal operation)
+    # Uses new standardized naming convention: {metric}_{state}_{modifier}
+    non_alerting_patterns: frozenset[str] = frozenset({
+        "request_rate_surge_healthy",  # System handling load well
+    })
+
+    # Alert correlation configuration
+    correlation: CorrelationConfig = field(default_factory=CorrelationConfig)
+
+    # Pattern name aliases for backward compatibility (old name -> new name)
+    _PATTERN_ALIASES: ClassVar[dict[str, str]] = {
+        "traffic_surge_healthy": "request_rate_surge_healthy",
+        "traffic_surge_degrading": "request_rate_surge_degrading",
+        "traffic_surge_failing": "request_rate_surge_failing",
+        "traffic_cliff": "request_rate_cliff",
+        "elevated_errors": "error_rate_elevated",
+        "fast_rejection": "error_rate_fast_rejection",
+        "fast_failure": "error_rate_fast_failure",
+        "partial_rejection": "error_rate_partial_rejection",
+        "downstream_cascade": "dependency_latency_cascade",
+        "internal_bottleneck": "application_latency_bottleneck",
+        "database_bottleneck": "database_latency_bottleneck",
+        "database_degradation": "database_latency_degraded",
+    }
+
+    @classmethod
+    def _normalize_pattern_name(cls, pattern_name: str) -> str:
+        """Normalize a pattern name using aliases for backward compatibility."""
+        return cls._PATTERN_ALIASES.get(pattern_name, pattern_name)
+
+    def should_alert(self, severity: str, pattern_name: str | None = None) -> bool:
+        """Determine if an anomaly should be sent to the Web API.
+
+        Args:
+            severity: The anomaly severity level.
+            pattern_name: Optional pattern name to check against non-alerting patterns.
+
+        Returns:
+            True if the anomaly should be alerted, False otherwise.
+        """
+        # Check non-alerting patterns first (normalize for backward compatibility)
+        if pattern_name:
+            normalized_name = self._normalize_pattern_name(pattern_name)
+            if normalized_name in self.non_alerting_patterns:
+                return False
+
+        # Check severity threshold
+        severity_order = ["none", "low", "medium", "high", "critical"]
+
+        try:
+            severity_idx = severity_order.index(severity.lower())
+            threshold_idx = severity_order.index(self.severity_threshold.lower())
+            return severity_idx >= threshold_idx
+        except ValueError:
+            # Unknown severity - default to alerting
+            return True
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> AlertingConfig:
+        """Create configuration from config dict."""
+        alerting_config = config.get("alerting", {})
+
+        # Parse non-alerting patterns (normalize for backward compatibility)
+        non_alerting = alerting_config.get("non_alerting_patterns", list(cls.non_alerting_patterns))
+        if isinstance(non_alerting, list):
+            # Normalize all pattern names in case old names are used in config
+            non_alerting = frozenset(cls._normalize_pattern_name(p) for p in non_alerting)
+        else:
+            non_alerting = frozenset(cls._normalize_pattern_name(p) for p in non_alerting)
+
+        # Parse correlation config
+        correlation_dict = alerting_config.get("correlation", {})
+        correlation = CorrelationConfig.from_dict(correlation_dict)
+
+        return cls(
+            severity_threshold=alerting_config.get("severity_threshold", cls.severity_threshold),
+            log_below_threshold=alerting_config.get("log_below_threshold", cls.log_below_threshold),
+            below_threshold_log_level=alerting_config.get("below_threshold_log_level", cls.below_threshold_log_level),
+            non_alerting_patterns=non_alerting,
+            correlation=correlation,
+        )
 
 
 @dataclass(frozen=True)
@@ -706,7 +831,7 @@ class DetectionThresholdConfig:
     latency_high_ms: float = 1000.0
 
     # Ratio thresholds
-    client_latency_bottleneck_ratio: float = 0.6
+    dependency_latency_bottleneck_ratio: float = 0.6
     database_bottleneck_ratio: float = 0.7
     traffic_cliff_ratio: float = 0.3
 
@@ -739,7 +864,7 @@ class DetectionThresholdConfig:
             error_rate_very_high=errors.get("very_high", cls.error_rate_very_high),
             latency_critical_ms=latency.get("critical", cls.latency_critical_ms),
             latency_high_ms=latency.get("high", cls.latency_high_ms),
-            client_latency_bottleneck_ratio=ratios.get("client_latency_bottleneck", cls.client_latency_bottleneck_ratio),
+            dependency_latency_bottleneck_ratio=ratios.get("dependency_latency_bottleneck", cls.dependency_latency_bottleneck_ratio),
             database_bottleneck_ratio=ratios.get("database_latency_bottleneck", cls.database_bottleneck_ratio),
             traffic_cliff_ratio=ratios.get("traffic_cliff_threshold", cls.traffic_cliff_ratio),
             outlier_lower_percentile=outliers.get("lower", cls.outlier_lower_percentile),
@@ -763,6 +888,7 @@ class PipelineConfig:
     time_period: TimePeriodConfig = field(default_factory=TimePeriodConfig)
     detection_thresholds: DetectionThresholdConfig = field(default_factory=DetectionThresholdConfig)
     slo: SLOConfig = field(default_factory=lambda: SLOConfig(enabled=False))
+    alerting: AlertingConfig = field(default_factory=AlertingConfig)
 
     # Track which config file was loaded (if any)
     config_file_path: str | None = None
@@ -807,6 +933,7 @@ class PipelineConfig:
             time_period=TimePeriodConfig.from_config(config),
             detection_thresholds=DetectionThresholdConfig.from_config(config),
             slo=SLOConfig.from_config(config),
+            alerting=AlertingConfig.from_config(config),
             config_file_path=config_file_path,
         )
 

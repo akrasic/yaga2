@@ -163,7 +163,7 @@ class RootCauseAnalyzer:
         },
         "dependency_failure": {
             "pattern": {
-                "client_latency": "spike_or_timeout",
+                "dependency_latency": "spike_or_timeout",
                 "error_rate": "sudden_increase",
                 "request_rate": "stable_or_decreasing",
             },

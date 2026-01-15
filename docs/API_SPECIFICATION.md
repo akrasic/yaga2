@@ -138,7 +138,7 @@ Metric values at the time of detection.
 {
   "request_rate": 150.5,
   "application_latency": 85.2,
-  "client_latency": 45.0,
+  "dependency_latency": 45.0,
   "database_latency": 12.3,
   "error_rate": 0.05
 }
@@ -148,7 +148,7 @@ Metric values at the time of detection.
 |-------|------|-------|-------------|
 | `request_rate` | float | ≥0 | Requests per second |
 | `application_latency` | float | ≥0 | Server processing time (ms) |
-| `client_latency` | float | ≥0 | External call latency (ms) |
+| `dependency_latency` | float | ≥0 | External call latency (ms) |
 | `database_latency` | float | ≥0 | Database query time (ms) |
 | `error_rate` | float | 0-1 | Error rate (0.05 = 5%) |
 
@@ -412,7 +412,7 @@ Details about incident resolution.
   "current_metrics": {
     "request_rate": 150.5,
     "application_latency": 250.0,
-    "client_latency": 45.0,
+    "dependency_latency": 45.0,
     "database_latency": 12.3,
     "error_rate": 0.02
   },

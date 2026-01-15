@@ -46,7 +46,7 @@ class InferenceMetrics:
     timestamp: datetime
     request_rate: float
     application_latency: float | None = None
-    client_latency: float | None = None
+    dependency_latency: float | None = None
     database_latency: float | None = None
     error_rate: float | None = None
 
@@ -59,7 +59,7 @@ class InferenceMetrics:
         return {
             MetricName.REQUEST_RATE: self.request_rate,
             MetricName.APPLICATION_LATENCY: self.application_latency or 0.0,
-            MetricName.CLIENT_LATENCY: self.client_latency or 0.0,
+            MetricName.DEPENDENCY_LATENCY: self.dependency_latency or 0.0,
             MetricName.DATABASE_LATENCY: self.database_latency or 0.0,
             MetricName.ERROR_RATE: self.error_rate or 0.0,
         }
@@ -251,7 +251,7 @@ class VictoriaMetricsClient(MetricsCollector):
             'sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_SERVER", '
             'deployment_environment_name=~"production"}[5m])) by (service_name)'
         ),
-        MetricName.CLIENT_LATENCY: (
+        MetricName.DEPENDENCY_LATENCY: (
             'sum(rate(duration_milliseconds_sum{span_kind="SPAN_KIND_CLIENT", '
             'deployment_environment_name=~"production", db_system="", db_system_name=""}[5m])) '
             'by (service_name) / sum(rate(duration_milliseconds_count{span_kind="SPAN_KIND_CLIENT", '

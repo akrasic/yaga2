@@ -160,7 +160,7 @@ class MetricName:
 
     REQUEST_RATE: Final[str] = "request_rate"
     APPLICATION_LATENCY: Final[str] = "application_latency"
-    CLIENT_LATENCY: Final[str] = "client_latency"
+    DEPENDENCY_LATENCY: Final[str] = "dependency_latency"
     DATABASE_LATENCY: Final[str] = "database_latency"
     ERROR_RATE: Final[str] = "error_rate"
 
@@ -170,7 +170,7 @@ class MetricName:
         return (
             cls.REQUEST_RATE,
             cls.APPLICATION_LATENCY,
-            cls.CLIENT_LATENCY,
+            cls.DEPENDENCY_LATENCY,
             cls.DATABASE_LATENCY,
             cls.ERROR_RATE,
         )
@@ -178,12 +178,12 @@ class MetricName:
     @classmethod
     def zero_normal_metrics(cls) -> tuple[str, ...]:
         """Return metrics where zero is a normal/expected value."""
-        return (cls.CLIENT_LATENCY, cls.DATABASE_LATENCY)
+        return (cls.DEPENDENCY_LATENCY, cls.DATABASE_LATENCY)
 
     @classmethod
     def latency_metrics(cls) -> tuple[str, ...]:
         """Return all latency-related metrics."""
-        return (cls.APPLICATION_LATENCY, cls.CLIENT_LATENCY, cls.DATABASE_LATENCY)
+        return (cls.APPLICATION_LATENCY, cls.DEPENDENCY_LATENCY, cls.DATABASE_LATENCY)
 
     @classmethod
     def lower_is_better_metrics(cls) -> tuple[str, ...]:
@@ -191,12 +191,12 @@ class MetricName:
 
         For these metrics, being flagged as 'low' by IF is desirable behavior:
         - database_latency: Lower means faster queries or no queries (both fine)
-        - client_latency: Lower means faster downstream responses
+        - dependency_latency: Lower means faster downstream responses
         - error_rate: Lower means fewer errors (0 is ideal)
 
         These should NOT trigger anomaly patterns when they decrease.
         """
-        return (cls.DATABASE_LATENCY, cls.CLIENT_LATENCY, cls.ERROR_RATE)
+        return (cls.DATABASE_LATENCY, cls.DEPENDENCY_LATENCY, cls.ERROR_RATE)
 
 
 # =============================================================================

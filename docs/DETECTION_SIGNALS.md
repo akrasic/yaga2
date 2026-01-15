@@ -62,7 +62,7 @@ Each metric gets its own model:
 - `request_rate_isolation`
 - `application_latency_isolation`
 - `error_rate_isolation`
-- `client_latency_isolation`
+- `dependency_latency_isolation`
 - `database_latency_isolation`
 
 ```python
@@ -163,7 +163,7 @@ Unlike ML which asks "is this unusual?", pattern matching asks "does this match 
 
 2. **Semantic Interpretation**: Some metrics have "lower is better" semantics:
    - `database_latency`: Lower = faster queries (improvement)
-   - `client_latency`: Lower = faster downstream (improvement)
+   - `dependency_latency`: Lower = faster downstream (improvement)
    - `error_rate`: Lower = fewer errors (ideal is 0%)
 
    For these metrics, when IF flags them as "low", they are treated as `normal` since low values are desirable, not anomalous.
@@ -581,9 +581,9 @@ MULTIVARIATE_PATTERNS["my_new_pattern"] = PatternDefinition(
 | `request_rate` | Traffic volume | Requests per second | No |
 | `application_latency` | Response time | Total request processing time (ms) | Context-dependent* |
 | `error_rate` | Error percentage | Fraction of failed requests (0.0-1.0) | Yes |
-| `client_latency` | External call time | Time spent calling external services (ms) | Yes |
+| `dependency_latency` | External call time | Time spent calling external services (ms) | Yes |
 | `database_latency` | DB query time | Time spent on database operations (ms) | Yes |
-| `client_latency_ratio` | Ratio | `client_latency / application_latency` | - |
+| `dependency_latency_ratio` | Ratio | `dependency_latency / application_latency` | - |
 | `db_latency_ratio` | Ratio | `database_latency / application_latency` | - |
 
 *`application_latency` is NOT in the "lower is better" list because low latency combined with high errors indicates fast-fail scenarios (e.g., requests rejected before processing).

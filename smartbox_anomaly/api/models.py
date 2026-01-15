@@ -119,7 +119,7 @@ class CurrentMetrics(BaseModel):
 
     request_rate: float | None = Field(None, ge=0, description="Requests per second")
     application_latency: float | None = Field(None, ge=0, description="App latency in ms")
-    client_latency: float | None = Field(None, ge=0, description="Client call latency in ms")
+    dependency_latency: float | None = Field(None, ge=0, description="Dependency call latency in ms")
     database_latency: float | None = Field(None, ge=0, description="Database latency in ms")
     error_rate: float | None = Field(None, ge=0, le=1, description="Error rate 0.0-1.0")
 

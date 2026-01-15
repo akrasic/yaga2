@@ -8,18 +8,24 @@ This document tracks known issues, limitations, and planned improvements identif
 
 | Category | Issues | Critical | High | Medium | Fixed |
 |----------|--------|----------|------|--------|-------|
-| Training Pipeline | 10 | 2 | 4 | 4 | 6 |
+| Training Pipeline | 10 | 1 | 3 | 2 | 10 |
 | Message Semantics | 12 | 1 | 2 | 8 | 1 |
-| **Total** | **22** | **3** | **6** | **12** | **7** |
+| Web API Integration | 1 | 0 | 1 | 0 | 1 |
+| **Total** | **23** | **2** | **6** | **10** | **12** |
 
 **Recently Fixed:**
+- Issue #1: Statistics/Training Data Mismatch → Unified data cleaning pipeline, no outlier removal
 - Issue #2: No Model Validation → Implemented temporal train/validation split
 - Issue #3: Pattern Overlap → Replaced with distinct patterns
+- Issue #4: Hardcoded Contamination Rates → Implemented knee-based contamination estimation
 - Issue #5: No Temporal Validation → Implemented temporal split with config option
 - Issue #6: Insufficient Sample Requirements → Increased to 500/1000
 - Issue #7: Low Latency Misinterpreted → Added lower_is_better_metrics()
+- Issue #10: No Feature Correlation Analysis → Added correlation matrix analysis
 - Issue #11: Missing Training Data Quality Report → Added DataQualityReport with gap detection
-- Issue #19: Silent Query Failures → Added QueryResult with explicit error tracking
+- Issue #12: No Model Drift Detection → Implemented z-score and Mahalanobis drift detection
+- Issue #20: Silent Query Failures → Added QueryResult with explicit error tracking
+- Issue #21: SUSPECTED Alerts Sent to Web API → Filter confirmed-only before sending (v1.3.2)
 
 ---
 
@@ -27,29 +33,28 @@ This document tracks known issues, limitations, and planned improvements identif
 
 ### 1. Statistics/Training Data Mismatch
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Critical
-**Location**: `smartbox_anomaly/detection/detector.py:270-389`
+**Location**: `smartbox_anomaly/detection/detector.py:1232-1419`
 
-**Problem**: Statistics (p90, p95, etc.) are calculated on raw data, but models are trained on filtered data with outliers removed. This creates inconsistent thresholds.
+**Problem**: Statistics (p90, p95, etc.) were calculated on raw data, but models were trained on filtered data with outliers removed. This created inconsistent thresholds.
 
+**Resolution**: Unified the data cleaning pipeline so both statistics and model training use identical data:
+
+1. **Outliers are NO LONGER removed** from IF training - they are what IF should learn to detect
+2. **Robust statistics** (trimmed mean, IQR-based std) are used instead of standard mean/std
+3. Both `_calculate_training_statistics()` and `_train_univariate_model()` now use the same `_clean_metric_data_for_training()` method
+4. Only NaN and infinity values are removed from both paths
+
+Key code comment (line 1271):
 ```python
-# Statistics calculated on RAW data (includes outliers)
-stats = TrainingStatistics(p90=float(data.quantile(0.90)))
-
-# Model trained on FILTERED data (outliers removed)
-clean_data = data[(data <= p999) & (data >= p001)]
-model.fit(clean_data)
+# NOTE: We do NOT remove outliers for IF training - outliers are what IF should detect!
 ```
 
-**Impact**:
-- Detection thresholds may be too high or too low
-- p90 might include outlier values the model never saw
-- Inconsistent severity classifications
-
-**Workaround**: None currently. Accept some threshold inconsistency.
-
-**Fix Required**: Calculate statistics on the same cleaned data used for training.
+This ensures:
+- Statistics accurately represent the data distribution the IF model sees
+- Severity thresholds are correctly calibrated against the trained model
+- Robust statistics provide outlier-resistant summary without removing outliers
 
 ---
 
@@ -82,7 +87,7 @@ The split respects temporal ordering to prevent future data leakage.
 
 **Resolution**: Both patterns were removed and replaced with better-designed patterns:
 - `latency_spike_recent` - Uses `latency_change=recent_increase` condition to detect recent latency increases
-- `internal_bottleneck` - Requires `client_latency=normal` and `database_latency=normal` to confirm issue is internal
+- `internal_bottleneck` - Requires `dependency_latency=normal` and `database_latency=normal` to confirm issue is internal
 
 The new patterns have distinct conditions and don't overlap. The orphan recommendation entry for `silent_degradation` was also removed.
 
@@ -92,26 +97,20 @@ The new patterns have distinct conditions and don't overlap. The orphan recommen
 
 ### 4. Hardcoded Contamination Rates
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: High
-**Location**: `smartbox_anomaly/detection/service_config.py`
+**Location**: `smartbox_anomaly/detection/detector.py:2030-2104`
 
-**Problem**: Contamination rates are hardcoded per service type without data-driven validation.
+**Problem**: Contamination rates were hardcoded per service type without data-driven validation.
 
-```python
-KNOWN_SERVICE_PARAMS = {
-    "booking": ServiceParameters(base_contamination=0.02),
-    "search": ServiceParameters(base_contamination=0.04),
-}
-```
+**Resolution**: Implemented automatic contamination estimation using knee detection:
+- `_estimate_contamination()` method with "knee" and "gap" detection methods
+- `_find_knee_contamination()` analyzes score distribution to find natural anomaly threshold
+- Estimated contamination is bounded by service category limits (50%-300% of base)
+- Hardcoded values now serve as defaults/fallbacks, not fixed values
+- Configuration option `contamination_estimation.method` in config.json
 
-**Impact**:
-- Rates may not reflect actual anomaly frequency
-- Become stale as services evolve
-
-**Workaround**: Manually adjust contamination in `config.json` based on observed false positive rates.
-
-**Fix Required**: Implement contamination tuning via grid search with validation set.
+The system now automatically adapts contamination to each service's actual anomaly distribution while maintaining reasonable bounds.
 
 ---
 
@@ -162,13 +161,13 @@ These values align with Isolation Forest recommendations for stable tree constru
 - Rate limiting rejections
 
 **Solution Implemented**:
-1. Added `lower_is_better_metrics()` in `constants.py` defining metrics where low values are improvements (`database_latency`, `client_latency`, `error_rate`)
+1. Added `lower_is_better_metrics()` in `constants.py` defining metrics where low values are improvements (`database_latency`, `dependency_latency`, `error_rate`)
 2. Updated `_signals_to_levels()` to treat low values for these metrics as `"normal"` instead of `"low"`
 3. `application_latency` is intentionally NOT in this list - low latency with high errors should still match fast-fail patterns
 4. Pattern matching now uses fail-closed validation - unknown conditions don't silently pass
 
 **Result**:
-- Low `database_latency`/`client_latency`/`error_rate` → treated as normal (no alert)
+- Low `database_latency`/`dependency_latency`/`error_rate` → treated as normal (no alert)
 - Low `application_latency` + high errors → still matches `fast_failure` pattern (correct alert)
 - Low `application_latency` + normal errors → no pattern match (no false positive)
 
@@ -210,13 +209,18 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ### 10. No Feature Correlation Analysis
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
-**Location**: `smartbox_anomaly/detection/detector.py:391-452`
+**Location**: `smartbox_anomaly/detection/detector.py:1983-2028`
 
-**Problem**: Multivariate model treats all features equally, even highly correlated ones (app_latency & client_latency).
+**Problem**: Multivariate model treated all features equally, even highly correlated ones (app_latency & dependency_latency).
 
-**Impact**: Correlated features may dominate detection, harder to interpret results.
+**Resolution**: Implemented feature correlation analysis during training:
+- `_analyze_feature_correlation()` method computes correlation matrix
+- Identifies highly correlated pairs (r > 0.8) and logs warnings
+- Results stored in `correlation_analysis` and persisted with model
+- Warnings help identify potential multicollinearity issues
+- Correlation data available in model metadata for inspection
 
 ---
 
@@ -241,13 +245,21 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ### 12. No Model Drift Detection
 
-**Status**: Open
+**Status**: Fixed
 **Severity**: Medium
-**Location**: Not implemented
+**Location**: `smartbox_anomaly/detection/detector.py:127-147, 2145-2220`
 
 **Problem**: No infrastructure to detect when models become stale.
 
-**Impact**: Models silently degrade over time with no alerting.
+**Resolution**: Implemented comprehensive drift detection with two methods:
+- **Univariate drift (z-score)**: Compares each metric to training mean/std
+- **Multivariate drift (Mahalanobis distance)**: Detects covariate shift in feature relationships
+- `DriftAnalysis` dataclass captures drift results
+- `check_drift()` method performs analysis at inference time
+- Training computes and stores inverse covariance matrix for Mahalanobis distance
+- Drift warnings included in output with severity levels (moderate: z>3, severe: z>5)
+- Confidence penalties applied when drift detected (15% moderate, 30% severe)
+- Configuration option `inference.check_drift` enables/disables drift checking
 
 ---
 
@@ -325,7 +337,48 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ---
 
-### 19. Silent Query Failures in VictoriaMetrics Client
+### 19. Missing HTTP Status Code Context in Fast-Fail Patterns
+
+**Status**: Backlog (Future Enhancement)
+**Severity**: Low
+**Location**: `smartbox_anomaly/detection/interpretations.py`
+
+**Problem**: Fast-fail patterns (`fast_rejection`, `fast_failure`, `partial_rejection`) detect rapid failures but cannot distinguish between different failure modes because HTTP status codes are not currently tracked.
+
+**Current Behavior**:
+```
+fast_rejection: very low latency + very high errors
+  → "Requests rejected before processing"
+```
+
+**Desired Behavior**:
+```
+fast_rejection_401: very low latency + very high 401s
+  → "Authentication failures - likely auth service issue or token expiry"
+
+fast_rejection_429: very low latency + very high 429s
+  → "Rate limiting active - traffic exceeds configured limits"
+
+fast_rejection_503: very low latency + very high 503s
+  → "Circuit breaker open - downstream dependency unavailable"
+```
+
+**Why Deferred**:
+- HTTP status code metrics are not currently collected in the inference engine
+- Requires new metrics pipeline to track `status_code` labels from VictoriaMetrics
+- Model training would need to incorporate status code distributions
+
+**Future Implementation**:
+1. Add status code metrics collection to VictoriaMetrics client
+2. Extend pattern conditions to support status code checks
+3. Create status-code-specific fast-fail patterns
+4. Update SLO evaluation to consider status code distributions
+
+**Added**: 2026-01-15 (SRE Expert Review)
+
+---
+
+### 20. Silent Query Failures in VictoriaMetrics Client
 
 **Status**: Fixed
 **Severity**: Medium
@@ -345,11 +398,47 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ---
 
+### 21. SUSPECTED Alerts Sent to Web API
+
+**Status**: Fixed (v1.3.2)
+**Severity**: High
+**Location**: `inference.py:2550-2591`
+
+**Problem**: The inference engine was sending ALL anomalies to the web API, including those in SUSPECTED state (not yet confirmed). When these anomalies expired without confirmation (`suspected_expired`), no resolution was sent, leaving orphaned OPEN incidents in the web API.
+
+**Evidence**:
+- 72 orphaned OPEN incidents found in production web API database
+- All had `consecutive_detections = 1` (never confirmed)
+- All had `resolution_reason = 'suspected_expired'` in inference DB
+- No resolution was ever sent (correct for unconfirmed, but shouldn't have been created)
+
+**Resolution**: Modified `_update_results_processor()` to filter anomalies by confirmation status before sending to web API:
+
+```python
+# Filter to only confirmed anomalies (OPEN or RECOVERING status)
+confirmed_anomalies = {
+    name: anomaly for name, anomaly in anomalies.items()
+    if anomaly.get('is_confirmed', False) or
+       anomaly.get('status') in ('OPEN', 'RECOVERING')
+}
+
+if confirmed_anomalies:
+    # Only send confirmed anomalies to web API
+    filtered_result = {**result, 'anomalies': confirmed_anomalies}
+    formatted_payload = pipeline.results_processor._format_time_aware_alert_json(filtered_result)
+```
+
+**Also Fixed**: KeyError in verbose logging at line 2752 - `resolution['service']` changed to `resolution.get('service_name', ...)`.
+
+**Related**: See `BUG_REPORT_SUSPECTED_ALERTS.md` for full investigation and fix details.
+
+---
+
 ## Recommended Improvements by Priority
 
 ### Immediate (Before Next Release)
 
-1. Fix statistics/training data mismatch
+1. ~~Fix statistics/training data mismatch~~ (Fixed: unified data cleaning pipeline, no outlier removal)
 2. ~~Increase minimum sample requirements to 256~~ (Fixed: now 500/1000)
 3. ~~Add training data quality report (logging)~~ (Fixed: DataQualityReport implemented)
 
@@ -361,8 +450,8 @@ These values align with Isolation Forest recommendations for stable tree constru
 
 ### Medium-Term (Next Quarter)
 
-7. Data-driven contamination tuning
-8. Model drift detection
+7. ~~Data-driven contamination tuning~~ (Fixed: knee-based estimation implemented)
+8. ~~Model drift detection~~ (Fixed: z-score + Mahalanobis distance)
 9. Stationarity checks
 
 ### Long-Term (Roadmap)

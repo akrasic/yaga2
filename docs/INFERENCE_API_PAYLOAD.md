@@ -1,6 +1,6 @@
 # Inference Engine API Payload Specification
 
-**Schema Version**: 1.2.0
+**Schema Version**: 1.4.0
 
 This document describes the JSON payload format sent by the inference engine to the API server after anomaly detection.
 
@@ -9,6 +9,17 @@ This document describes the JSON payload format sent by the inference engine to 
 ## Overview
 
 The inference engine performs anomaly detection using multiple methods (Isolation Forest, Pattern Matching, Statistical Correlation) and returns a consolidated view where related anomalies are grouped into single actionable alerts.
+
+### Confirmed-Only Alerts (v1.3.2)
+
+**Important**: Only **confirmed** anomalies are sent to the web API. Anomalies in SUSPECTED state (first detection, not yet confirmed) are filtered out before the API call.
+
+This behavior prevents orphaned incidents in the web API:
+- First detection creates a SUSPECTED incident (not sent to API)
+- After 2+ consecutive detections, incident is confirmed (OPEN) and sent to API
+- If anomaly expires before confirmation (`suspected_expired`), no alert is sent
+
+For API consumers: All anomalies in `alert_type: "anomaly_detected"` payloads are confirmed and should be displayed/alerted on.
 
 ---
 
@@ -297,7 +308,7 @@ Provides statistical context for each core metric:
       "percentile_estimate": 0.0
     },
     "request_rate": { ... },
-    "client_latency": { ... }
+    "dependency_latency": { ... }
   }
 }
 ```
@@ -323,7 +334,7 @@ Raw metric values at detection time:
 {
   "current_metrics": {
     "application_latency": 636.1,
-    "client_latency": 183.3,
+    "dependency_latency": 183.3,
     "database_latency": 0.0,
     "error_rate": 0.0,
     "request_rate": 0.039
@@ -336,7 +347,7 @@ Raw metric values at detection time:
 | Metric | Unit | Description |
 |--------|------|-------------|
 | `application_latency` | ms | Application response time |
-| `client_latency` | ms | External client/dependency latency |
+| `dependency_latency` | ms | External client/dependency latency |
 | `database_latency` | ms | Database query latency |
 | `error_rate` | ratio (0-1) | Error rate as decimal (0.05 = 5%) |
 | `request_rate` | req/s | Requests per second |
@@ -503,7 +514,7 @@ Present when client latency anomalies are detected and SLO evaluation confirms l
 The `service_graph_context` field is populated when ALL of the following conditions are met:
 
 1. **SLO latency breach** - `slo_evaluation.latency_evaluation.status` is NOT `"ok"`
-2. **Client latency elevated** - The service has elevated client_latency metric
+2. **Client latency elevated** - The service has elevated dependency_latency metric
 3. **Service graph data exists** - VictoriaMetrics has OpenTelemetry service graph metrics for this service
 
 If any condition is not met, `service_graph_context` will be `null`.
@@ -624,7 +635,36 @@ The `resolved_incidents` array contains details of incidents closed in this dete
   "first_seen": "2025-12-17T13:45:00.000000",
   "service_name": "booking",
   "last_detected_by_model": "business_hours",
-  "resolution_reason": "resolved"
+  "resolution_reason": "resolved",
+  "resolution_context": {
+    "metrics_at_resolution": {
+      "request_rate": 52.7,
+      "application_latency": 110.5,
+      "dependency_latency": 1.4,
+      "database_latency": 0.8,
+      "error_rate": 0.0001
+    },
+    "slo_evaluation": {
+      "slo_status": "ok",
+      "operational_impact": "none",
+      "latency_evaluation": {...},
+      "error_rate_evaluation": {...}
+    },
+    "comparison_to_baseline": {
+      "application_latency": {
+        "current": 110.5,
+        "training_mean": 110.3,
+        "deviation_sigma": 0.03,
+        "percentile_estimate": 56.0,
+        "status": "normal"
+      }
+    },
+    "health_summary": {
+      "all_metrics_normal": true,
+      "slo_compliant": true,
+      "summary": "All metrics within acceptable SLO thresholds..."
+    }
+  }
 }
 ```
 
@@ -643,6 +683,125 @@ The `resolved_incidents` array contains details of incidents closed in this dete
 | `service_name` | string | Service name |
 | `last_detected_by_model` | string | Which time-period model last detected it |
 | `resolution_reason` | string | Why closed: `"resolved"` or `"auto_stale"` |
+| `resolution_context` | object \| null | Context about service state at resolution (v1.4.0+) |
+
+### Resolution Context Object
+
+The `resolution_context` field (added in v1.4.0) provides comprehensive context about the service state at resolution time. This enables the Web UI to show WHY an incident was closed and what "healthy" looks like.
+
+```json
+{
+  "resolution_context": {
+    "metrics_at_resolution": {
+      "request_rate": 52.7,
+      "application_latency": 110.5,
+      "dependency_latency": 1.4,
+      "database_latency": 0.8,
+      "error_rate": 0.0001
+    },
+    "slo_evaluation": {
+      "slo_status": "ok",
+      "operational_impact": "none",
+      "is_busy_period": false,
+      "latency_evaluation": {
+        "status": "ok",
+        "value": 110.5,
+        "threshold_acceptable": 300,
+        "threshold_warning": 400,
+        "threshold_critical": 500,
+        "proximity": 0.368
+      },
+      "error_rate_evaluation": {
+        "status": "ok",
+        "value": 0.0001,
+        "value_percent": "0.01%",
+        "threshold_acceptable": 0.005,
+        "threshold_warning": 0.01,
+        "threshold_critical": 0.02,
+        "within_acceptable": true
+      },
+      "database_latency_evaluation": {
+        "status": "ok",
+        "value_ms": 0.8,
+        "baseline_mean_ms": 2.5,
+        "ratio": 0.32,
+        "below_floor": true,
+        "floor_ms": 1.0
+      }
+    },
+    "comparison_to_baseline": {
+      "request_rate": {
+        "current": 52.7,
+        "training_mean": 42.5,
+        "training_std": 25.4,
+        "deviation_sigma": 0.40,
+        "percentile_estimate": 69.0,
+        "status": "normal"
+      },
+      "application_latency": {
+        "current": 110.5,
+        "training_mean": 110.3,
+        "training_std": 45.2,
+        "deviation_sigma": 0.004,
+        "percentile_estimate": 56.0,
+        "status": "normal"
+      }
+    },
+    "health_summary": {
+      "all_metrics_normal": true,
+      "slo_compliant": true,
+      "summary": "All metrics within acceptable SLO thresholds. Latency 110ms (acceptable < 300ms). Errors 0.01% (acceptable < 0.5%)."
+    }
+  }
+}
+```
+
+#### Resolution Context Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `metrics_at_resolution` | object | Yes | Raw metric values at resolution time |
+| `slo_evaluation` | object | No | Full SLO evaluation showing operational status (if SLO enabled) |
+| `comparison_to_baseline` | object | No | Statistical comparison to training data (if available) |
+| `health_summary` | object | Yes | Summary for UI display |
+
+#### Metrics at Resolution
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `request_rate` | float | req/s | Requests per second |
+| `application_latency` | float | ms | Server processing time |
+| `dependency_latency` | float | ms | External dependency latency |
+| `database_latency` | float | ms | Database query time |
+| `error_rate` | float | ratio | Error rate (0.05 = 5%) |
+
+#### Comparison to Baseline (Per Metric)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `current` | float | Current value at resolution |
+| `training_mean` | float | Mean from training data |
+| `training_std` | float | Standard deviation from training |
+| `deviation_sigma` | float | Standard deviations from mean (z-score) |
+| `percentile_estimate` | float | Estimated percentile position (0-100) |
+| `status` | string | `"normal"`, `"elevated"`, `"low"`, `"high"`, or `"very_low"` |
+
+#### Health Summary
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `all_metrics_normal` | boolean | True if all metrics within normal range |
+| `slo_compliant` | boolean | True if all SLO thresholds are met |
+| `summary` | string | Human-readable summary for display |
+
+#### When Resolution Context is Available
+
+The `resolution_context` field is populated when:
+1. **Current metrics are available** at resolution time
+2. **SLO evaluation** is enabled (for `slo_evaluation` section)
+3. **Training statistics** are available (for `comparison_to_baseline` section)
+
+If metrics are not available at resolution time, `resolution_context` will be `null`.
 
 ### Resolution Reasons
 
@@ -1187,7 +1346,7 @@ The `request_rate_evaluation` object detects sudden traffic surges or cliffs.
 
   "current_metrics": {
     "application_latency": 636.1,
-    "client_latency": 183.3,
+    "dependency_latency": 183.3,
     "database_latency": 0.0,
     "error_rate": 0.0,
     "request_rate": 0.039
@@ -1296,7 +1455,7 @@ When an error-related anomaly is detected with high severity, the `exception_con
 
   "current_metrics": {
     "application_latency": 150.5,
-    "client_latency": 45.2,
+    "dependency_latency": 45.2,
     "database_latency": 12.3,
     "error_rate": 0.05,
     "request_rate": 150.5
@@ -1364,9 +1523,9 @@ When a client latency anomaly is detected and SLO evaluation confirms latency br
   "model_type": "time_aware_5period",
 
   "anomalies": {
-    "client_latency_elevated": {
+    "dependency_latency_elevated": {
       "type": "consolidated",
-      "root_metric": "client_latency",
+      "root_metric": "dependency_latency",
       "severity": "high",
       "confidence": 0.82,
       "score": -0.42,
@@ -1397,7 +1556,7 @@ When a client latency anomaly is detected and SLO evaluation confirms latency br
 
   "current_metrics": {
     "application_latency": 120.5,
-    "client_latency": 850.0,
+    "dependency_latency": 850.0,
     "database_latency": 45.2,
     "error_rate": 0.001,
     "request_rate": 25.4
@@ -1499,7 +1658,7 @@ When a client latency anomaly is detected and SLO evaluation confirms latency br
 
   "current_metrics": {
     "application_latency": 115.2,
-    "client_latency": 12.5,
+    "dependency_latency": 12.5,
     "database_latency": 8.3,
     "error_rate": 0.001,
     "request_rate": 25.4
@@ -1547,13 +1706,13 @@ When the metrics server (VictoriaMetrics) is unreachable or critical metrics fai
   "service_name": "booking",
   "timestamp": "2025-12-25T16:51:46.000000",
 
-  "error": "Metrics collection failed: 5/5 metrics failed: request_rate, application_latency, client_latency, database_latency, error_rate",
+  "error": "Metrics collection failed: 5/5 metrics failed: request_rate, application_latency, dependency_latency, database_latency, error_rate",
   "skipped_reason": "critical_metrics_unavailable",
 
   "failed_metrics": [
     "request_rate",
     "application_latency",
-    "client_latency",
+    "dependency_latency",
     "database_latency",
     "error_rate"
   ],
@@ -1561,7 +1720,7 @@ When the metrics server (VictoriaMetrics) is unreachable or critical metrics fai
   "collection_errors": {
     "request_rate": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
     "application_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
-    "client_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
+    "dependency_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
     "database_latency": "HTTPSConnectionPool: Max retries exceeded (Connection refused)",
     "error_rate": "HTTPSConnectionPool: Max retries exceeded (Connection refused)"
   },

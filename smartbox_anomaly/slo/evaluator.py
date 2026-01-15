@@ -252,6 +252,65 @@ class SLOEvaluator:
 
         return result
 
+    def evaluate_metrics(
+        self,
+        metrics: dict[str, Any],
+        service_name: str,
+        original_severity: str = "none",
+        timestamp: datetime | None = None,
+        time_period: str = "business_hours",
+    ) -> SLOEvaluationResult:
+        """
+        Evaluate metrics against SLO thresholds (standalone evaluation).
+
+        This is used for standalone metric evaluation when building resolution
+        context or other non-detection scenarios where you have metrics but
+        not a full detection result.
+
+        Unlike evaluate_result(), this method:
+        - Does not modify any input dict
+        - Does not filter anomalies
+        - Returns just the SLOEvaluationResult
+
+        Args:
+            metrics: Current metric values (request_rate, application_latency, etc.)
+            service_name: Service name for SLO config lookup.
+            original_severity: Original ML severity (default: "none" for no anomaly).
+            timestamp: Optional for busy period checking.
+            time_period: Current time period (default: "business_hours").
+
+        Returns:
+            SLOEvaluationResult with evaluation details.
+        """
+        if not self.config.enabled:
+            # Return a minimal result when SLO is disabled
+            return SLOEvaluationResult(
+                original_severity=original_severity,
+                adjusted_severity=original_severity,
+                slo_status="ok",
+                slo_proximity=0.0,
+                operational_impact="none",
+                is_busy_period=False,
+                explanation="SLO evaluation disabled",
+            )
+
+        slo = self.config.get_service_slo(service_name)
+        is_busy = self.config.is_busy_period(timestamp)
+
+        # Apply busy period factor if applicable
+        effective_slo = self._apply_busy_period_factor(slo, is_busy)
+
+        # Evaluate against SLOs (empty anomalies dict for standalone evaluation)
+        return self._evaluate_against_slo(
+            service_name=service_name,
+            metrics=metrics,
+            anomalies={},  # No anomalies for standalone evaluation
+            original_severity=original_severity,
+            slo=effective_slo,
+            is_busy_period=is_busy,
+            time_period=time_period,
+        )
+
     def _apply_busy_period_factor(
         self, slo: ServiceSLOConfig, is_busy: bool
     ) -> ServiceSLOConfig:
@@ -427,7 +486,7 @@ class SLOEvaluator:
         elif latency_ms >= slo.latency_warning_ms:
             status = "warning"
         elif latency_ms >= slo.latency_acceptable_ms:
-            status = "elevated"
+            status = "approaching_warning"
         else:
             status = "ok"
 
@@ -454,7 +513,7 @@ class SLOEvaluator:
         elif error_rate >= slo.error_rate_warning:
             status = "warning"
         elif error_rate >= slo.error_rate_acceptable:
-            status = "elevated"
+            status = "approaching_warning"
         else:
             status = "ok"
 
@@ -482,14 +541,14 @@ class SLOEvaluator:
 
         This implements the Google SRE / NewRelic / Datadog approach:
         - Traffic surges: informational unless causing other SLO breaches
-        - Traffic cliffs: warning by default, elevated during peak hours
+        - Traffic cliffs: warning by default, high during peak hours
 
         Args:
             request_rate: Current request rate (requests per second).
             baseline_mean: Training baseline mean request rate.
             time_period: Current time period (business_hours, night_hours, etc.).
-            latency_status: Status from latency evaluation (ok/elevated/warning/breached).
-            error_status: Status from error rate evaluation (ok/elevated/warning/breached).
+            latency_status: Status from latency evaluation (ok/approaching_warning/warning/breached).
+            error_status: Status from error rate evaluation (ok/approaching_warning/warning/breached).
             slo: Service SLO configuration with request rate settings.
 
         Returns:
@@ -787,9 +846,9 @@ class SLOEvaluator:
         Combine latency, error, and database latency status to get overall status.
 
         Database latency uses a different status scale (ok/info/warning/high/critical),
-        so we map it to the standard SLO scale (ok/elevated/warning/breached).
+        so we map it to the standard SLO scale (ok/approaching_warning/warning/breached).
         """
-        status_order = ["ok", "elevated", "warning", "breached"]
+        status_order = ["ok", "approaching_warning", "warning", "breached"]
 
         latency_idx = status_order.index(latency_status) if latency_status in status_order else 0
         error_idx = status_order.index(error_status) if error_status in status_order else 0
@@ -799,7 +858,7 @@ class SLOEvaluator:
         if db_latency_status:
             db_status_mapping = {
                 "ok": 0,
-                "info": 1,      # maps to elevated
+                "info": 1,      # maps to approaching_warning
                 "warning": 2,   # maps to warning
                 "high": 3,      # maps to breached
                 "critical": 3,  # maps to breached
@@ -828,7 +887,7 @@ class SLOEvaluator:
             return "critical"
         elif slo_status == "warning":
             return "actionable" if has_anomaly else "actionable"
-        elif slo_status == "elevated":
+        elif slo_status == "approaching_warning":
             if has_anomaly:
                 return "informational" if is_low_traffic else "actionable"
             return "none"
@@ -864,20 +923,20 @@ class SLOEvaluator:
             return "high"
 
         # Anomaly detected but within acceptable thresholds
-        if has_anomaly and slo_status in ("ok", "elevated"):
+        if has_anomaly and slo_status in ("ok", "approaching_warning"):
             if self.config.allow_downgrade_to_informational and slo_status == "ok":
                 # SLO is ok - all metrics within acceptable thresholds
                 # Anomaly is statistically real but operationally not significant
                 return "low"
-            elif slo_status == "elevated":
-                # Elevated but not warning - keep or slight downgrade
+            elif slo_status == "approaching_warning":
+                # Approaching warning but not there yet - keep or slight downgrade
                 if original_severity == "critical":
                     return "high"
                 return original_severity
 
         # No anomaly - return based on SLO status
         if not has_anomaly:
-            if slo_status == "elevated":
+            if slo_status == "approaching_warning":
                 return "low"
             return "none"
 
@@ -969,11 +1028,30 @@ class SLOEvaluator:
             # Check if this anomaly is error-related
             elif "error" in anomaly_lower:
                 error_rate = metrics.get("error_rate", 0.0)
+
+                # Determine suppression threshold:
+                # Use error_rate_floor if set, otherwise use error_rate_acceptable
+                suppression_threshold = (
+                    slo.error_rate_floor if slo.error_rate_floor > 0
+                    else slo.error_rate_acceptable
+                )
+
+                # Suppress anomaly if error rate is below the operational threshold
+                # The ML detection was statistically valid but not operationally significant
+                if error_rate < suppression_threshold:
+                    logger.debug(
+                        f"Suppressing {anomaly_name}: error_rate {error_rate:.4f} "
+                        f"({error_rate * 100:.3f}%) below threshold {suppression_threshold:.4f} "
+                        f"({suppression_threshold * 100:.2f}%)"
+                    )
+                    continue  # Skip this anomaly entirely
+
                 anomaly_copy["slo_context"] = {
                     "current_value": error_rate,
                     "current_value_percent": f"{error_rate * 100:.2f}%",
                     "acceptable_threshold": slo.error_rate_acceptable,
                     "critical_threshold": slo.error_rate_critical,
+                    "suppression_threshold": suppression_threshold,
                     "within_acceptable": error_rate <= slo.error_rate_acceptable,
                     "is_busy_period": is_busy_period,
                 }

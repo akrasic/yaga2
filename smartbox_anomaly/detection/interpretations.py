@@ -29,7 +29,20 @@ class MetricInterpretation:
 
 @dataclass
 class PatternDefinition:
-    """Definition of a multivariate anomaly pattern."""
+    """Definition of a multivariate anomaly pattern.
+
+    Attributes:
+        name: Pattern identifier (e.g., 'request_rate_surge_healthy')
+        conditions: Dict mapping metric names to required levels
+        message_template: Format string for description
+        severity: Default severity level
+        interpretation: What this pattern means operationally
+        recommended_actions: List of suggested actions
+        severity_locked: If True, IF score cannot override severity.
+            Use for "healthy" patterns that should never escalate.
+        priority: Pattern matching priority (higher = checked first).
+            Default 0. Use higher values for more specific patterns.
+    """
 
     name: str
     conditions: dict[str, str]
@@ -37,6 +50,8 @@ class PatternDefinition:
     severity: str
     interpretation: str
     recommended_actions: list[str]
+    severity_locked: bool = False
+    priority: int = 0
 
 
 @dataclass
@@ -178,7 +193,7 @@ METRIC_INTERPRETATIONS: Final[dict[str, dict[str, MetricInterpretation]]] = {
             ],
         ),
     },
-    MetricName.CLIENT_LATENCY: {
+    MetricName.DEPENDENCY_LATENCY: {
         "high": MetricInterpretation(
             message_template=(
                 "External dependency slow: {value:.0f}ms (p90: {p90:.0f}ms)"
@@ -264,8 +279,8 @@ METRIC_INTERPRETATIONS: Final[dict[str, dict[str, MetricInterpretation]]] = {
 
 
 MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
-    "traffic_surge_healthy": PatternDefinition(
-        name="traffic_surge_healthy",
+    "request_rate_surge_healthy": PatternDefinition(
+        name="request_rate_surge_healthy",
         conditions={
             "request_rate": "high",
             "application_latency": "normal",
@@ -285,9 +300,10 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Proactive scaling if traffic continues trending up",
             "VERIFY: Confirm traffic is legitimate (not bot/attack)",
         ],
+        severity_locked=True,  # Healthy state - IF score should not escalate severity
     ),
-    "traffic_surge_degrading": PatternDefinition(
-        name="traffic_surge_degrading",
+    "request_rate_surge_degrading": PatternDefinition(
+        name="request_rate_surge_degrading",
         conditions={
             "request_rate": "high",
             "application_latency": "high",
@@ -309,8 +325,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Enable request throttling to protect backend",
         ],
     ),
-    "traffic_surge_failing": PatternDefinition(
-        name="traffic_surge_failing",
+    "request_rate_surge_failing": PatternDefinition(
+        name="request_rate_surge_failing",
         conditions={
             "request_rate": "high",
             "application_latency": "high",
@@ -338,11 +354,14 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "request_rate": "normal",
             "application_latency": "high",
             "error_rate": "normal",
-            "latency_change": "recent_increase",  # Distinguishes from sustained high latency
+            # NOTE: "latency_change": "recent_increase" was removed - not implemented
+            # This pattern now matches any high latency with normal traffic/errors
+            # Consider implementing trend detection in the future to distinguish
+            # recent spikes from sustained high latency (see KNOWN_ISSUES.md)
         },
         message_template=(
-            "Recent latency spike: latency increased to {application_latency:.0f}ms "
-            "(was ~{previous_latency:.0f}ms) at normal traffic, errors stable"
+            "Latency spike detected: {application_latency:.0f}ms "
+            "at normal traffic ({request_rate:.1f} req/s), errors stable"
         ),
         severity="high",
         interpretation=(
@@ -358,8 +377,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CHECK: GC behavior and memory pressure",
         ],
     ),
-    "elevated_errors": PatternDefinition(
-        name="elevated_errors",
+    "error_rate_elevated": PatternDefinition(
+        name="error_rate_elevated",
         conditions={
             "request_rate": "normal",
             "application_latency": "normal",
@@ -430,16 +449,16 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "REVIEW: Response status codes (look for 401, 403, 429, 503)",
         ],
     ),
-    "downstream_cascade": PatternDefinition(
-        name="downstream_cascade",
+    "dependency_latency_cascade": PatternDefinition(
+        name="dependency_latency_cascade",
         conditions={
-            "client_latency": "high",
+            "dependency_latency": "high",
             "application_latency": "high",
-            "client_latency_ratio": "> 0.6",
+            "dependency_latency_ratio": "> 0.6",
         },
         message_template=(
-            "Downstream cascade: external calls ({client_latency:.0f}ms) "
-            "causing {client_latency_ratio:.0%} of total latency ({application_latency:.0f}ms)"
+            "Downstream cascade: external calls ({dependency_latency:.0f}ms) "
+            "causing {dependency_latency_ratio:.0%} of total latency ({application_latency:.0f}ms)"
         ),
         severity="high",
         interpretation=(
@@ -453,8 +472,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "REVIEW: Timeout settings for external calls",
         ],
     ),
-    "database_degradation": PatternDefinition(
-        name="database_degradation",
+    "database_latency_degraded": PatternDefinition(
+        name="database_latency_degraded",
         conditions={
             "database_latency": "high",
             "application_latency": "normal",
@@ -479,8 +498,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Proactive query optimization before user impact",
         ],
     ),
-    "database_bottleneck": PatternDefinition(
-        name="database_bottleneck",
+    "database_latency_bottleneck": PatternDefinition(
+        name="database_latency_bottleneck",
         conditions={
             "database_latency": "high",
             "application_latency": "high",
@@ -503,8 +522,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Query result caching or read replicas if appropriate",
         ],
     ),
-    "traffic_cliff": PatternDefinition(
-        name="traffic_cliff",
+    "request_rate_cliff": PatternDefinition(
+        name="request_rate_cliff",
         conditions={
             "request_rate": "very_low",
             "request_rate_change": "sudden_drop",  # Distinguishes from normal low-traffic periods
@@ -528,13 +547,13 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CHECK: Recent infrastructure or network changes",
         ],
     ),
-    "internal_bottleneck": PatternDefinition(
-        name="internal_bottleneck",
+    "application_latency_bottleneck": PatternDefinition(
+        name="application_latency_bottleneck",
         conditions={
             "request_rate": "normal",
             "application_latency": "high",
             "error_rate": "normal",
-            "client_latency": "normal",
+            "dependency_latency": "normal",
             "database_latency": "normal",
         },
         message_template=(
@@ -564,8 +583,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
 
 
 FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
-    "fast_rejection": PatternDefinition(
-        name="fast_rejection",
+    "error_rate_fast_rejection": PatternDefinition(
+        name="error_rate_fast_rejection",
         conditions={
             "application_latency": "very_low",
             "error_rate": "very_high",
@@ -613,8 +632,8 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CHECK: Client-side error rates if available",
         ],
     ),
-    "partial_rejection": PatternDefinition(
-        name="partial_rejection",
+    "error_rate_partial_rejection": PatternDefinition(
+        name="error_rate_partial_rejection",
         conditions={
             "application_latency": "low",
             "error_rate": "moderate",
@@ -637,8 +656,8 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CHECK: Recent deployments affecting specific features",
         ],
     ),
-    "fast_failure": PatternDefinition(
-        name="fast_failure",
+    "error_rate_fast_failure": PatternDefinition(
+        name="error_rate_fast_failure",
         conditions={
             "application_latency": "low",
             "error_rate": "high",
@@ -667,12 +686,27 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
 # =============================================================================
 # Additional Operational Patterns
 # =============================================================================
+#
+# NOTE: These patterns are NOT ACTIVE because they are not in PATTERN_PRIORITY
+# (see detector.py). They are preserved here as documentation of future
+# functionality that requires trend detection and state tracking.
+#
+# Patterns with unimplemented conditions:
+# - gradual_degradation: requires latency_trend, error_trend (trend detection)
+# - recovery_in_progress: requires error_trend, previous_state (state tracking)
+# - flapping_service: requires state_changes (state change counting)
+# - suspicious_fast_responses: HAS valid conditions, could be enabled
+#
+# To enable a pattern: add it to PATTERN_PRIORITY in detector.py
+# =============================================================================
 
 
 OPERATIONAL_PATTERNS: Final[dict[str, PatternDefinition]] = {
+    # DISABLED: Requires trend detection (not implemented)
     "gradual_degradation": PatternDefinition(
         name="gradual_degradation",
         conditions={
+            # UNIMPLEMENTED: These conditions require trend detection over time
             "latency_trend": "increasing",
             "error_trend": "increasing",
         },
@@ -694,9 +728,11 @@ OPERATIONAL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Proactive scaling or optimization",
         ],
     ),
+    # DISABLED: Requires state tracking (not implemented)
     "recovery_in_progress": PatternDefinition(
         name="recovery_in_progress",
         conditions={
+            # UNIMPLEMENTED: These conditions require historical state tracking
             "error_trend": "decreasing",
             "previous_state": "was_degraded",
         },
@@ -715,10 +751,13 @@ OPERATIONAL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "DOCUMENT: Root cause if identified",
             "REVIEW: What triggered recovery (auto-healing, manual fix, traffic change)",
         ],
+        severity_locked=True,  # Recovery state - IF score should not escalate severity
     ),
+    # DISABLED: Requires state change counting (not implemented)
     "flapping_service": PatternDefinition(
         name="flapping_service",
         conditions={
+            # UNIMPLEMENTED: Requires tracking state transitions over time
             "state_changes": "frequent",
         },
         message_template=(
@@ -739,6 +778,7 @@ OPERATIONAL_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "CONSIDER: Adding hysteresis to prevent alert noise",
         ],
     ),
+    # COULD BE ENABLED: Has valid conditions, just not in PATTERN_PRIORITY
     "suspicious_fast_responses": PatternDefinition(
         name="suspicious_fast_responses",
         conditions={
@@ -772,7 +812,7 @@ OPERATIONAL_PATTERNS: Final[dict[str, PatternDefinition]] = {
 
 RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
     # Critical pattern recommendations
-    ("traffic_surge_failing", "critical"): [
+    ("request_rate_surge_failing", "critical"): [
         "IMMEDIATE: Enable auto-scaling or manually scale horizontally",
         "IMMEDIATE: Consider activating rate limiting to protect backend",
         "INVESTIGATE: Check if this is legitimate traffic or potential attack",
@@ -790,20 +830,20 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "ASSESS: Is this protecting the system or causing user impact?",
         "DECIDE: Manual circuit breaker reset vs wait for auto-recovery",
     ],
-    ("traffic_cliff", "critical"): [
+    ("request_rate_cliff", "critical"): [
         "IMMEDIATE: Verify service is reachable externally",
         "CHECK: Load balancer and DNS health",
         "CHECK: Upstream services and routing",
         "INVESTIGATE: Recent infrastructure changes",
     ],
     # High severity recommendations
-    ("database_bottleneck", "high"): [
+    ("database_latency_bottleneck", "high"): [
         "INVESTIGATE: Run EXPLAIN on recent slow queries",
         "CHECK: Database connection pool utilization",
         "CHECK: Replication lag if using read replicas",
         "CONSIDER: Query result caching if appropriate",
     ],
-    ("downstream_cascade", "high"): [
+    ("dependency_latency_cascade", "high"): [
         "CHECK: Third-party service status pages",
         "CONSIDER: Circuit breaker or timeout adjustments",
         "CONSIDER: Fallback mode if available",
@@ -833,11 +873,8 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "CONSIDER: Scaling if sustained",
         "CHECK: Rate limiting thresholds",
     ],
-    ("traffic_cliff", "critical"): [
-        "IMMEDIATE: Check upstream connectivity",
-        "CHECK: DNS and load balancer health",
-        "VERIFY: Service is externally reachable",
-    ],
+    # NOTE: ("request_rate_cliff", "critical") is defined above at line 793
+    # Removed duplicate entry that was here (SRE Review 2026-01-15)
 }
 
 
@@ -851,7 +888,7 @@ DEPENDENCY_AWARE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         name="upstream_cascade",
         conditions={
             "application_latency": "high",
-            "client_latency": "high",
+            "dependency_latency": "high",
             "_dependency_context": "upstream_anomaly",
         },
         message_template=(
@@ -926,6 +963,45 @@ DEPENDENCY_AWARE_PATTERNS: Final[dict[str, PatternDefinition]] = {
 
 
 # =============================================================================
+# Pattern Name Aliases (Backward Compatibility)
+# =============================================================================
+# Old pattern names are mapped to new standardized names following the
+# {metric}_{state}_{modifier} convention. These aliases enable a gradual
+# migration without breaking existing integrations.
+
+
+PATTERN_ALIASES: Final[dict[str, str]] = {
+    # Traffic patterns → request_rate patterns
+    "traffic_surge_healthy": "request_rate_surge_healthy",
+    "traffic_surge_degrading": "request_rate_surge_degrading",
+    "traffic_surge_failing": "request_rate_surge_failing",
+    "traffic_cliff": "request_rate_cliff",
+    # Error patterns
+    "elevated_errors": "error_rate_elevated",
+    "fast_rejection": "error_rate_fast_rejection",
+    "fast_failure": "error_rate_fast_failure",
+    "partial_rejection": "error_rate_partial_rejection",
+    # Latency patterns
+    "downstream_cascade": "dependency_latency_cascade",
+    "internal_bottleneck": "application_latency_bottleneck",
+    "database_bottleneck": "database_latency_bottleneck",
+    "database_degradation": "database_latency_degraded",
+}
+
+
+def normalize_pattern_name(pattern_name: str) -> str:
+    """Normalize a pattern name using aliases for backward compatibility.
+
+    Args:
+        pattern_name: The original pattern name (may be old or new)
+
+    Returns:
+        The normalized (new) pattern name
+    """
+    return PATTERN_ALIASES.get(pattern_name, pattern_name)
+
+
+# =============================================================================
 # Business Impact Templates
 # =============================================================================
 
@@ -959,12 +1035,17 @@ def get_metric_interpretation(
 
 
 def get_pattern_definition(pattern_name: str) -> PatternDefinition | None:
-    """Get definition for a multivariate pattern."""
+    """Get definition for a multivariate pattern.
+
+    Supports both old and new pattern names via alias normalization.
+    """
+    # Normalize old pattern names to new convention
+    normalized_name = normalize_pattern_name(pattern_name)
     return (
-        DEPENDENCY_AWARE_PATTERNS.get(pattern_name)
-        or MULTIVARIATE_PATTERNS.get(pattern_name)
-        or FAST_FAIL_PATTERNS.get(pattern_name)
-        or OPERATIONAL_PATTERNS.get(pattern_name)
+        DEPENDENCY_AWARE_PATTERNS.get(normalized_name)
+        or MULTIVARIATE_PATTERNS.get(normalized_name)
+        or FAST_FAIL_PATTERNS.get(normalized_name)
+        or OPERATIONAL_PATTERNS.get(normalized_name)
     )
 
 

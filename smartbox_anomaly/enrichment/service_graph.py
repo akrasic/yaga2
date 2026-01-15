@@ -1,9 +1,9 @@
 """
-Service graph enrichment for client latency diagnosis.
+Service graph enrichment for dependency latency diagnosis.
 
 Queries OpenTelemetry service graph metrics from VictoriaMetrics to provide
 context about which downstream services and routes are being called when
-client_latency is elevated.
+dependency_latency is elevated.
 
 The enrichment shows:
 - Which servers (downstream services) the client is calling
@@ -162,7 +162,7 @@ class ServiceGraphEnrichmentService:
     """Service for enriching anomaly alerts with downstream service context.
 
     Queries OpenTelemetry service graph metrics from VictoriaMetrics to identify
-    which downstream services and routes are being called when client_latency
+    which downstream services and routes are being called when dependency_latency
     is elevated.
 
     Example:

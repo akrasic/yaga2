@@ -204,7 +204,7 @@
       "high": 1000
     },
     "ratios": {
-      "client_latency_bottleneck": 0.6,
+      "dependency_latency_bottleneck": 0.6,
       "database_latency_bottleneck": 0.7,
       "traffic_cliff_threshold": 0.3
     },
@@ -350,6 +350,8 @@
       "error_rate_acceptable": 0.005,
       "error_rate_warning": 0.01,
       "error_rate_critical": 0.02,
+      "_comment_error_floor": "Error rate floor - below this, suppress anomaly entirely (0 = use acceptable)",
+      "error_rate_floor": 0,
       "min_traffic_rps": 1.0,
       "busy_period_factor": 1.5,
       "_comment_db_latency": "Database latency evaluation - uses ratio from baseline (training mean)",
@@ -397,6 +399,8 @@
         "error_rate_acceptable": 0.002,
         "error_rate_warning": 0.005,
         "error_rate_critical": 0.01,
+        "_comment_error_floor": "Suppress error alerts below 0.2% - eliminates noise from tiny deviations",
+        "error_rate_floor": 0.002,
         "database_latency_floor_ms": 0.5,
         "request_rate_evaluation": {
           "cliff": {
@@ -453,6 +457,24 @@
         "end": "2025-01-05T23:59:59"
       }
     ]
+  },
+  "alerting": {
+    "_comment": "Alert filtering and correlation settings - controls which anomalies are sent to Web API",
+    "severity_threshold": "low",
+    "_comment_severity": "Only anomalies at or above this severity are sent to API (low/medium/high/critical)",
+    "log_below_threshold": true,
+    "below_threshold_log_level": "INFO",
+    "_comment_non_alerting": "Patterns that are logged but never sent to API (healthy indicators)",
+    "non_alerting_patterns": [
+      "request_rate_surge_healthy"
+    ],
+    "correlation": {
+      "_comment": "Group multiple anomalies for same service into single incident",
+      "enabled": false,
+      "window_seconds": 300,
+      "primary_selection": "highest_confidence",
+      "min_anomalies_to_correlate": 2
+    }
   },
   "logging": {
     "level": "INFO",

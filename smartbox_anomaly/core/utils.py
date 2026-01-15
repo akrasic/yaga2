@@ -251,6 +251,13 @@ def format_duration(minutes: int) -> str:
 def generate_anomaly_name(anomaly_data: dict[str, Any], index: int = 0) -> str:  # noqa: PLR0911
     """Generate consistent, descriptive anomaly name from anomaly data.
 
+    Naming priority:
+    1. `_anomaly_key`: Preserved name from detector (added during normalization)
+    2. `pattern_name`: Named pattern from pattern matching
+    3. `root_metric` + direction: For univariate ML detection
+    4. `comparison_data`: Find most anomalous metric as fallback
+    5. Description-based inference: Last resort heuristics
+
     Naming convention:
     - For univariate (single metric): "{metric}_{direction}" e.g., "latency_high"
     - For named patterns: "{pattern_name}" e.g., "recent_degradation"
@@ -267,30 +274,65 @@ def generate_anomaly_name(anomaly_data: dict[str, Any], index: int = 0) -> str: 
     try:
         anomaly_type = anomaly_data.get("type", "unknown")
         detection_method = anomaly_data.get("detection_method", "unknown")
+        direction = anomaly_data.get("direction", "anomaly")
 
-        # Named patterns get their pattern name (most descriptive)
+        # 1. Check for preserved anomaly key (highest priority)
+        # This is set by _normalize_anomalies() when converting dict to list
+        anomaly_key = anomaly_data.get("_anomaly_key", "")
+        if anomaly_key and not anomaly_key.startswith(("anomaly_", "metric_")):
+            # Valid preserved name - use it directly
+            return str(anomaly_key)
+
+        # 2. Named patterns get their pattern name (most descriptive)
         if anomaly_data.get("pattern_name"):
             return str(anomaly_data["pattern_name"])
 
-        # Univariate ML detection: use metric + direction
+        # 3. Univariate ML detection: use metric + direction
         if anomaly_type == "ml_isolation":
-            # Try to extract metric name from the key or description
-            direction = anomaly_data.get("direction", "anomaly")
-            # Look for metric name in contributing_metrics or infer from description
-            description = anomaly_data.get("description", "")
-            if "latency" in description.lower():
-                return f"latency_{direction}"
-            elif "error" in description.lower():
-                return f"error_rate_{direction}"
-            elif "traffic" in description.lower() or "request" in description.lower():
-                return f"request_rate_{direction}"
+            # Check for root_metric first (most accurate source)
+            root_metric = anomaly_data.get("root_metric", "").lower()
+            if root_metric:
+                metric_name = _metric_to_name(root_metric)
+                if metric_name:
+                    return f"{metric_name}_{direction}"
+
+            # 4. Fallback to comparison_data to find most anomalous metric
+            comparison_data = anomaly_data.get("comparison_data", {})
+            if comparison_data:
+                most_anomalous = _find_most_anomalous_metric(comparison_data)
+                if most_anomalous:
+                    return f"{most_anomalous}_{direction}"
+
+            # 5. Last resort: description-based inference
+            description = anomaly_data.get("description", "").lower()
+            metric_name = _infer_metric_from_description(description)
+            if metric_name:
+                return f"{metric_name}_{direction}"
+
             return f"metric_{direction}"
+
+        # Consolidated anomaly type
+        if anomaly_type == "consolidated":
+            # Check root_metric
+            root_metric = anomaly_data.get("root_metric", "").lower()
+            if root_metric:
+                metric_name = _metric_to_name(root_metric)
+                if metric_name:
+                    return f"{metric_name}_{direction}"
+
+            # Check comparison_data
+            comparison_data = anomaly_data.get("comparison_data", {})
+            if comparison_data:
+                most_anomalous = _find_most_anomalous_metric(comparison_data)
+                if most_anomalous:
+                    return f"{most_anomalous}_{direction}"
+
+            return f"consolidated_{direction}"
 
         # Threshold detection (zero-normal metrics)
         if anomaly_type == "threshold":
             # Prefer direction if available, otherwise use detection_method
-            direction = anomaly_data.get("direction")
-            if direction:
+            if direction and direction != "anomaly":
                 return f"threshold_{direction}"
             return f"threshold_{detection_method}"
 
@@ -314,6 +356,88 @@ def generate_anomaly_name(anomaly_data: dict[str, Any], index: int = 0) -> str: 
         # TypeError: None value or wrong type
         # AttributeError: object doesn't have expected attribute
         return f"anomaly_{index}_unknown"
+
+
+def _metric_to_name(metric: str) -> str | None:
+    """Convert a metric identifier to a standard name.
+
+    Args:
+        metric: Metric identifier (e.g., "dependency_latency", "error_rate").
+
+    Returns:
+        Standard metric name or None if not recognized.
+    """
+    metric = metric.lower()
+    if "dependency" in metric:
+        return "dependency_latency"
+    elif "database" in metric or metric == "db_latency":
+        return "database_latency"
+    elif "application" in metric or metric == "app_latency":
+        return "application_latency"
+    elif "error" in metric:
+        return "error_rate"
+    elif "request" in metric or "traffic" in metric:
+        return "request_rate"
+    return None
+
+
+def _infer_metric_from_description(description: str) -> str | None:
+    """Infer metric name from anomaly description.
+
+    Args:
+        description: Anomaly description text (lowercase).
+
+    Returns:
+        Inferred metric name or None.
+    """
+    # Dependency latency: "External dependency slow"
+    if "dependency" in description or "external" in description:
+        return "dependency_latency"
+    # Database latency
+    elif "database" in description or "db " in description:
+        return "database_latency"
+    # Application latency: "fast responses", "response time", general "latency"
+    elif "latency" in description or "response" in description:
+        return "application_latency"
+    elif "error" in description:
+        return "error_rate"
+    elif "traffic" in description or "request" in description:
+        return "request_rate"
+    return None
+
+
+def _find_most_anomalous_metric(comparison_data: dict[str, Any]) -> str | None:
+    """Find the most anomalous metric from comparison data.
+
+    Uses deviation_sigma (standard deviations from mean) to determine
+    which metric has the most significant deviation.
+
+    Args:
+        comparison_data: Dictionary of metric comparisons with deviation_sigma.
+
+    Returns:
+        Name of most anomalous metric, or None if no significant deviation.
+    """
+    if not comparison_data:
+        return None
+
+    max_deviation = 0.0
+    most_anomalous = None
+
+    for metric_name, stats in comparison_data.items():
+        if not isinstance(stats, dict):
+            continue
+
+        deviation = abs(stats.get("deviation_sigma", 0.0))
+        if deviation > max_deviation:
+            max_deviation = deviation
+            most_anomalous = metric_name
+
+    # Only return if there's a significant deviation (> 1 sigma)
+    if max_deviation > 1.0 and most_anomalous:
+        return _metric_to_name(most_anomalous) or most_anomalous
+
+    return None
 
 
 # =============================================================================

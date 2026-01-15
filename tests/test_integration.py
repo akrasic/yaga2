@@ -70,7 +70,7 @@ def realistic_service_data() -> pd.DataFrame:
     app_latency = np.random.lognormal(3.5, 0.8, n_samples)
 
     # Some metrics often zero
-    client_latency = np.where(
+    dependency_latency = np.where(
         np.random.random(n_samples) > 0.3,
         np.random.exponential(30, n_samples),
         0,
@@ -87,7 +87,7 @@ def realistic_service_data() -> pd.DataFrame:
     return pd.DataFrame({
         MetricName.REQUEST_RATE: request_rate,
         MetricName.APPLICATION_LATENCY: app_latency,
-        MetricName.CLIENT_LATENCY: client_latency,
+        MetricName.DEPENDENCY_LATENCY: dependency_latency,
         MetricName.DATABASE_LATENCY: db_latency,
         MetricName.ERROR_RATE: error_rate,
     })
@@ -135,7 +135,7 @@ class TestTrainingAndDetection:
         normal_metrics = {
             MetricName.REQUEST_RATE: float(np.median(realistic_service_data[MetricName.REQUEST_RATE])),
             MetricName.APPLICATION_LATENCY: float(np.median(realistic_service_data[MetricName.APPLICATION_LATENCY])),
-            MetricName.CLIENT_LATENCY: 0.0,
+            MetricName.DEPENDENCY_LATENCY: 0.0,
             MetricName.DATABASE_LATENCY: 0.0,
             MetricName.ERROR_RATE: 0.005,
         }
@@ -165,7 +165,7 @@ class TestTrainingAndDetection:
         anomalous_metrics = {
             MetricName.REQUEST_RATE: 50000.0,  # Way above normal
             MetricName.APPLICATION_LATENCY: 10000.0,  # 10 seconds
-            MetricName.CLIENT_LATENCY: 5000.0,
+            MetricName.DEPENDENCY_LATENCY: 5000.0,
             MetricName.DATABASE_LATENCY: 3000.0,
             MetricName.ERROR_RATE: 0.5,  # 50% errors
         }
@@ -210,7 +210,7 @@ class TestTrainingAndDetection:
         test_metrics = {
             MetricName.REQUEST_RATE: 100.0,
             MetricName.APPLICATION_LATENCY: 50.0,
-            MetricName.CLIENT_LATENCY: 0.0,
+            MetricName.DEPENDENCY_LATENCY: 0.0,
             MetricName.DATABASE_LATENCY: 0.0,
             MetricName.ERROR_RATE: 0.01,
         }
@@ -256,7 +256,7 @@ class TestTimeAwareDetection:
         features_df = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         }, index=dates)
@@ -271,7 +271,7 @@ class TestTimeAwareDetection:
         business_metrics = {
             MetricName.REQUEST_RATE: 100.0,
             MetricName.APPLICATION_LATENCY: 50.0,
-            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DEPENDENCY_LATENCY: 20.0,
             MetricName.DATABASE_LATENCY: 10.0,
             MetricName.ERROR_RATE: 0.01,
         }
@@ -307,7 +307,7 @@ class TestTimeAwareDetection:
         features_df = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(expected_request_rate_mean, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(expected_db_latency_mean, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         }, index=dates)
@@ -329,7 +329,7 @@ class TestTimeAwareDetection:
         test_metrics = {
             MetricName.REQUEST_RATE: 100.0,
             MetricName.APPLICATION_LATENCY: 50.0,
-            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DEPENDENCY_LATENCY: 20.0,
             MetricName.DATABASE_LATENCY: 10.0,
             MetricName.ERROR_RATE: 0.01,
         }
@@ -384,7 +384,7 @@ class TestFingerprintingIntegration:
         anomalous_metrics = {
             MetricName.REQUEST_RATE: 50000.0,
             MetricName.APPLICATION_LATENCY: 5000.0,
-            MetricName.CLIENT_LATENCY: 1000.0,
+            MetricName.DEPENDENCY_LATENCY: 1000.0,
             MetricName.DATABASE_LATENCY: 500.0,
             MetricName.ERROR_RATE: 0.3,
         }
@@ -438,7 +438,7 @@ class TestFingerprintingIntegration:
         anomalous_metrics = {
             MetricName.REQUEST_RATE: 50000.0,
             MetricName.APPLICATION_LATENCY: 5000.0,
-            MetricName.CLIENT_LATENCY: 0.0,
+            MetricName.DEPENDENCY_LATENCY: 0.0,
             MetricName.DATABASE_LATENCY: 0.0,
             MetricName.ERROR_RATE: 0.25,
         }
@@ -466,7 +466,7 @@ class TestFingerprintingIntegration:
             normal_metrics = {
                 MetricName.REQUEST_RATE: 100.0,
                 MetricName.APPLICATION_LATENCY: 50.0,
-                MetricName.CLIENT_LATENCY: 0.0,
+                MetricName.DEPENDENCY_LATENCY: 0.0,
                 MetricName.DATABASE_LATENCY: 0.0,
                 MetricName.ERROR_RATE: 0.01,
             }
@@ -515,7 +515,7 @@ class TestAPIPayloadGeneration:
         anomalous_metrics = {
             MetricName.REQUEST_RATE: 50000.0,
             MetricName.APPLICATION_LATENCY: 5000.0,
-            MetricName.CLIENT_LATENCY: 1000.0,
+            MetricName.DEPENDENCY_LATENCY: 1000.0,
             MetricName.DATABASE_LATENCY: 500.0,
             MetricName.ERROR_RATE: 0.3,
         }
@@ -647,7 +647,7 @@ class TestErrorHandling:
         metrics = {
             MetricName.REQUEST_RATE: 100.0,
             MetricName.APPLICATION_LATENCY: 50.0,
-            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DEPENDENCY_LATENCY: 20.0,
             MetricName.DATABASE_LATENCY: 10.0,
             MetricName.ERROR_RATE: 0.01,
         }

@@ -535,10 +535,10 @@ class TestCombineSLOStatus:
         status = evaluator._combine_slo_status("ok", "ok", "ok")
         assert status == "ok"
 
-    def test_db_info_maps_to_elevated(self, evaluator: SLOEvaluator):
-        """Test DB info status maps to elevated."""
+    def test_db_info_maps_to_approaching_warning(self, evaluator: SLOEvaluator):
+        """Test DB info status maps to approaching_warning."""
         status = evaluator._combine_slo_status("ok", "ok", "info")
-        assert status == "elevated"
+        assert status == "approaching_warning"
 
     def test_db_warning_maps_to_warning(self, evaluator: SLOEvaluator):
         """Test DB warning status maps to warning."""
@@ -1049,3 +1049,146 @@ class TestSLOSeverityPropagation:
         assert result.get("slo_evaluation", {}).get("severity_changed") is True
         assert result.get("slo_evaluation", {}).get("original_severity") == "high"
         assert result.get("slo_evaluation", {}).get("adjusted_severity") == "low"
+
+
+class TestEvaluateMetrics:
+    """Tests for evaluate_metrics() standalone method."""
+
+    @pytest.fixture
+    def evaluator(self) -> SLOEvaluator:
+        """Create a test SLO evaluator."""
+        config = SLOConfig(
+            enabled=True,
+            allow_downgrade_to_informational=True,
+            require_slo_breach_for_critical=True,
+            defaults=ServiceSLOConfig(
+                latency_acceptable_ms=300.0,
+                latency_warning_ms=500.0,
+                latency_critical_ms=1000.0,
+                error_rate_acceptable=0.01,
+                error_rate_warning=0.02,
+                error_rate_critical=0.05,
+            ),
+        )
+        return SLOEvaluator(config)
+
+    def test_evaluate_metrics_returns_slo_result(self, evaluator: SLOEvaluator):
+        """Test that evaluate_metrics returns an SLOEvaluationResult."""
+        metrics = {
+            "application_latency": 100.0,
+            "error_rate": 0.001,
+            "request_rate": 50.0,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="booking",
+        )
+
+        assert isinstance(result, SLOEvaluationResult)
+        assert result.slo_status == "ok"
+
+    def test_evaluate_metrics_healthy_service(self, evaluator: SLOEvaluator):
+        """Test evaluation of metrics within acceptable thresholds."""
+        metrics = {
+            "application_latency": 100.0,  # Well under 300ms acceptable
+            "error_rate": 0.001,  # Well under 1% acceptable
+            "request_rate": 100.0,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+        )
+
+        assert result.slo_status == "ok"
+        assert result.operational_impact in ("none", "informational")
+        assert result.latency_evaluation is not None
+        assert result.latency_evaluation.get("status") == "ok"
+
+    def test_evaluate_metrics_warning_latency(self, evaluator: SLOEvaluator):
+        """Test evaluation when latency is in warning range."""
+        metrics = {
+            "application_latency": 450.0,  # Between 300ms (acceptable) and 500ms (warning)
+            "error_rate": 0.001,
+            "request_rate": 100.0,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+        )
+
+        assert result.slo_status in ("warning", "approaching_warning")
+        assert result.latency_evaluation is not None
+
+    def test_evaluate_metrics_critical_latency(self, evaluator: SLOEvaluator):
+        """Test evaluation when latency exceeds critical threshold."""
+        metrics = {
+            "application_latency": 1500.0,  # Above 1000ms critical
+            "error_rate": 0.001,
+            "request_rate": 100.0,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+        )
+
+        assert result.slo_status == "breached"
+        assert result.latency_evaluation is not None
+        assert result.latency_evaluation.get("status") == "breached"  # SLO uses "breached" not "critical"
+
+    def test_evaluate_metrics_disabled_slo(self):
+        """Test evaluation when SLO is disabled."""
+        config = SLOConfig(enabled=False)
+        evaluator = SLOEvaluator(config)
+
+        metrics = {
+            "application_latency": 5000.0,  # Very high, but SLO disabled
+            "error_rate": 0.5,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+        )
+
+        # Should return a minimal result without evaluation
+        assert result.slo_status == "ok"
+        assert "disabled" in result.explanation.lower()
+
+    def test_evaluate_metrics_with_timestamp(self, evaluator: SLOEvaluator):
+        """Test evaluation with custom timestamp for busy period check."""
+        metrics = {
+            "application_latency": 100.0,
+            "error_rate": 0.001,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+            timestamp=datetime.now(),
+            time_period="business_hours",
+        )
+
+        assert isinstance(result, SLOEvaluationResult)
+        assert isinstance(result.is_busy_period, bool)
+
+    def test_evaluate_metrics_to_dict(self, evaluator: SLOEvaluator):
+        """Test that result can be converted to dict."""
+        metrics = {
+            "application_latency": 100.0,
+            "error_rate": 0.001,
+        }
+
+        result = evaluator.evaluate_metrics(
+            metrics=metrics,
+            service_name="test-service",
+        )
+
+        result_dict = result.to_dict()
+
+        assert isinstance(result_dict, dict)
+        assert "slo_status" in result_dict
+        assert "operational_impact" in result_dict

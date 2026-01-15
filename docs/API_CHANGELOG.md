@@ -4,6 +4,250 @@ This document tracks changes to the API payload schema.
 
 ---
 
+## Version 2.0.0
+
+**Release Date**: 2026-01-15
+
+### Breaking Changes
+
+#### Metric Renamed: `client_latency` → `dependency_latency`
+
+The `client_latency` metric has been renamed to `dependency_latency` throughout the API payload.
+
+**Rationale:** "Client" was ambiguous - could be interpreted as end-user latency. "Dependency" clearly indicates latency spent waiting on external services/dependencies.
+
+**Fields Changed:**
+
+| Location | Old Field | New Field |
+|----------|-----------|-----------|
+| `current_metrics` | `client_latency` | `dependency_latency` |
+| `comparison_data` | `client_latency` | `dependency_latency` |
+| `metrics_at_resolution` | `client_latency` | `dependency_latency` |
+| Pattern conditions | `"client_latency": "high"` | `"dependency_latency": "high"` |
+| Ratio calculations | `client_latency_ratio` | `dependency_latency_ratio` |
+
+**Configuration Changed:**
+- `detection_thresholds.ratios.client_latency_bottleneck` → `dependency_latency_bottleneck`
+
+**Migration Guide:**
+
+Search and replace in all integrations consuming the API payload:
+```
+client_latency → dependency_latency
+client_latency_ratio → dependency_latency_ratio
+```
+
+**Example - Before (v1.x):**
+```json
+{
+  "current_metrics": {
+    "application_latency": 250.0,
+    "client_latency": 120.0,
+    "database_latency": 45.0
+  }
+}
+```
+
+**Example - After (v2.0.0):**
+```json
+{
+  "current_metrics": {
+    "application_latency": 250.0,
+    "dependency_latency": 120.0,
+    "database_latency": 45.0
+  }
+}
+```
+
+**Impact:**
+- All API consumers must update field references
+- Dashboards and alerts referencing `client_latency` must be updated
+- Historical data stored with old field names will need migration or dual-read logic
+
+---
+
+## Version 1.4.0
+
+**Release Date**: 2026-01-14
+
+### New Features
+
+#### Enhanced Resolution Payload with Context
+
+Added comprehensive `resolution_context` field to incident resolution payloads. This provides detailed context about the service state at resolution time, enabling the Web UI to show WHY an incident was closed and what "healthy" looks like.
+
+**Problem Solved:**
+- Resolution payloads only contained metadata (duration, occurrences) but not the actual metric values
+- No visibility into SLO status at resolution time
+- No way to verify the resolution was genuine vs. a detection gap
+
+**New Behavior:**
+- When incidents resolve, the `resolution_context` field includes:
+  - `metrics_at_resolution` - Current metric values when resolved
+  - `slo_evaluation` - Full SLO evaluation showing operational status
+  - `comparison_to_baseline` - Statistical comparison to training data
+  - `health_summary` - Human-readable summary for UI display
+
+**Schema (Resolution Context):**
+
+```json
+{
+  "resolution_context": {
+    "metrics_at_resolution": {
+      "request_rate": 52.7,
+      "application_latency": 110.5,
+      "dependency_latency": 1.4,
+      "database_latency": 0.8,
+      "error_rate": 0.0001
+    },
+    "slo_evaluation": {
+      "slo_status": "ok",
+      "operational_impact": "none",
+      "latency_evaluation": {...},
+      "error_rate_evaluation": {...}
+    },
+    "comparison_to_baseline": {
+      "application_latency": {
+        "current": 110.5,
+        "training_mean": 110.3,
+        "deviation_sigma": 0.03,
+        "percentile_estimate": 56.0,
+        "status": "normal"
+      }
+    },
+    "health_summary": {
+      "all_metrics_normal": true,
+      "slo_compliant": true,
+      "summary": "All metrics within acceptable SLO thresholds..."
+    }
+  }
+}
+```
+
+**Use Cases:**
+1. Web UI can render "Alert Closed Summary" with full context
+2. SRE teams can verify resolutions were genuine (not detection gaps)
+3. Post-incident analysis can compare incident peak vs resolved values
+4. Historical views can show "what healthy looks like" for each service
+
+**Files Modified:**
+- `smartbox_anomaly/fingerprinting/fingerprinter.py` - Added `_build_resolution_context()` method
+- `smartbox_anomaly/slo/evaluator.py` - Added `evaluate_metrics()` public method for standalone evaluation
+- `inference.py` - Pass SLO evaluator to fingerprinter for resolution context
+
+**Backward Compatibility:**
+This is a **backward-compatible** change:
+- The `resolution_context` field is optional (may be `null` if metrics unavailable)
+- Existing API consumers can ignore the field
+- No changes required to existing integrations
+
+---
+
+## Version 1.3.3
+
+**Release Date**: 2026-01-13
+
+### New Features
+
+#### Error Rate Suppression
+
+Added `error_rate_floor` configuration option to suppress error-related anomalies when the error rate is below operational thresholds. This eliminates alert noise from statistically valid but operationally insignificant error rate deviations.
+
+**Problem Solved:**
+- Services with very low baseline error rates (e.g., 0.01%) would generate many alerts for tiny deviations
+- These alerts were statistically valid (ML detected real deviation) but operationally meaningless
+- Example: booking service generated 256 incidents in 7 days, with 84% having error rates below the SLO acceptable threshold
+
+**New Behavior:**
+- When `error_rate_floor` is set, anomalies with error rates below this threshold are **suppressed entirely**
+- If `error_rate_floor` is 0 (default), uses `error_rate_acceptable` as the suppression threshold
+- Suppressed anomalies are logged at DEBUG level but not included in the output
+
+**Configuration:**
+```json
+{
+  "slos": {
+    "defaults": {
+      "error_rate_floor": 0
+    },
+    "services": {
+      "booking": {
+        "error_rate_acceptable": 0.002,
+        "error_rate_floor": 0.002
+      }
+    }
+  }
+}
+```
+
+**Impact:**
+- Reduces false positive error alerts for services with low baseline error rates
+- No changes required for API consumers - suppressed anomalies simply don't appear in the payload
+- Existing anomalies that exceed the floor will include a new `suppression_threshold` field in `slo_context`
+
+**New Field in `slo_context` for Error Anomalies:**
+```json
+{
+  "slo_context": {
+    "current_value": 0.005,
+    "current_value_percent": "0.50%",
+    "acceptable_threshold": 0.002,
+    "critical_threshold": 0.01,
+    "suppression_threshold": 0.002,
+    "within_acceptable": false,
+    "is_busy_period": false
+  }
+}
+```
+
+---
+
+## Version 1.3.2
+
+**Release Date**: 2026-01-13
+
+### Behavioral Changes
+
+#### Confirmed-Only Web API Alerts
+
+The inference engine now filters out **SUSPECTED** anomalies before sending alerts to the web API. Only confirmed anomalies (status = OPEN or RECOVERING) are included in the `anomaly_detected` payload.
+
+**Previous Behavior:**
+- All detected anomalies were sent to the web API immediately
+- First detection created incident in web API as OPEN
+- If anomaly expired without confirmation (`suspected_expired`), no resolution was sent
+- Result: Orphaned OPEN incidents in web API
+
+**New Behavior:**
+- First detection creates SUSPECTED incident (not sent to web API)
+- After 2+ consecutive detections, incident is confirmed (OPEN) and sent to web API
+- If anomaly expires before confirmation, it's silently closed (no orphan created)
+
+**Impact:**
+- Reduces orphaned incidents in the web API
+- Web API only receives confirmed, actionable anomalies
+- No changes required for API consumers - all received anomalies are now guaranteed to be confirmed
+
+**Related Fix:** `suspected_expired` incidents no longer create orphaned OPEN incidents in the web API. See `BUG_REPORT_SUSPECTED_ALERTS.md` for details.
+
+### Bug Fixes
+
+#### KeyError in Verbose Logging
+
+Fixed a KeyError when logging resolution details in verbose mode. The code was accessing `resolution['service']` but the payload uses `service_name`.
+
+**Before:**
+```python
+service = resolution['service']  # KeyError
+```
+
+**After:**
+```python
+service = resolution.get('service_name', resolution.get('service', 'unknown'))
+```
+
+---
+
 ## Version 1.3.1
 
 **Release Date**: 2026-01-07

@@ -86,7 +86,7 @@ class TestSmartboxAnomalyDetector:
         return pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         })
@@ -131,7 +131,7 @@ class TestSmartboxAnomalyDetector:
         normal_metrics = {
             MetricName.REQUEST_RATE: 100.0,
             MetricName.APPLICATION_LATENCY: 50.0,
-            MetricName.CLIENT_LATENCY: 20.0,
+            MetricName.DEPENDENCY_LATENCY: 20.0,
             MetricName.DATABASE_LATENCY: 10.0,
             MetricName.ERROR_RATE: 0.01,
         }
@@ -145,7 +145,7 @@ class TestSmartboxAnomalyDetector:
         anomalous_metrics = {
             MetricName.REQUEST_RATE: 10000.0,  # Very high
             MetricName.APPLICATION_LATENCY: 5000.0,  # Very high
-            MetricName.CLIENT_LATENCY: 1000.0,
+            MetricName.DEPENDENCY_LATENCY: 1000.0,
             MetricName.DATABASE_LATENCY: 500.0,
             MetricName.ERROR_RATE: 0.5,  # 50% error rate
         }
@@ -266,7 +266,7 @@ class TestSmartboxAnomalyDetector:
             MetricName.REQUEST_RATE: 10000.0,
             MetricName.APPLICATION_LATENCY: 3000.0,
             MetricName.ERROR_RATE: 0.1,
-            MetricName.CLIENT_LATENCY: 0.0,
+            MetricName.DEPENDENCY_LATENCY: 0.0,
             MetricName.DATABASE_LATENCY: 0.0,
         }
 
@@ -297,7 +297,7 @@ class TestTimeAwareAnomalyDetector:
         data = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         }, index=dates)
@@ -399,8 +399,8 @@ class TestDetectionIntegration:
         request_rate = np.random.lognormal(4, 0.5, n_samples)
         app_latency = np.random.lognormal(3.5, 0.8, n_samples)
 
-        # Client and DB latency often zero
-        client_latency = np.where(
+        # Dependency and DB latency often zero
+        dependency_latency = np.where(
             np.random.random(n_samples) > 0.3,
             np.random.exponential(30, n_samples),
             0
@@ -416,7 +416,7 @@ class TestDetectionIntegration:
         return pd.DataFrame({
             MetricName.REQUEST_RATE: request_rate,
             MetricName.APPLICATION_LATENCY: app_latency,
-            MetricName.CLIENT_LATENCY: client_latency,
+            MetricName.DEPENDENCY_LATENCY: dependency_latency,
             MetricName.DATABASE_LATENCY: db_latency,
             MetricName.ERROR_RATE: error_rate,
         })
@@ -455,7 +455,7 @@ class TestDetectionIntegration:
             assert "anomalies" in anomalous_result
 
     def test_zero_normal_metric_handling(self, training_data):
-        """Test handling of zero-normal metrics like client_latency."""
+        """Test handling of zero-normal metrics like dependency_latency."""
         detector = create_detector("zero-normal-test")
         detector.train(training_data)
 
@@ -463,7 +463,7 @@ class TestDetectionIntegration:
         result = detector.detect({
             MetricName.REQUEST_RATE: 50.0,
             MetricName.APPLICATION_LATENCY: 30.0,
-            MetricName.CLIENT_LATENCY: 0.0,  # Often zero
+            MetricName.DEPENDENCY_LATENCY: 0.0,  # Often zero
             MetricName.DATABASE_LATENCY: 0.0,  # Often zero
             MetricName.ERROR_RATE: 0.005,
         })
@@ -484,7 +484,7 @@ class TestPatternMatching:
         data = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         })
@@ -583,7 +583,7 @@ class TestSignalsToLevels:
         data = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(20, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(20, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         })
@@ -660,9 +660,9 @@ class TestSignalsToLevels:
         levels = trained_detector._signals_to_levels(signals, {})
         assert levels["database_latency"] == "normal"  # Not "low"
 
-        # client_latency is lower_is_better - low should become normal
+        # dependency_latency is lower_is_better - low should become normal
         signals = [AnomalySignal(
-            metric_name="client_latency",
+            metric_name="dependency_latency",
             score=-0.2,
             direction="low",
             value=5.0,
@@ -670,7 +670,7 @@ class TestSignalsToLevels:
             deviation_sigma=-2.5,
         )]
         levels = trained_detector._signals_to_levels(signals, {})
-        assert levels["client_latency"] == "normal"
+        assert levels["dependency_latency"] == "normal"
 
         # error_rate is lower_is_better - low should become normal
         signals = [AnomalySignal(
@@ -720,7 +720,7 @@ class TestSignalsToLevels:
         assert levels.get("application_latency") == "normal"
         assert levels.get("error_rate") == "normal"
         assert levels.get("database_latency") == "normal"
-        assert levels.get("client_latency") == "normal"
+        assert levels.get("dependency_latency") == "normal"
 
 
 class TestLowerIsBetterMetrics:
@@ -731,7 +731,7 @@ class TestLowerIsBetterMetrics:
         lower_is_better = MetricName.lower_is_better_metrics()
 
         assert MetricName.DATABASE_LATENCY in lower_is_better
-        assert MetricName.CLIENT_LATENCY in lower_is_better
+        assert MetricName.DEPENDENCY_LATENCY in lower_is_better
         assert MetricName.ERROR_RATE in lower_is_better
 
         # application_latency should NOT be in lower_is_better
@@ -753,7 +753,7 @@ class TestImprovementSignalFiltering:
         data = pd.DataFrame({
             MetricName.REQUEST_RATE: np.random.exponential(100, n_samples),
             MetricName.APPLICATION_LATENCY: np.random.exponential(50, n_samples),
-            MetricName.CLIENT_LATENCY: np.random.exponential(30, n_samples),
+            MetricName.DEPENDENCY_LATENCY: np.random.exponential(30, n_samples),
             MetricName.DATABASE_LATENCY: np.random.exponential(10, n_samples),
             MetricName.ERROR_RATE: np.random.beta(1, 100, n_samples),
         })
@@ -762,14 +762,14 @@ class TestImprovementSignalFiltering:
         detector.train(data)
         return detector
 
-    def test_client_latency_improvement_produces_no_anomaly(self, trained_detector):
-        """Test that improved client latency (below mean) produces no anomaly."""
+    def test_dependency_latency_improvement_produces_no_anomaly(self, trained_detector):
+        """Test that improved dependency latency (below mean) produces no anomaly."""
         from smartbox_anomaly.detection.detector import AnomalySignal
         from datetime import datetime
 
-        # Simulate only client_latency being low (an improvement)
+        # Simulate only dependency_latency being low (an improvement)
         signals = [AnomalySignal(
-            metric_name="client_latency",
+            metric_name="dependency_latency",
             score=-0.3,
             direction="low",
             value=20.0,  # Below mean of ~50ms
@@ -779,7 +779,7 @@ class TestImprovementSignalFiltering:
 
         result = trained_detector._interpret_signals(
             signals,
-            {"client_latency": 20.0, "application_latency": 100.0},
+            {"dependency_latency": 20.0, "application_latency": 100.0},
             datetime.now()
         )
 
@@ -813,10 +813,10 @@ class TestImprovementSignalFiltering:
         from smartbox_anomaly.detection.detector import AnomalySignal
         from datetime import datetime
 
-        # Mix of improvement (client_latency low) and degradation (application_latency high)
+        # Mix of improvement (dependency_latency low) and degradation (application_latency high)
         signals = [
             AnomalySignal(
-                metric_name="client_latency",
+                metric_name="dependency_latency",
                 score=-0.2,
                 direction="low",
                 value=15.0,
@@ -836,7 +836,7 @@ class TestImprovementSignalFiltering:
         result = trained_detector._interpret_signals(
             signals,
             {
-                "client_latency": 15.0,
+                "dependency_latency": 15.0,
                 "application_latency": 500.0,
                 "request_rate": 100.0,
                 "error_rate": 0.01,

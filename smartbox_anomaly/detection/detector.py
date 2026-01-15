@@ -296,13 +296,13 @@ class SmartboxAnomalyDetector:
     CORE_METRICS: list[str] = [
         MetricName.REQUEST_RATE,
         MetricName.APPLICATION_LATENCY,
-        MetricName.CLIENT_LATENCY,
+        MetricName.DEPENDENCY_LATENCY,
         MetricName.DATABASE_LATENCY,
         MetricName.ERROR_RATE,
     ]
 
     ZERO_NORMAL_METRICS: list[str] = [
-        MetricName.CLIENT_LATENCY,
+        MetricName.DEPENDENCY_LATENCY,
         MetricName.DATABASE_LATENCY,
     ]
 
@@ -761,7 +761,7 @@ class SmartboxAnomalyDetector:
         Levels tell us HOW they're anomalous (high/low/normal).
 
         Applies semantic interpretation:
-        - "Lower is better" metrics (database_latency, client_latency, error_rate):
+        - "Lower is better" metrics (database_latency, dependency_latency, error_rate):
           Low values are treated as "normal" since they represent improvements.
         """
         levels: dict[str, str] = {}
@@ -916,6 +916,39 @@ class SmartboxAnomalyDetector:
             })
         return path
 
+    def _build_cascade_name(
+        self,
+        base_name: str,
+        cascade_analysis: CascadeAnalysis | None,
+        confidence_threshold: float = 0.8,
+    ) -> str:
+        """Enhance pattern name with root cause service when confidence is high.
+
+        When cascade analysis identifies a root cause with high confidence,
+        appends the service name to make the alert more actionable.
+
+        Args:
+            base_name: Original pattern name (e.g., "dependency_latency_cascade")
+            cascade_analysis: Cascade analysis result, may be None
+            confidence_threshold: Minimum confidence to include root cause (default: 0.8)
+
+        Returns:
+            Enhanced name like "dependency_latency_cascade:titan" or original name
+        """
+        if not cascade_analysis:
+            return base_name
+
+        if not cascade_analysis.is_cascade:
+            return base_name
+
+        confidence = cascade_analysis.confidence
+        root_service = cascade_analysis.root_cause_service
+
+        if confidence >= confidence_threshold and root_service:
+            return f"{base_name}:{root_service}"
+
+        return base_name
+
     def _build_interpreted_anomaly(
         self,
         pattern: Any,  # PatternDefinition
@@ -933,11 +966,13 @@ class SmartboxAnomalyDetector:
         worst_score = min(s.score for s in signals)
 
         # Severity from pattern, but can be escalated by IF score
+        # Exception: patterns with severity_locked=True cannot be escalated
         severity = pattern.severity
-        if worst_score < -0.6 and severity != "critical":
-            severity = "critical"
-        elif worst_score < -0.3 and severity == "low":
-            severity = "medium"
+        if not getattr(pattern, "severity_locked", False):
+            if worst_score < -0.6 and severity != "critical":
+                severity = "critical"
+            elif worst_score < -0.3 and severity == "low":
+                severity = "medium"
 
         # Calculate confidence based on signal agreement
         signal_count = len(signals)
@@ -948,7 +983,7 @@ class SmartboxAnomalyDetector:
         ratios = self._calculate_metric_ratios(metrics)
         format_values = {
             **metrics,
-            "client_latency_ratio": ratios.get("client_latency_ratio", 0),
+            "dependency_latency_ratio": ratios.get("dependency_latency_ratio", 0),
             "db_latency_ratio": ratios.get("db_latency_ratio", 0),
             "expected_rate": self.training_statistics.get(
                 MetricName.REQUEST_RATE, TrainingStatistics(
@@ -976,7 +1011,7 @@ class SmartboxAnomalyDetector:
 
         # Determine root metric from signals
         priority = ["application_latency", "error_rate", "request_rate",
-                   "database_latency", "client_latency"]
+                   "database_latency", "dependency_latency"]
         root_metric = None
         for metric in priority:
             if any(s.metric_name == metric for s in signals):
@@ -1017,8 +1052,11 @@ class SmartboxAnomalyDetector:
             except KeyError:
                 pass  # Keep original interpretation if formatting fails
 
+        # Build anomaly key - may include root cause service for cascades
+        anomaly_key = self._build_cascade_name(pattern.name, cascade_analysis)
+
         result = {
-            pattern.name: {
+            anomaly_key: {
                 "type": "consolidated",
                 "root_metric": root_metric,
                 "severity": severity,
@@ -1027,7 +1065,7 @@ class SmartboxAnomalyDetector:
                 "signal_count": len(detection_signals),
                 "description": description,
                 "interpretation": interpretation,
-                "pattern_name": pattern.name,
+                "pattern_name": pattern.name,  # Base pattern name (for lookup/matching)
                 "value": value,
                 "detection_method": "isolation_forest + pattern_interpretation",
                 "detection_signals": detection_signals,
@@ -1039,7 +1077,7 @@ class SmartboxAnomalyDetector:
 
         # Add cascade analysis if present
         if cascade_analysis:
-            result[pattern.name]["cascade_analysis"] = cascade_analysis.to_dict()
+            result[anomaly_key]["cascade_analysis"] = cascade_analysis.to_dict()
 
         return result
 
@@ -1065,7 +1103,7 @@ class SmartboxAnomalyDetector:
 
         # Determine root metric from signals
         priority = ["application_latency", "error_rate", "request_rate",
-                   "database_latency", "client_latency"]
+                   "database_latency", "dependency_latency"]
         root_metric = None
         for metric in priority:
             if any(s.metric_name == metric for s in signals):
@@ -1120,15 +1158,27 @@ class SmartboxAnomalyDetector:
                 "percentile": signal.percentile,
             })
 
-        # Generate anomaly name based on root metric
+        # Generate anomaly name based on root metric and direction
+        # Format: {metric}_{direction} e.g., "dependency_latency_high"
+        # For cascades with high confidence, append root cause service
+        direction = primary.direction if primary else "anomaly"
         if root_metric == "application_latency":
-            anomaly_name = "latency_anomaly"
+            base_name = f"application_latency_{direction}"
+        elif root_metric == "dependency_latency":
+            base_name = f"dependency_latency_{direction}"
+        elif root_metric == "database_latency":
+            base_name = f"database_latency_{direction}"
         elif root_metric == "error_rate":
-            anomaly_name = "error_rate_anomaly"
+            base_name = f"error_rate_{direction}"
         elif root_metric == "request_rate":
-            anomaly_name = "traffic_anomaly"
+            base_name = f"request_rate_{direction}"
+        elif root_metric:
+            base_name = f"{root_metric}_{direction}"
         else:
-            anomaly_name = f"{root_metric}_anomaly" if root_metric else "unknown_anomaly"
+            base_name = f"metric_{direction}"
+
+        # Enhance name with cascade root cause if applicable
+        anomaly_name = self._build_cascade_name(base_name, cascade_analysis)
 
         result = {
             anomaly_name: {
@@ -1139,14 +1189,15 @@ class SmartboxAnomalyDetector:
                 "score": primary.score,
                 "signal_count": len(detection_signals),
                 "description": (
-                    f"Unusual behavior detected: {'; '.join(signal_descriptions[:2])}"
+                    f"[{self.service_name}] Unusual behavior detected: {'; '.join(signal_descriptions[:2])}"
                     + (f" (+{len(signal_descriptions) - 2} more)" if len(signal_descriptions) > 2 else "")
                 ),
                 "interpretation": (
-                    "Isolation Forest detected anomalous behavior that doesn't match "
+                    f"Isolation Forest detected anomalous behavior in {self.service_name} that doesn't match "
                     "any known pattern. This may be a novel issue requiring investigation. "
                     "Consider adding a new pattern if this recurs."
                 ),
+                "pattern_name": base_name,  # Base pattern name (without cascade suffix)
                 "detection_method": "isolation_forest",
                 "value": primary.value,
                 "direction": primary.direction,
@@ -2216,11 +2267,11 @@ class SmartboxAnomalyDetector:
     def _calculate_metric_ratios(self, metrics: dict[str, float]) -> dict[str, float]:
         """Calculate important metric ratios for pattern detection."""
         app_latency = metrics.get(MetricName.APPLICATION_LATENCY, 0)
-        client_latency = metrics.get(MetricName.CLIENT_LATENCY, 0)
+        dependency_latency = metrics.get(MetricName.DEPENDENCY_LATENCY, 0)
         db_latency = metrics.get(MetricName.DATABASE_LATENCY, 0)
 
         return {
-            "client_latency_ratio": client_latency / (app_latency + 1e-8) if app_latency > 0 else 0,
+            "dependency_latency_ratio": dependency_latency / (app_latency + 1e-8) if app_latency > 0 else 0,
             "db_latency_ratio": db_latency / (app_latency + 1e-8) if app_latency > 0 else 0,
         }
 
@@ -2325,7 +2376,7 @@ class SmartboxAnomalyDetector:
             MetricName.APPLICATION_LATENCY: "high - impacts user satisfaction",
             MetricName.REQUEST_RATE: "high - indicates service utilization",
             MetricName.DATABASE_LATENCY: "medium - affects backend performance",
-            MetricName.CLIENT_LATENCY: "medium - affects service interactions",
+            MetricName.DEPENDENCY_LATENCY: "medium - affects service interactions",
         }
 
         for metric_name, stats in self.training_statistics.items():
@@ -2481,14 +2532,14 @@ class SmartboxAnomalyDetector:
 
         # Add contextual recommendations based on ratios
         app_latency = metrics.get(MetricName.APPLICATION_LATENCY, 0)
-        client_latency = metrics.get(MetricName.CLIENT_LATENCY, 0)
+        dependency_latency = metrics.get(MetricName.DEPENDENCY_LATENCY, 0)
         db_latency = metrics.get(MetricName.DATABASE_LATENCY, 0)
 
         if app_latency > 0:
-            client_ratio = client_latency / app_latency
+            dependency_ratio = dependency_latency / app_latency
             db_ratio = db_latency / app_latency
 
-            if client_ratio > 0.6:
+            if dependency_ratio > 0.6:
                 recommendations.append(
                     "FOCUS: External dependency is primary bottleneck - investigate third-party status"
                 )

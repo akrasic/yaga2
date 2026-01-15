@@ -1,0 +1,3305 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Yaga2 Anomaly Detection Guide</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Comprehensive guide to anomaly detection, SLO evaluation, and incident management">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "ayu";
+            window.path_to_searchindex_js = "searchindex-25c2ddb6.js";
+        </script>
+
+        <!-- Custom JS scripts for mdbook-pdf PDF generation -->
+        <script type='text/javascript'>
+            let markAllContentHasLoadedForPrinting = () =>
+                window.setTimeout(
+                    () => {
+                        let p = document.createElement('div');
+                        p.setAttribute('id', 'content-has-all-loaded-for-mdbook-pdf-generation');
+                        document.body.appendChild(p);
+                    }, 100
+                );
+
+            window.addEventListener('load', () => {
+                // Expand all the <details> elements for printing.
+                r = document.getElementsByTagName('details');
+                for (let i of r)
+                    i.open = true;
+
+                try {
+                    MathJax.Hub.Register.StartupHook('End', markAllContentHasLoadedForPrinting);
+                } catch (e) {
+                    markAllContentHasLoadedForPrinting();
+                }
+            });
+        </script>
+    <div style="display: none"><a href="#introduction">introduction</a><a href="#overview">overview</a><a href="#detection-index">detection-index</a><a href="#detection-isolation-forest">detection-isolation-forest</a><a href="#detection-pattern-matching">detection-pattern-matching</a><a href="#detection-pipeline">detection-pipeline</a><a href="#slo-index">slo-index</a><a href="#slo-latency">slo-latency</a><a href="#slo-error-rate">slo-error-rate</a><a href="#slo-database-latency">slo-database-latency</a><a href="#slo-request-rate">slo-request-rate</a><a href="#slo-severity-adjustment">slo-severity-adjustment</a><a href="#incidents-index">incidents-index</a><a href="#incidents-state-machine">incidents-state-machine</a><a href="#incidents-confirmation">incidents-confirmation</a><a href="#incidents-fingerprinting">incidents-fingerprinting</a><a href="#reference-decision-matrix">reference-decision-matrix</a><a href="#reference-configuration">reference-configuration</a><a href="#reference-api-payload">reference-api-payload</a><a href="#reference-troubleshooting">reference-troubleshooting</a></div>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-e4c30426.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Yaga2 Anomaly Detection Guide</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/smartbox/yaga2" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="yaga2-anomaly-detection-guide"><a class="header" href="#yaga2-anomaly-detection-guide">Yaga2 Anomaly Detection Guide</a></h1>
+<p>Welcome to the comprehensive guide for the Yaga2 Anomaly Detection system. This documentation covers how anomalies are detected, evaluated against SLOs, and managed through their incident lifecycle.</p>
+<h2 id="what-is-yaga2"><a class="header" href="#what-is-yaga2">What is Yaga2?</a></h2>
+<p>Yaga2 is an ML-based anomaly detection system for Smartbox services. It:</p>
+<ul>
+<li><strong>Detects</strong> statistical anomalies using Isolation Forest and pattern matching</li>
+<li><strong>Evaluates</strong> anomalies against operational SLO thresholds</li>
+<li><strong>Adjusts</strong> severity based on business impact</li>
+<li><strong>Manages</strong> incident lifecycle with confirmation and grace periods</li>
+</ul>
+<h2 id="key-concepts"><a class="header" href="#key-concepts">Key Concepts</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Concept</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Anomaly</strong></td><td>A statistically unusual metric pattern detected by ML</td></tr>
+<tr><td><strong>SLO Evaluation</strong></td><td>Comparing metrics against operational thresholds</td></tr>
+<tr><td><strong>Severity</strong></td><td>Alert priority: <code>low</code>, <code>medium</code>, <code>high</code>, <code>critical</code></td></tr>
+<tr><td><strong>Incident</strong></td><td>A confirmed anomaly requiring attention</td></tr>
+<tr><td><strong>Fingerprint</strong></td><td>Unique identifier for an anomaly pattern</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="pipeline-flow"><a class="header" href="#pipeline-flow">Pipeline Flow</a></h2>
+<pre><code>┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Metrics    │───▶│  Detection  │───▶│    SLO      │───▶│  Incident   │
+│ Collection  │    │  (ML+Rules) │    │ Evaluation  │    │  Lifecycle  │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                          │                  │                  │
+                          ▼                  ▼                  ▼
+                    "Is this unusual?"  "Does it matter?"  "Should we alert?"
+</code></pre>
+<h2 id="quick-reference"><a class="header" href="#quick-reference">Quick Reference</a></h2>
+<p><strong>When does an alert fire?</strong></p>
+<ol>
+<li>ML detects anomaly → Pattern interprets it → Anomaly created as <code>SUSPECTED</code></li>
+<li>Anomaly persists for 2+ cycles → Status becomes <code>OPEN</code> → <strong>Alert sent</strong></li>
+<li>SLO evaluation adjusts severity based on operational impact</li>
+</ol>
+<p><strong>When does an incident resolve?</strong></p>
+<ol>
+<li>Anomaly not detected → Status becomes <code>RECOVERING</code></li>
+<li>Not detected for 3 cycles → Status becomes <code>CLOSED</code> → <strong>Resolution sent</strong></li>
+</ol>
+<h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
+<ul>
+<li><a href="#system-overview">Overview</a> - High-level system architecture</li>
+<li><a href="detection/README.html">Detection Layer</a> - How anomalies are detected</li>
+<li><a href="slo/README.html">SLO Evaluation</a> - How severity is adjusted</li>
+<li><a href="incidents/README.html">Incident Lifecycle</a> - How alerts are managed</li>
+<li><a href="#decision-matrix">Decision Matrix</a> - Complete reference table</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="system-overview"><a class="header" href="#system-overview">System Overview</a></h1>
+<p>The Yaga2 anomaly detection system processes metrics through multiple layers to produce actionable alerts.</p>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────────┐
+│                         Inference Pipeline                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐                                                        │
+│  │ Victoria     │                                                        │
+│  │ Metrics      │──┐                                                     │
+│  └──────────────┘  │                                                     │
+│                    ▼                                                     │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                    Detection Layer                               │    │
+│  │  ┌─────────────────┐    ┌─────────────────┐                     │    │
+│  │  │ Isolation Forest│───▶│ Pattern Matching │                     │    │
+│  │  │ (ML Anomaly)    │    │ (Interpretation) │                     │    │
+│  │  └─────────────────┘    └─────────────────┘                     │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                    │                                                     │
+│                    ▼                                                     │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                    SLO Evaluation Layer                          │    │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────────┐            │    │
+│  │  │ Latency │ │ Errors  │ │ DB Lat  │ │ Request Rate│            │    │
+│  │  └────┬────┘ └────┬────┘ └────┬────┘ └──────┬──────┘            │    │
+│  │       └───────────┴───────────┴─────────────┘                    │    │
+│  │                         │                                         │    │
+│  │                         ▼                                         │    │
+│  │              ┌─────────────────────┐                             │    │
+│  │              │ Severity Adjustment │                             │    │
+│  │              └─────────────────────┘                             │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                    │                                                     │
+│                    ▼                                                     │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                    Incident Lifecycle                            │    │
+│  │                                                                   │    │
+│  │  SUSPECTED ──▶ OPEN ──▶ RECOVERING ──▶ CLOSED                   │    │
+│  │      │          │           │             │                      │    │
+│  │   (wait)    (alert)     (grace)      (resolve)                  │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="metrics-collected"><a class="header" href="#metrics-collected">Metrics Collected</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Description</th><th>Unit</th></tr>
+</thead>
+<tbody>
+<tr><td><code>request_rate</code></td><td>Incoming requests per second</td><td>req/s</td></tr>
+<tr><td><code>application_latency</code></td><td>Server-side processing time</td><td>ms</td></tr>
+<tr><td><code>client_latency</code></td><td>External dependency call time</td><td>ms</td></tr>
+<tr><td><code>database_latency</code></td><td>Database query time</td><td>ms</td></tr>
+<tr><td><code>error_rate</code></td><td>Percentage of failed requests</td><td>ratio (0-1)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="time-aware-detection"><a class="header" href="#time-aware-detection">Time-Aware Detection</a></h2>
+<p>The system uses <strong>time-aware models</strong> trained separately for each behavioral period:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Period</th><th>Hours</th><th>Days</th></tr>
+</thead>
+<tbody>
+<tr><td><code>business_hours</code></td><td>08:00 - 18:00</td><td>Mon-Fri</td></tr>
+<tr><td><code>evening_hours</code></td><td>18:00 - 22:00</td><td>Mon-Fri</td></tr>
+<tr><td><code>night_hours</code></td><td>22:00 - 06:00</td><td>Mon-Fri</td></tr>
+<tr><td><code>weekend_day</code></td><td>08:00 - 22:00</td><td>Sat-Sun</td></tr>
+<tr><td><code>weekend_night</code></td><td>22:00 - 08:00</td><td>Sat-Sun</td></tr>
+</tbody>
+</table>
+</div>
+<p>This prevents false positives from expected behavioral differences (e.g., low traffic at 3 AM is normal).</p>
+<h2 id="two-pass-detection"><a class="header" href="#two-pass-detection">Two-Pass Detection</a></h2>
+<p>For accurate cascade analysis, detection runs in two passes:</p>
+<ol>
+<li><strong>Pass 1</strong>: Detect anomalies for all services (no dependency context)</li>
+<li><strong>Pass 2</strong>: Re-analyze latency anomalies with dependency context</li>
+</ol>
+<p>This enables identifying root cause services in dependency chains.</p>
+<h2 id="output"><a class="header" href="#output">Output</a></h2>
+<p>Each inference run produces:</p>
+<ul>
+<li><strong>Anomaly alerts</strong> for services with detected issues</li>
+<li><strong>Resolution notifications</strong> for incidents that cleared</li>
+<li><strong>Enrichment data</strong> (exceptions, service graph) when available</li>
+</ul>
+<p>See <a href="#api-payload-reference">API Payload</a> for the complete output format.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="detection-layer"><a class="header" href="#detection-layer">Detection Layer</a></h1>
+<p>The detection layer identifies anomalies using a <strong>sequential pipeline</strong> where ML detection triggers pattern interpretation.</p>
+<h2 id="pipeline-flow-1"><a class="header" href="#pipeline-flow-1">Pipeline Flow</a></h2>
+<pre><code>Current Metrics
+      │
+      ▼
+┌─────────────────────────────────────┐
+│   Phase 1: Isolation Forest (IF)    │
+│   - Per-metric anomaly scoring      │
+│   - Multivariate relationship check │
+│                                     │
+│   Output: List of AnomalySignals    │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────┐
+│   Phase 2: Pattern Interpretation   │
+│   - Convert signals to levels       │
+│   - Match against named patterns    │
+│   - Build interpreted anomaly       │
+└──────────────────┬──────────────────┘
+                   │
+                   ▼
+           Single Alert
+     (with pattern interpretation)
+</code></pre>
+<h2 id="key-concepts-1"><a class="header" href="#key-concepts-1">Key Concepts</a></h2>
+<h3 id="anomaly-signal"><a class="header" href="#anomaly-signal">Anomaly Signal</a></h3>
+<p>When IF detects an anomaly, it produces a signal:</p>
+<pre><code class="language-json">{
+  "metric": "application_latency",
+  "score": -0.35,
+  "direction": "high",
+  "percentile": 92.0
+}
+</code></pre>
+<h3 id="metric-levels"><a class="header" href="#metric-levels">Metric Levels</a></h3>
+<p>Signals are converted to semantic levels for pattern matching:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Percentile</th><th>Level</th></tr>
+</thead>
+<tbody>
+<tr><td>&gt; 95</td><td><code>very_high</code></td></tr>
+<tr><td>90 - 95</td><td><code>high</code></td></tr>
+<tr><td>80 - 90</td><td><code>elevated</code></td></tr>
+<tr><td>70 - 80</td><td><code>moderate</code></td></tr>
+<tr><td>10 - 70</td><td><code>normal</code></td></tr>
+<tr><td>5 - 10</td><td><code>low</code></td></tr>
+<tr><td>&lt; 5</td><td><code>very_low</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="lower-is-better-metrics"><a class="header" href="#lower-is-better-metrics">Lower-is-Better Metrics</a></h3>
+<p>Some metrics treat low values as improvements, not anomalies:</p>
+<ul>
+<li><code>database_latency</code> - Faster queries are good</li>
+<li><code>client_latency</code> - Faster dependencies are good</li>
+<li><code>error_rate</code> - Fewer errors are good</li>
+</ul>
+<p>For these metrics, when IF flags them as “low”, they are treated as <code>normal</code>.</p>
+<h2 id="detection-methods"><a class="header" href="#detection-methods">Detection Methods</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Type</th><th>Best For</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="#isolation-forest-ml-detection">Isolation Forest</a></td><td>ML</td><td>Novel/unknown anomalies</td></tr>
+<tr><td><a href="#pattern-matching">Pattern Matching</a></td><td>Rule-based</td><td>Known operational scenarios</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
+<ul>
+<li><a href="#isolation-forest-ml-detection">Isolation Forest (ML)</a> - How ML detection works</li>
+<li><a href="#pattern-matching">Pattern Matching</a> - Named patterns and interpretations</li>
+<li><a href="#detection-pipeline">Detection Pipeline</a> - End-to-end detection flow</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="isolation-forest-ml-detection"><a class="header" href="#isolation-forest-ml-detection">Isolation Forest (ML Detection)</a></h1>
+<p>Isolation Forest is an unsupervised machine learning algorithm that detects anomalies by measuring how easy it is to “isolate” a data point.</p>
+<h2 id="core-insight"><a class="header" href="#core-insight">Core Insight</a></h2>
+<p><strong>Anomalies are easier to isolate than normal points.</strong></p>
+<pre><code>Normal data (hard to isolate):     Anomaly (easy to isolate):
+        ┌─────┐                          ┌─────┐
+        │  ●  │ ← buried deep            │     │
+        │ ●●● │   in cluster             │  ●  │ ← isolated
+        │●●●●●│                          │     │   in 1-2 splits
+        │ ●●● │                          └─────┘
+        └─────┘
+</code></pre>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<ol>
+<li>
+<p><strong>Random Partitioning</strong>: Build random decision trees by:</p>
+<ul>
+<li>Randomly selecting a feature (metric)</li>
+<li>Randomly selecting a split value</li>
+<li>Recursively partitioning data</li>
+</ul>
+</li>
+<li>
+<p><strong>Path Length</strong>: Count splits needed to isolate each point:</p>
+<ul>
+<li><strong>Short path</strong> = Easy to isolate = <strong>Anomaly</strong></li>
+<li><strong>Long path</strong> = Hard to isolate = <strong>Normal</strong></li>
+</ul>
+</li>
+<li>
+<p><strong>Anomaly Score</strong>: Average path length produces a score:</p>
+<ul>
+<li>Score &lt; 0 = Anomalous (more negative = more anomalous)</li>
+<li>Score &gt; 0 = Normal</li>
+</ul>
+</li>
+</ol>
+<h2 id="model-types"><a class="header" href="#model-types">Model Types</a></h2>
+<h3 id="univariate-models"><a class="header" href="#univariate-models">Univariate Models</a></h3>
+<p>Separate model for each metric:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Model</th><th>Detects</th></tr>
+</thead>
+<tbody>
+<tr><td><code>request_rate_isolation</code></td><td>Traffic anomalies</td></tr>
+<tr><td><code>application_latency_isolation</code></td><td>Response time issues</td></tr>
+<tr><td><code>error_rate_isolation</code></td><td>Error spikes</td></tr>
+<tr><td><code>client_latency_isolation</code></td><td>Dependency slowness</td></tr>
+<tr><td><code>database_latency_isolation</code></td><td>Database issues</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="multivariate-model"><a class="header" href="#multivariate-model">Multivariate Model</a></h3>
+<p>One model considering all metrics together. Detects unusual <strong>combinations</strong>:</p>
+<pre><code>Example: Normal individually, anomalous together
+{
+  "request_rate": 500,        // Normal
+  "application_latency": 50,  // Normal (fast!)
+  "error_rate": 0.30          // High
+}
+// Fast responses + high errors = fast-fail pattern
+</code></pre>
+<h2 id="severity-thresholds"><a class="header" href="#severity-thresholds">Severity Thresholds</a></h2>
+<p>Scores map to severity levels (calibrated per model):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Severity</th><th>Percentile</th><th>Fallback Score</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Critical</strong></td><td>Bottom 0.1%</td><td>&lt; -0.6</td></tr>
+<tr><td><strong>High</strong></td><td>Bottom 1%</td><td>-0.6 to -0.3</td></tr>
+<tr><td><strong>Medium</strong></td><td>Bottom 5%</td><td>-0.3 to -0.1</td></tr>
+<tr><td><strong>Low</strong></td><td>Bottom 10%</td><td>&gt;= -0.1</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="training"><a class="header" href="#training">Training</a></h2>
+<p>Models are trained on 30 days of historical data with:</p>
+<ul>
+<li><strong>Temporal split</strong>: 80% train, 20% validation (chronological)</li>
+<li><strong>Minimum samples</strong>: 500 univariate, 1000 multivariate</li>
+<li><strong>Contamination</strong>: Estimated from data distribution</li>
+</ul>
+<h2 id="strengths"><a class="header" href="#strengths">Strengths</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Strength</th><th>Why It Matters</th></tr>
+</thead>
+<tbody>
+<tr><td>Unsupervised</td><td>No labeled “anomaly” data required</td></tr>
+<tr><td>Fast</td><td>Linear time complexity</td></tr>
+<tr><td>Robust</td><td>Works with skewed distributions</td></tr>
+<tr><td>Multivariate</td><td>Detects unusual combinations</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Limitation</th><th>Mitigation</th></tr>
+</thead>
+<tbody>
+<tr><td>No semantic understanding</td><td>Pattern matching adds context</td></tr>
+<tr><td>Context-blind</td><td>Time-aware models help</td></tr>
+<tr><td>False positives</td><td>SLO evaluation filters noise</td></tr>
+<tr><td>Training data quality</td><td>Data quality checks</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="pattern-matching"><a class="header" href="#pattern-matching">Pattern Matching</a></h1>
+<p>Pattern matching interprets ML signals by comparing metric levels against known operational scenarios.</p>
+<h2 id="how-it-works-1"><a class="header" href="#how-it-works-1">How It Works</a></h2>
+<ol>
+<li><strong>Level Classification</strong>: Each metric is classified based on IF signals</li>
+<li><strong>Pattern Matching</strong>: Current levels are compared against defined patterns</li>
+<li><strong>Interpretation</strong>: Matched patterns provide context and recommendations</li>
+</ol>
+<h2 id="named-patterns"><a class="header" href="#named-patterns">Named Patterns</a></h2>
+<h3 id="traffic-patterns"><a class="header" href="#traffic-patterns">Traffic Patterns</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>traffic_surge_healthy</code></td><td>high traffic, normal latency/errors</td><td>low</td><td>Handling load well</td></tr>
+<tr><td><code>traffic_surge_degrading</code></td><td>high traffic, high latency, normal errors</td><td>high</td><td>Approaching capacity</td></tr>
+<tr><td><code>traffic_surge_failing</code></td><td>high traffic, high latency, high errors</td><td>critical</td><td>Beyond capacity</td></tr>
+<tr><td><code>traffic_cliff</code></td><td>very low traffic (sudden drop)</td><td>critical</td><td>May be unreachable</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="error-patterns"><a class="header" href="#error-patterns">Error Patterns</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>error_rate_elevated</code></td><td>normal traffic/latency, high errors</td><td>high</td><td>Specific operation failing</td></tr>
+<tr><td><code>error_rate_critical</code></td><td>normal traffic/latency, very high errors</td><td>critical</td><td>Significant failures</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="latency-patterns"><a class="header" href="#latency-patterns">Latency Patterns</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>latency_spike_recent</code></td><td>normal traffic, high latency, normal errors</td><td>high</td><td>Recent change caused slowdown</td></tr>
+<tr><td><code>latency_elevated</code></td><td>high latency above threshold</td><td>high</td><td>Response time degraded</td></tr>
+<tr><td><code>internal_latency_issue</code></td><td>high app latency, healthy deps</td><td>high</td><td>Internal problem</td></tr>
+<tr><td><code>database_degradation</code></td><td>high DB latency, normal app latency</td><td>medium</td><td>DB slow but compensating</td></tr>
+<tr><td><code>database_bottleneck</code></td><td>high DB latency, DB &gt;70% of total</td><td>high</td><td>DB is constraint</td></tr>
+<tr><td><code>downstream_cascade</code></td><td>high client latency, &gt;60% of total</td><td>high</td><td>External dependency issue</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="fast-fail-patterns"><a class="header" href="#fast-fail-patterns">Fast-Fail Patterns</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fast_rejection</code></td><td>very low latency, very high errors</td><td>critical</td><td>Rejected before processing</td></tr>
+<tr><td><code>fast_failure</code></td><td>low latency, high errors</td><td>critical</td><td>Quick failures</td></tr>
+<tr><td><code>partial_rejection</code></td><td>low latency, moderate errors</td><td>high</td><td>Some requests rejected</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="cascade-patterns"><a class="header" href="#cascade-patterns">Cascade Patterns</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>upstream_cascade</code></td><td>high latency + upstream anomaly</td><td>high</td><td>Root cause upstream</td></tr>
+<tr><td><code>dependency_chain_degradation</code></td><td>high latency + multiple deps affected</td><td>high</td><td>Chain degraded</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="pattern-definition-example"><a class="header" href="#pattern-definition-example">Pattern Definition Example</a></h2>
+<pre><code class="language-python">"traffic_surge_failing": PatternDefinition(
+    name="traffic_surge_failing",
+    conditions={
+        "request_rate": "high",
+        "application_latency": "high",
+        "error_rate": "high",
+    },
+    severity="critical",
+    message_template=(
+        "Traffic surge overwhelming service: {request_rate:.1f} req/s "
+        "with {application_latency:.0f}ms latency and {error_rate:.2%} errors"
+    ),
+    interpretation=(
+        "Service at or beyond capacity. "
+        "Both latency and errors elevated indicates system cannot handle load."
+    ),
+    recommended_actions=[
+        "IMMEDIATE: Scale horizontally or enable rate limiting",
+        "INVESTIGATE: Confirm this is legitimate traffic",
+        "PREPARE: Have rollback ready",
+    ],
+)
+</code></pre>
+<h2 id="detection-output"><a class="header" href="#detection-output">Detection Output</a></h2>
+<p>When a pattern matches:</p>
+<pre><code class="language-json">{
+  "traffic_surge_degrading": {
+    "type": "multivariate_pattern",
+    "pattern_name": "traffic_surge_degrading",
+    "severity": "high",
+    "score": -0.5,
+    "description": "Traffic surge causing slowdown: 850 req/s driving latency to 450ms",
+    "interpretation": "Service slowing under load - approaching capacity",
+    "detection_method": "named_pattern_matching",
+    "recommended_actions": [
+      "IMMEDIATE: Scale horizontally if possible",
+      "CHECK: Resource bottlenecks",
+      "MONITOR: Error rate for impending failure"
+    ],
+    "metric_levels": {
+      "request_rate": "high",
+      "application_latency": "high",
+      "error_rate": "normal"
+    }
+  }
+}
+</code></pre>
+<h2 id="adding-new-patterns"><a class="header" href="#adding-new-patterns">Adding New Patterns</a></h2>
+<p>Edit <code>smartbox_anomaly/detection/interpretations.py</code>:</p>
+<pre><code class="language-python">MULTIVARIATE_PATTERNS["my_new_pattern"] = PatternDefinition(
+    name="my_new_pattern",
+    conditions={
+        "request_rate": "normal",
+        "application_latency": "high",
+        "error_rate": "low",
+    },
+    severity="medium",
+    message_template="Description with {metrics}",
+    interpretation="What this means...",
+    recommended_actions=["Action 1", "Action 2"],
+)
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="detection-pipeline"><a class="header" href="#detection-pipeline">Detection Pipeline</a></h1>
+<p>The complete detection pipeline from metrics collection to anomaly output.</p>
+<h2 id="pipeline-phases"><a class="header" href="#pipeline-phases">Pipeline Phases</a></h2>
+<h3 id="phase-1-metrics-collection"><a class="header" href="#phase-1-metrics-collection">Phase 1: Metrics Collection</a></h3>
+<pre><code>VictoriaMetrics
+      │
+      ▼
+┌─────────────────────────────┐
+│ Collect 5 core metrics      │
+│ - request_rate              │
+│ - application_latency       │
+│ - client_latency           │
+│ - database_latency         │
+│ - error_rate               │
+└─────────────────────────────┘
+</code></pre>
+<h3 id="phase-2-input-validation"><a class="header" href="#phase-2-input-validation">Phase 2: Input Validation</a></h3>
+<p>Metrics are validated before processing:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Check</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>NaN/Inf values</td><td>Replaced with 0.0</td></tr>
+<tr><td>Negative rates</td><td>Capped at 0.0</td></tr>
+<tr><td>Negative latencies</td><td>Capped at 0.0</td></tr>
+<tr><td>Extreme latencies (&gt;5 min)</td><td>Capped at 300,000ms</td></tr>
+<tr><td>Extreme request rates (&gt;1M/s)</td><td>Capped at 1,000,000</td></tr>
+<tr><td>Error rates &gt; 100%</td><td>Capped at 1.0</td></tr>
+</tbody>
+</table>
+</div>
+<p>Validation warnings are included in the output.</p>
+<h3 id="phase-3-pass-1-detection"><a class="header" href="#phase-3-pass-1-detection">Phase 3: Pass 1 Detection</a></h3>
+<p>First pass detects anomalies without dependency context:</p>
+<pre><code>For each service:
+    1. Load time-aware model (based on current time period)
+    2. Run univariate IF on each metric
+    3. Run multivariate IF on combined metrics
+    4. Collect anomaly signals
+    5. Match signals against patterns
+    6. Store result
+</code></pre>
+<h3 id="phase-4-pass-2-detection-cascade-analysis"><a class="header" href="#phase-4-pass-2-detection-cascade-analysis">Phase 4: Pass 2 Detection (Cascade Analysis)</a></h3>
+<p>Second pass re-analyzes services with latency anomalies:</p>
+<pre><code>For each service with latency anomaly:
+    1. Build dependency context from Pass 1 results
+    2. Check upstream dependencies for anomalies
+    3. Re-run pattern matching with dependency info
+    4. Add cascade_analysis if root cause found
+</code></pre>
+<p><strong>Dependency Context</strong>:</p>
+<pre><code class="language-json">{
+  "upstream_status": "anomaly",
+  "dependencies": {
+    "vms": {"has_anomaly": true, "type": "database_bottleneck"},
+    "titan": {"has_anomaly": true, "type": "latency_elevated"}
+  },
+  "root_cause_service": "titan"
+}
+</code></pre>
+<h3 id="phase-5-slo-evaluation"><a class="header" href="#phase-5-slo-evaluation">Phase 5: SLO Evaluation</a></h3>
+<p>Each anomaly is evaluated against SLO thresholds:</p>
+<pre><code>For each detected anomaly:
+    1. Evaluate latency vs SLO
+    2. Evaluate error rate vs SLO
+    3. Evaluate database latency vs baseline
+    4. Check request rate (surge/cliff)
+    5. Determine combined SLO status
+    6. Adjust severity if needed
+</code></pre>
+<p>See <a href="slo/README.html">SLO Evaluation</a> for details.</p>
+<h3 id="phase-6-incident-lifecycle"><a class="header" href="#phase-6-incident-lifecycle">Phase 6: Incident Lifecycle</a></h3>
+<p>Anomalies enter the incident lifecycle:</p>
+<pre><code>anomaly detected
+      │
+      ▼
+┌─────────────────────────────┐
+│ Check existing incidents    │
+│ - Same fingerprint exists?  │
+│ - Status of that incident?  │
+└─────────────────────────────┘
+      │
+      ├─── No existing ──▶ CREATE (SUSPECTED)
+      │
+      ├─── SUSPECTED ──▶ Increment consecutive_detections
+      │                   If &gt;= 2: transition to OPEN
+      │
+      ├─── OPEN ──▶ CONTINUE (update occurrence_count)
+      │
+      └─── RECOVERING ──▶ Return to OPEN
+</code></pre>
+<p>See <a href="incidents/README.html">Incident Lifecycle</a> for details.</p>
+<h2 id="output-structure"><a class="header" href="#output-structure">Output Structure</a></h2>
+<p>Final output for each service:</p>
+<pre><code class="language-json">{
+  "alert_type": "anomaly_detected",
+  "service_name": "booking",
+  "timestamp": "2024-01-15T10:30:00",
+  "time_period": "business_hours",
+  "overall_severity": "high",
+  "anomaly_count": 1,
+
+  "anomalies": {
+    "latency_spike_recent": {
+      "type": "consolidated",
+      "severity": "high",
+      "detection_signals": [...],
+      "cascade_analysis": {...}
+    }
+  },
+
+  "current_metrics": {...},
+  "slo_evaluation": {...},
+  "fingerprinting": {...}
+}
+</code></pre>
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<h3 id="metrics-unavailable"><a class="header" href="#metrics-unavailable">Metrics Unavailable</a></h3>
+<p>When VictoriaMetrics is unreachable:</p>
+<pre><code class="language-json">{
+  "alert_type": "metrics_unavailable",
+  "service_name": "booking",
+  "error": "Metrics collection failed",
+  "failed_metrics": ["request_rate", "application_latency"],
+  "skipped_reason": "critical_metrics_unavailable"
+}
+</code></pre>
+<p>Detection is skipped to prevent false alerts from missing data.</p>
+<h3 id="model-not-found"><a class="header" href="#model-not-found">Model Not Found</a></h3>
+<p>When no trained model exists:</p>
+<pre><code class="language-json">{
+  "alert_type": "error",
+  "service_name": "new-service",
+  "error_message": "No trained model found for time period"
+}
+</code></pre>
+<p>Run training to create models for new services.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="slo-evaluation-layer"><a class="header" href="#slo-evaluation-layer">SLO Evaluation Layer</a></h1>
+<p>The SLO (Service Level Objective) evaluation layer adjusts anomaly severity based on operational thresholds, answering: <strong>“Does this anomaly matter operationally?”</strong></p>
+<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
+<p>ML detection answers: <em>“Is this behavior unusual?”</em>
+SLO evaluation answers: <em>“Does it impact users or breach operational limits?”</em></p>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    SLO Evaluation Flow                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ML Detection Result                                           │
+│   (severity: critical)                                          │
+│          │                                                      │
+│          ▼                                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │              Evaluate Each SLO Component                │   │
+│   ├──────────────┬──────────────┬─────────────┬────────────┤   │
+│   │   Latency    │  Error Rate  │  DB Latency │   Traffic  │   │
+│   │   vs SLO     │   vs SLO     │  vs Baseline│  Surge/Cliff│   │
+│   └──────┬───────┴──────┬───────┴──────┬──────┴──────┬─────┘   │
+│          │              │              │             │          │
+│          └──────────────┴──────────────┴─────────────┘          │
+│                         │                                        │
+│                         ▼                                        │
+│              ┌─────────────────────┐                            │
+│              │  Combined SLO       │                            │
+│              │  Status: ok/warning │                            │
+│              │  /breached          │                            │
+│              └──────────┬──────────┘                            │
+│                         │                                        │
+│                         ▼                                        │
+│              ┌─────────────────────┐                            │
+│              │  Adjust Severity    │                            │
+│              │  critical → low     │  (if SLO ok)               │
+│              │  high → high        │  (if SLO warning)          │
+│              │  any → critical     │  (if SLO breached)         │
+│              └─────────────────────┘                            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="slo-components"><a class="header" href="#slo-components">SLO Components</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>Threshold Type</th><th>What It Measures</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="#latency-evaluation">Latency</a></td><td>Absolute (ms)</td><td>Response time vs SLO targets</td></tr>
+<tr><td><a href="#error-rate-evaluation">Error Rate</a></td><td>Absolute (%)</td><td>Error percentage vs SLO targets</td></tr>
+<tr><td><a href="#database-latency-evaluation">Database Latency</a></td><td>Ratio-based</td><td>DB latency vs training baseline</td></tr>
+<tr><td><a href="#request-rate-evaluation-surgecliff">Request Rate</a></td><td>Ratio-based</td><td>Traffic surge or cliff detection</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="slo-status"><a class="header" href="#slo-status">SLO Status</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th>Meaning</th><th>Severity Impact</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ok</code></td><td>All metrics within acceptable limits</td><td>→ <code>low</code></td></tr>
+<tr><td><code>warning</code></td><td>Approaching SLO breach</td><td>stays <code>high</code></td></tr>
+<tr><td><code>breached</code></td><td>SLO threshold exceeded</td><td>→ <code>critical</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-insight"><a class="header" href="#key-insight">Key Insight</a></h2>
+<p>An anomaly can be <strong>statistically significant</strong> (detected by ML) but <strong>operationally acceptable</strong> (within SLO). The SLO layer filters noise by only escalating anomalies that actually impact service quality.</p>
+<p><strong>Example:</strong></p>
+<ul>
+<li>ML detects latency at 280ms (unusual, p95 deviation)</li>
+<li>SLO threshold is 300ms (acceptable limit)</li>
+<li>Result: Severity adjusted to <code>low</code> (anomaly noted but no action needed)</li>
+</ul>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>SLOs are configured per-service in <code>config.json</code>:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "enabled": true,
+    "defaults": {
+      "latency_acceptable_ms": 500,
+      "latency_warning_ms": 800,
+      "latency_critical_ms": 1000,
+      "error_rate_acceptable": 0.005,
+      "error_rate_warning": 0.01,
+      "error_rate_critical": 0.02
+    },
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300,
+        "latency_critical_ms": 500
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="sections-1"><a class="header" href="#sections-1">Sections</a></h2>
+<ul>
+<li><a href="#latency-evaluation">Latency Evaluation</a> - Response time SLO checking</li>
+<li><a href="#error-rate-evaluation">Error Rate Evaluation</a> - Error percentage SLO checking</li>
+<li><a href="#database-latency-evaluation">Database Latency</a> - Ratio-based DB latency evaluation</li>
+<li><a href="#request-rate-evaluation-surgecliff">Request Rate</a> - Traffic surge and cliff detection</li>
+<li><a href="#severity-adjustment">Severity Adjustment</a> - How severity is adjusted based on SLO status</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="latency-evaluation"><a class="header" href="#latency-evaluation">Latency Evaluation</a></h1>
+<p>Latency evaluation compares current response time against SLO thresholds.</p>
+<h2 id="thresholds"><a class="header" href="#thresholds">Thresholds</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Level</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>acceptable</code></td><td>500ms</td><td>Latency below this is fine</td></tr>
+<tr><td><code>warning</code></td><td>800ms</td><td>Approaching SLO limit</td></tr>
+<tr><td><code>critical</code></td><td>1000ms</td><td>SLO breach</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="evaluation-logic"><a class="header" href="#evaluation-logic">Evaluation Logic</a></h2>
+<pre><code>Current Latency
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is latency &lt; acceptable?                               │
+│  ────────────────────────                               │
+│  YES → status: "ok", proximity: latency/acceptable      │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is latency &lt; warning?                                  │
+│  ─────────────────────                                  │
+│  YES → status: "elevated", minor concern                │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is latency &lt; critical?                                 │
+│  ──────────────────────                                 │
+│  YES → status: "warning", investigate soon              │
+│  NO  → status: "breached", immediate action             │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="proximity-score"><a class="header" href="#proximity-score">Proximity Score</a></h2>
+<p>The <code>proximity</code> value indicates how close to breach (0.0 - 1.0+):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Proximity</th><th>Interpretation</th></tr>
+</thead>
+<tbody>
+<tr><td>0.0 - 0.5</td><td>Comfortable margin</td></tr>
+<tr><td>0.5 - 0.8</td><td>Getting close</td></tr>
+<tr><td>0.8 - 1.0</td><td>Near threshold</td></tr>
+<tr><td>&gt; 1.0</td><td>Threshold exceeded</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="output-example"><a class="header" href="#output-example">Output Example</a></h2>
+<pre><code class="language-json">{
+  "latency_evaluation": {
+    "status": "warning",
+    "value": 750.0,
+    "threshold_acceptable": 500,
+    "threshold_warning": 800,
+    "threshold_critical": 1000,
+    "proximity": 0.94
+  }
+}
+</code></pre>
+<h2 id="per-service-configuration"><a class="header" href="#per-service-configuration">Per-Service Configuration</a></h2>
+<p>Critical services can have stricter thresholds:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300,
+        "latency_warning_ms": 400,
+        "latency_critical_ms": 500
+      },
+      "search": {
+        "latency_acceptable_ms": 200,
+        "latency_critical_ms": 400
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="busy-period-handling"><a class="header" href="#busy-period-handling">Busy Period Handling</a></h2>
+<p>During configured busy periods, thresholds are relaxed by <code>busy_period_factor</code>:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "defaults": {
+      "busy_period_factor": 1.5
+    },
+    "busy_periods": [
+      {"start": "2024-12-20T00:00:00", "end": "2025-01-05T23:59:59"}
+    ]
+  }
+}
+</code></pre>
+<p>During busy periods:</p>
+<ul>
+<li>500ms acceptable → 750ms acceptable</li>
+<li>1000ms critical → 1500ms critical</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="error-rate-evaluation"><a class="header" href="#error-rate-evaluation">Error Rate Evaluation</a></h1>
+<p>Error rate evaluation compares current error percentage against SLO thresholds.</p>
+<h2 id="thresholds-1"><a class="header" href="#thresholds-1">Thresholds</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Level</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>acceptable</code></td><td>0.5%</td><td>Error rate below this is fine</td></tr>
+<tr><td><code>warning</code></td><td>1.0%</td><td>Approaching SLO limit</td></tr>
+<tr><td><code>critical</code></td><td>2.0%</td><td>SLO breach</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="error-rate-floor-suppression"><a class="header" href="#error-rate-floor-suppression">Error Rate Floor (Suppression)</a></h2>
+<p>To prevent alert noise from tiny error rate deviations, an optional <code>error_rate_floor</code> can suppress anomalies when errors are operationally insignificant.</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "booking": {
+        "error_rate_acceptable": 0.002,
+        "error_rate_floor": 0.002
+      }
+    }
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Error Rate</th><th>Floor (0.2%)</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>0.01%</td><td>Below floor</td><td><strong>Suppressed</strong> (no alert)</td></tr>
+<tr><td>0.15%</td><td>Below floor</td><td><strong>Suppressed</strong> (no alert)</td></tr>
+<tr><td>0.25%</td><td>Above floor</td><td>Alert fires</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="evaluation-logic-1"><a class="header" href="#evaluation-logic-1">Evaluation Logic</a></h2>
+<pre><code>Current Error Rate
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is error_rate &lt; floor?                                 │
+│  ──────────────────────                                 │
+│  YES → Suppress anomaly entirely (no alert)             │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is error_rate &lt; acceptable?                            │
+│  ───────────────────────────                            │
+│  YES → status: "ok", within_acceptable: true            │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is error_rate &lt; warning?                               │
+│  ────────────────────────                               │
+│  YES → status: "elevated"                               │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is error_rate &lt; critical?                              │
+│  ─────────────────────────                              │
+│  YES → status: "warning"                                │
+│  NO  → status: "breached"                               │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="output-example-1"><a class="header" href="#output-example-1">Output Example</a></h2>
+<pre><code class="language-json">{
+  "error_rate_evaluation": {
+    "status": "ok",
+    "value": 0.001,
+    "value_percent": "0.10%",
+    "threshold_acceptable": 0.005,
+    "threshold_warning": 0.01,
+    "threshold_critical": 0.02,
+    "within_acceptable": true
+  }
+}
+</code></pre>
+<h2 id="when-floor-is-active"><a class="header" href="#when-floor-is-active">When Floor is Active</a></h2>
+<pre><code class="language-json">{
+  "slo_context": {
+    "current_value": 0.005,
+    "current_value_percent": "0.50%",
+    "acceptable_threshold": 0.002,
+    "critical_threshold": 0.01,
+    "suppression_threshold": 0.002,
+    "within_acceptable": false
+  }
+}
+</code></pre>
+<h2 id="per-service-configuration-1"><a class="header" href="#per-service-configuration-1">Per-Service Configuration</a></h2>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "booking": {
+        "error_rate_acceptable": 0.002,
+        "error_rate_warning": 0.005,
+        "error_rate_critical": 0.01,
+        "error_rate_floor": 0.002
+      },
+      "admin-api": {
+        "error_rate_acceptable": 0.01,
+        "error_rate_critical": 0.05
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="exception-enrichment"><a class="header" href="#exception-enrichment">Exception Enrichment</a></h2>
+<p>When error SLO is breached (HIGH or CRITICAL severity), exception context is automatically queried and added to the alert:</p>
+<pre><code class="language-json">{
+  "exception_context": {
+    "service_name": "search",
+    "total_exception_rate": 0.35,
+    "top_exceptions": [
+      {"type": "R2D2Exception", "rate": 0.217, "percentage": 62.0},
+      {"type": "UserInputException", "rate": 0.083, "percentage": 23.7}
+    ]
+  }
+}
+</code></pre>
+<p>This helps identify which exception types are causing the error spike.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="database-latency-evaluation"><a class="header" href="#database-latency-evaluation">Database Latency Evaluation</a></h1>
+<p>Database latency uses a <strong>hybrid approach</strong>: noise floor filtering + ratio-based thresholds against training baseline.</p>
+<h2 id="why-ratio-based"><a class="header" href="#why-ratio-based">Why Ratio-Based?</a></h2>
+<p>Unlike application latency with fixed SLO targets, database latency varies significantly:</p>
+<ul>
+<li>A fast service might have 5ms DB latency normally</li>
+<li>A reporting service might have 500ms DB latency normally</li>
+</ul>
+<p><strong>Ratio-based thresholds</strong> adapt to each service’s baseline.</p>
+<h2 id="noise-floor"><a class="header" href="#noise-floor">Noise Floor</a></h2>
+<p>Very low database latency values are filtered as operationally meaningless:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Latency</th><th>Floor (5ms)</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>2ms</td><td>Below floor</td><td>Always <code>ok</code></td></tr>
+<tr><td>0.3ms → 0.4ms</td><td>Below floor</td><td>Ignored</td></tr>
+<tr><td>10ms</td><td>Above floor</td><td>Evaluate ratio</td></tr>
+</tbody>
+</table>
+</div>
+<p>This prevents alerts for sub-millisecond changes that the ML might flag as anomalous.</p>
+<h2 id="ratio-thresholds"><a class="header" href="#ratio-thresholds">Ratio Thresholds</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th>Ratio</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ok</code></td><td>&lt; 1.5x</td><td>Within normal variance</td></tr>
+<tr><td><code>info</code></td><td>1.5x - 2x</td><td>Slightly elevated</td></tr>
+<tr><td><code>warning</code></td><td>2x - 3x</td><td>Elevated, investigate</td></tr>
+<tr><td><code>high</code></td><td>3x - 5x</td><td>Significantly elevated</td></tr>
+<tr><td><code>critical</code></td><td>≥ 5x</td><td>SLO breach</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="evaluation-logic-2"><a class="header" href="#evaluation-logic-2">Evaluation Logic</a></h2>
+<pre><code>Current DB Latency
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Is latency &lt; floor_ms?                                 │
+│  ──────────────────────                                 │
+│  YES → status: "ok", below_floor: true                  │
+│  NO  → Continue...                                      │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Calculate ratio = current / baseline_mean              │
+│  ──────────────────────────────────────                 │
+│  Example: 25ms / 10ms = 2.5x                            │
+└─────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│  Map ratio to status:                                   │
+│  ────────────────────                                   │
+│  &lt; 1.5 → "ok"                                           │
+│  &lt; 2.0 → "info"                                         │
+│  &lt; 3.0 → "warning"                                      │
+│  &lt; 5.0 → "high"                                         │
+│  ≥ 5.0 → "critical"                                     │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="output-examples"><a class="header" href="#output-examples">Output Examples</a></h2>
+<h3 id="below-floor"><a class="header" href="#below-floor">Below Floor</a></h3>
+<pre><code class="language-json">{
+  "database_latency_evaluation": {
+    "status": "ok",
+    "value_ms": 2.0,
+    "baseline_mean_ms": 1.0,
+    "ratio": 0.0,
+    "below_floor": true,
+    "floor_ms": 5.0,
+    "explanation": "Below noise floor (2.0ms &lt; 5.0ms)"
+  }
+}
+</code></pre>
+<h3 id="elevated-ratio"><a class="header" href="#elevated-ratio">Elevated Ratio</a></h3>
+<pre><code class="language-json">{
+  "database_latency_evaluation": {
+    "status": "warning",
+    "value_ms": 25.0,
+    "baseline_mean_ms": 10.0,
+    "ratio": 2.5,
+    "below_floor": false,
+    "floor_ms": 5.0,
+    "thresholds": {
+      "info": 1.5,
+      "warning": 2.0,
+      "high": 3.0,
+      "critical": 5.0
+    },
+    "explanation": "DB latency elevated: 25.0ms is 2.5x baseline (10.0ms)"
+  }
+}
+</code></pre>
+<h2 id="per-service-configuration-2"><a class="header" href="#per-service-configuration-2">Per-Service Configuration</a></h2>
+<p>Services with different DB performance characteristics can have custom thresholds:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "search": {
+        "database_latency_floor_ms": 2.0,
+        "database_latency_ratios": {
+          "info": 1.3,
+          "warning": 1.5,
+          "high": 2.0,
+          "critical": 3.0
+        }
+      },
+      "reporting": {
+        "database_latency_floor_ms": 50.0,
+        "database_latency_ratios": {
+          "info": 2.0,
+          "warning": 3.0,
+          "high": 5.0,
+          "critical": 10.0
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="relationship-to-pattern-matching"><a class="header" href="#relationship-to-pattern-matching">Relationship to Pattern Matching</a></h2>
+<p>Database latency evaluation complements pattern matching:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Database Latency Evaluation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>database_degradation</code></td><td>DB ratio 2-3x, compensating</td></tr>
+<tr><td><code>database_bottleneck</code></td><td>DB ratio ≥3x, dominant latency</td></tr>
+</tbody>
+</table>
+</div>
+<p>The SLO evaluation provides the <strong>ratio context</strong> that pattern matching uses for severity.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="request-rate-evaluation-surgecliff"><a class="header" href="#request-rate-evaluation-surgecliff">Request Rate Evaluation (Surge/Cliff)</a></h1>
+<p>Request rate evaluation detects significant traffic changes: <strong>surges</strong> (spikes) and <strong>cliffs</strong> (drops).</p>
+<h2 id="key-insight-1"><a class="header" href="#key-insight-1">Key Insight</a></h2>
+<p>Traffic anomalies use <strong>correlation-based severity</strong>:</p>
+<ul>
+<li>A surge alone is often benign (marketing campaign, organic growth)</li>
+<li>A surge becomes problematic when causing SLO issues</li>
+<li>A cliff is inherently concerning (may indicate upstream failure)</li>
+</ul>
+<h2 id="thresholds-2"><a class="header" href="#thresholds-2">Thresholds</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Threshold</th><th>Default</th></tr>
+</thead>
+<tbody>
+<tr><td>Surge</td><td>≥ 200% of baseline</td><td>2x normal traffic</td></tr>
+<tr><td>Cliff</td><td>≤ 50% of baseline</td><td>Half normal traffic</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="surge-severity-logic"><a class="header" href="#surge-severity-logic">Surge Severity Logic</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Condition</th><th>Severity</th><th>Rationale</th></tr>
+</thead>
+<tbody>
+<tr><td>Surge only</td><td><code>informational</code></td><td>Normal growth or campaign</td></tr>
+<tr><td>Surge + latency SLO breach</td><td><code>warning</code></td><td>Capacity stress</td></tr>
+<tr><td>Surge + error SLO breach</td><td><code>high</code></td><td>Active incident</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="cliff-severity-logic"><a class="header" href="#cliff-severity-logic">Cliff Severity Logic</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Condition</th><th>Severity</th><th>Rationale</th></tr>
+</thead>
+<tbody>
+<tr><td>Cliff off-peak</td><td><code>warning</code></td><td>May be expected</td></tr>
+<tr><td>Cliff peak hours</td><td><code>high</code></td><td>Likely incident</td></tr>
+<tr><td>Cliff + errors</td><td><code>critical</code></td><td>Confirmed incident</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="evaluation-flow"><a class="header" href="#evaluation-flow">Evaluation Flow</a></h2>
+<pre><code>                    ┌───────────────────────────────────────────┐
+                    │         Calculate Traffic Ratio           │
+                    │    ratio = current / baseline_mean        │
+                    └───────────────────────────────────────────┘
+                                        │
+               ┌────────────────────────┼────────────────────────┐
+               │                        │                        │
+               ▼                        ▼                        ▼
+        ratio ≥ 2.0              0.5 &lt; ratio &lt; 2.0          ratio ≤ 0.5
+         (SURGE)                    (NORMAL)                  (CLIFF)
+               │                        │                        │
+               ▼                        │                        ▼
+    ┌──────────────────────┐           │          ┌──────────────────────┐
+    │ Check SLO correlation │           │          │ Check time of day    │
+    │ - Latency breach?     │           │          │ - Peak hours?        │
+    │ - Error breach?       │           │          │ - Errors elevated?   │
+    └──────────────────────┘           │          └──────────────────────┘
+               │                        │                        │
+               ▼                        ▼                        ▼
+       severity based               "ok"                  severity based
+       on correlation               status                on peak/errors
+</code></pre>
+<h2 id="output-examples-1"><a class="header" href="#output-examples-1">Output Examples</a></h2>
+<h3 id="surge-standalone"><a class="header" href="#surge-standalone">Surge (Standalone)</a></h3>
+<pre><code class="language-json">{
+  "request_rate_evaluation": {
+    "status": "info",
+    "type": "surge",
+    "severity": "informational",
+    "value_rps": 250.0,
+    "baseline_mean_rps": 100.0,
+    "ratio": 2.5,
+    "threshold_percent": 200.0,
+    "correlated_with_latency": false,
+    "correlated_with_errors": false,
+    "explanation": "Traffic surge (2.5x baseline) without SLO impact. Normal growth or campaign traffic."
+  }
+}
+</code></pre>
+<h3 id="surge-with-latency-impact"><a class="header" href="#surge-with-latency-impact">Surge with Latency Impact</a></h3>
+<pre><code class="language-json">{
+  "request_rate_evaluation": {
+    "status": "warning",
+    "type": "surge",
+    "severity": "warning",
+    "value_rps": 350.0,
+    "baseline_mean_rps": 100.0,
+    "ratio": 3.5,
+    "correlated_with_latency": true,
+    "correlated_with_errors": false,
+    "explanation": "Traffic surge (3.5x baseline) correlating with latency SLO breach - capacity issue."
+  }
+}
+</code></pre>
+<h3 id="cliff-peak-hours"><a class="header" href="#cliff-peak-hours">Cliff (Peak Hours)</a></h3>
+<pre><code class="language-json">{
+  "request_rate_evaluation": {
+    "status": "high",
+    "type": "cliff",
+    "severity": "high",
+    "value_rps": 30.0,
+    "baseline_mean_rps": 100.0,
+    "ratio": 0.3,
+    "threshold_percent": 50.0,
+    "is_peak_hours": true,
+    "correlated_with_errors": false,
+    "explanation": "Traffic cliff (0.3x baseline) during peak hours - investigate potential incident."
+  }
+}
+</code></pre>
+<h3 id="cliff-with-errors"><a class="header" href="#cliff-with-errors">Cliff with Errors</a></h3>
+<pre><code class="language-json">{
+  "request_rate_evaluation": {
+    "status": "critical",
+    "type": "cliff",
+    "severity": "critical",
+    "value_rps": 15.0,
+    "baseline_mean_rps": 100.0,
+    "ratio": 0.15,
+    "is_peak_hours": true,
+    "correlated_with_errors": true,
+    "explanation": "Traffic cliff (0.15x baseline) with errors - likely upstream failure or routing issue."
+  }
+}
+</code></pre>
+<h2 id="configuration-1"><a class="header" href="#configuration-1">Configuration</a></h2>
+<pre><code class="language-json">{
+  "slos": {
+    "defaults": {
+      "request_rate_surge_threshold": 2.0,
+      "request_rate_cliff_threshold": 0.5
+    },
+    "services": {
+      "booking": {
+        "request_rate_evaluation": {
+          "surge": {
+            "threshold": 3.0
+          },
+          "cliff": {
+            "standalone_severity": "high",
+            "peak_hours_severity": "critical"
+          }
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="relationship-to-pattern-matching-1"><a class="header" href="#relationship-to-pattern-matching-1">Relationship to Pattern Matching</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Request Rate Evaluation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>traffic_surge_healthy</code></td><td>Surge, no SLO correlation</td></tr>
+<tr><td><code>traffic_surge_degrading</code></td><td>Surge + latency correlation</td></tr>
+<tr><td><code>traffic_surge_failing</code></td><td>Surge + error correlation</td></tr>
+<tr><td><code>traffic_cliff</code></td><td>Cliff detected</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="severity-adjustment"><a class="header" href="#severity-adjustment">Severity Adjustment</a></h1>
+<p>The final step of SLO evaluation: adjusting ML-assigned severity based on operational impact.</p>
+<h2 id="core-principle"><a class="header" href="#core-principle">Core Principle</a></h2>
+<p><strong>SLO status determines final severity, not ML confidence.</strong></p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>SLO Status</th><th>Final Severity</th><th>Rationale</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ok</code></td><td><code>low</code></td><td>Anomaly detected but operationally acceptable</td></tr>
+<tr><td><code>warning</code></td><td><code>high</code></td><td>Approaching limits, should investigate</td></tr>
+<tr><td><code>breached</code></td><td><code>critical</code></td><td>SLO exceeded, requires action</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="adjustment-matrix"><a class="header" href="#adjustment-matrix">Adjustment Matrix</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>ML Severity</th><th>SLO Status</th><th>Final Severity</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td>critical</td><td>ok</td><td><strong>low</strong></td><td>280ms latency (unusual but &lt; 300ms SLO)</td></tr>
+<tr><td>critical</td><td>warning</td><td>high</td><td>750ms latency (approaching 800ms SLO)</td></tr>
+<tr><td>critical</td><td>breached</td><td>critical</td><td>1200ms latency (&gt; 1000ms SLO)</td></tr>
+<tr><td>high</td><td>ok</td><td><strong>low</strong></td><td>Same principle</td></tr>
+<tr><td>high</td><td>warning</td><td>high</td><td>No change needed</td></tr>
+<tr><td>high</td><td>breached</td><td>critical</td><td>Escalated</td></tr>
+<tr><td>medium</td><td>ok</td><td><strong>low</strong></td><td>Minor anomaly, within SLO</td></tr>
+<tr><td>medium</td><td>warning</td><td>high</td><td>Escalated due to SLO proximity</td></tr>
+<tr><td>low</td><td>breached</td><td>critical</td><td>Even low anomaly escalated if SLO breached</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-behavior-change-v131"><a class="header" href="#key-behavior-change-v131">Key Behavior Change (v1.3.1)</a></h2>
+<p><strong>Before v1.3.1</strong>: SLO <code>ok</code> adjusted to <code>medium</code>
+<strong>After v1.3.1</strong>: SLO <code>ok</code> adjusts to <code>low</code></p>
+<p>This ensures “operationally acceptable” consistently means “low priority.”</p>
+<h2 id="adjustment-flow"><a class="header" href="#adjustment-flow">Adjustment Flow</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    Severity Adjustment                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ML Detection                SLO Evaluation                    │
+│   ────────────               ───────────────                    │
+│   severity: critical         slo_status: ok                     │
+│                                                                 │
+│          │                          │                           │
+│          └──────────┬───────────────┘                           │
+│                     │                                           │
+│                     ▼                                           │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Rule: If slo_status == "ok" → severity = "low"         │   │
+│   │  Rule: If slo_status == "warning" → severity &gt;= "high"  │   │
+│   │  Rule: If slo_status == "breached" → severity = "critical│   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                     │                                           │
+│                     ▼                                           │
+│                                                                 │
+│   Final Output:                                                 │
+│   ─────────────                                                 │
+│   overall_severity: low                                         │
+│   slo_evaluation:                                               │
+│     original_severity: critical                                 │
+│     adjusted_severity: low                                      │
+│     severity_changed: true                                      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="output-example-2"><a class="header" href="#output-example-2">Output Example</a></h2>
+<pre><code class="language-json">{
+  "overall_severity": "low",
+  "slo_evaluation": {
+    "original_severity": "critical",
+    "adjusted_severity": "low",
+    "severity_changed": true,
+    "slo_status": "ok",
+    "slo_proximity": 0.56,
+    "operational_impact": "informational",
+    "explanation": "Severity adjusted from critical to low based on SLO evaluation. Anomaly detected but metrics within acceptable SLO thresholds (latency: 280ms &lt; 300ms, errors: 0.10% &lt; 0.50%)."
+  }
+}
+</code></pre>
+<h2 id="operational-impact-levels"><a class="header" href="#operational-impact-levels">Operational Impact Levels</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Level</th><th>Meaning</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td><code>none</code></td><td>No anomaly or fully normal</td><td>No action</td></tr>
+<tr><td><code>informational</code></td><td>Anomaly noted but acceptable</td><td>Log only</td></tr>
+<tr><td><code>actionable</code></td><td>Approaching limits</td><td>Investigate</td></tr>
+<tr><td><code>critical</code></td><td>SLO breached</td><td>Immediate action</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="configuration-options"><a class="header" href="#configuration-options">Configuration Options</a></h2>
+<pre><code class="language-json">{
+  "slos": {
+    "enabled": true,
+    "allow_downgrade_to_informational": true,
+    "require_slo_breach_for_critical": true
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Default</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>true</td><td>Enable/disable SLO evaluation</td></tr>
+<tr><td><code>allow_downgrade_to_informational</code></td><td>true</td><td>Allow high/critical → low when SLO ok</td></tr>
+<tr><td><code>require_slo_breach_for_critical</code></td><td>true</td><td>Only allow critical if SLO breached</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="root-overall_severity"><a class="header" href="#root-overall_severity">root <code>overall_severity</code></a></h2>
+<p><strong>Important (v1.3.1)</strong>: The root-level <code>overall_severity</code> field now correctly reflects the SLO-adjusted value.</p>
+<pre><code class="language-json">{
+  "overall_severity": "low",          // ← SLO-adjusted value
+  "slo_evaluation": {
+    "original_severity": "critical",  // ← ML-assigned value
+    "adjusted_severity": "low"        // ← Same as overall_severity
+  }
+}
+</code></pre>
+<p>Previously, <code>overall_severity</code> could show <code>critical</code> while <code>adjusted_severity</code> showed <code>low</code>.</p>
+<h2 id="alert-suppression"><a class="header" href="#alert-suppression">Alert Suppression</a></h2>
+<p>When SLO evaluation results in <code>low</code> severity:</p>
+<ul>
+<li>Alert is still generated (for logging/visibility)</li>
+<li>Alert may be filtered by downstream systems (e.g., skip PagerDuty)</li>
+<li>Dashboard shows alert with low priority indicator</li>
+</ul>
+<p>To completely suppress alerts below a threshold, use downstream alert filtering rules.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="incident-lifecycle"><a class="header" href="#incident-lifecycle">Incident Lifecycle</a></h1>
+<p>The incident lifecycle manages anomaly state over time, reducing alert noise through confirmation and grace periods.</p>
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<h3 id="fingerprint-vs-incident"><a class="header" href="#fingerprint-vs-incident">Fingerprint vs Incident</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Concept</th><th>Description</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Fingerprint ID</strong></td><td>Pattern identifier (same pattern = same ID)</td><td><code>anomaly_8d4a011b83ca</code></td></tr>
+<tr><td><strong>Incident ID</strong></td><td>Unique occurrence identifier</td><td><code>incident_1dcbafc91480</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The same anomaly pattern can create multiple incidents over time. Each time the pattern reappears after resolution, a new incident is created.</p>
+<h2 id="state-machine"><a class="header" href="#state-machine">State Machine</a></h2>
+<pre><code>                    ┌─────────────┐
+     First detect   │  SUSPECTED  │  Waiting for confirmation
+         ──────────►│  (no alert) │  (2 consecutive detections)
+                    └──────┬──────┘
+                           │ N consecutive detections
+                           ▼
+                    ┌─────────────┐
+                    │    OPEN     │  CONFIRMED - alerts sent
+                    │  (alerting) │◄──────────────────────────┐
+                    └──────┬──────┘  detected again           │
+                           │ 1-2 cycles not detected          │
+                           ▼                                  │
+                    ┌─────────────┐                           │
+                    │ RECOVERING  │  Grace period             │
+                    │  (waiting)  │───────────────────────────┘
+                    └──────┬──────┘
+                           │ N cycles not detected
+                           ▼
+                    ┌─────────────┐
+                    │   CLOSED    │  Resolution sent
+                    └─────────────┘
+</code></pre>
+<h2 id="states"><a class="header" href="#states">States</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Alert Sent?</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>SUSPECTED</code></td><td>No</td><td>First detection, waiting for confirmation</td></tr>
+<tr><td><code>OPEN</code></td><td>Yes</td><td>Confirmed incident, alerts active</td></tr>
+<tr><td><code>RECOVERING</code></td><td>No</td><td>Not detected recently, grace period</td></tr>
+<tr><td><code>CLOSED</code></td><td>Resolution</td><td>Incident resolved</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="cycle-based-timing"><a class="header" href="#cycle-based-timing">Cycle-Based Timing</a></h2>
+<p>With default configuration and 2-3 minute inference intervals:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Default</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>confirmation_cycles</code></td><td>2</td><td>~4-6 min to confirm</td></tr>
+<tr><td><code>resolution_grace_cycles</code></td><td>3</td><td>~6-9 min grace period</td></tr>
+<tr><td><code>incident_separation_minutes</code></td><td>30</td><td>Gap &gt; 30 min = new incident</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="why-confirmation"><a class="header" href="#why-confirmation">Why Confirmation?</a></h2>
+<p><strong>Problem</strong>: Single-point anomalies create alert noise.</p>
+<p><strong>Solution</strong>: Require 2+ consecutive detections before alerting.</p>
+<pre><code>Detection 1: Latency spike 450ms
+  → Status: SUSPECTED (no alert)
+  → Might be transient
+
+Detection 2: Latency still 445ms
+  → Status: OPEN (alert sent)
+  → Confirmed - this is real
+
+Detection 3: Latency still 440ms
+  → Status: OPEN (continue)
+  → Ongoing incident
+</code></pre>
+<h2 id="why-grace-period"><a class="header" href="#why-grace-period">Why Grace Period?</a></h2>
+<p><strong>Problem</strong>: Flapping alerts when anomaly briefly clears.</p>
+<p><strong>Solution</strong>: Wait 3 cycles before resolving.</p>
+<pre><code>Detection 5: Latency normal 120ms
+  → Status: RECOVERING (no resolution yet)
+  → Might return
+
+Detection 6: Latency still normal
+  → Status: RECOVERING (grace period)
+  → Waiting...
+
+Detection 7: Latency still normal
+  → Status: CLOSED (resolution sent)
+  → Confirmed resolution
+</code></pre>
+<h2 id="staleness-check"><a class="header" href="#staleness-check">Staleness Check</a></h2>
+<p>If an anomaly reappears after a long gap (&gt; 30 min), it’s treated as a new incident:</p>
+<pre><code>10:00 - OPEN incident detected
+10:30 - Last detection
+...
+11:15 - Same pattern detected (45 min gap)
+  → Old incident auto-closed (reason: "auto_stale")
+  → New SUSPECTED incident created
+</code></pre>
+<p>This prevents “zombie incidents” that continue indefinitely.</p>
+<h2 id="confirmed-only-alerts-v132"><a class="header" href="#confirmed-only-alerts-v132">Confirmed-Only Alerts (v1.3.2)</a></h2>
+<p><strong>Important</strong>: Only confirmed anomalies are sent to the web API.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Sent to Web API?</th></tr>
+</thead>
+<tbody>
+<tr><td>SUSPECTED</td><td>No</td></tr>
+<tr><td>OPEN</td><td>Yes</td></tr>
+<tr><td>RECOVERING</td><td>Yes</td></tr>
+<tr><td>CLOSED</td><td>Resolution only</td></tr>
+</tbody>
+</table>
+</div>
+<p>This prevents orphaned incidents when SUSPECTED anomalies expire without confirmation.</p>
+<h2 id="sections-2"><a class="header" href="#sections-2">Sections</a></h2>
+<ul>
+<li><a href="#state-machine-1">State Machine</a> - Detailed state transitions</li>
+<li><a href="#confirmation-logic">Confirmation Logic</a> - How confirmation works</li>
+<li><a href="#fingerprinting">Fingerprinting</a> - How incidents are identified</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="state-machine-1"><a class="header" href="#state-machine-1">State Machine</a></h1>
+<p>Detailed state transitions for incident lifecycle management.</p>
+<h2 id="transition-rules"><a class="header" href="#transition-rules">Transition Rules</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Current State</th><th>Event</th><th>Condition</th><th>New State</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>(none)</td><td>Detected</td><td>-</td><td>SUSPECTED</td><td>Create incident</td></tr>
+<tr><td>SUSPECTED</td><td>Detected</td><td>consecutive &lt; N</td><td>SUSPECTED</td><td>Increment counter</td></tr>
+<tr><td>SUSPECTED</td><td>Detected</td><td>consecutive ≥ N</td><td>OPEN</td><td><strong>Send alert</strong></td></tr>
+<tr><td>SUSPECTED</td><td>Not detected</td><td>missed &lt; N</td><td>SUSPECTED</td><td>Increment missed</td></tr>
+<tr><td>SUSPECTED</td><td>Not detected</td><td>missed ≥ N</td><td>CLOSED</td><td>Silent close</td></tr>
+<tr><td>OPEN</td><td>Detected</td><td>-</td><td>OPEN</td><td>Continue, reset missed</td></tr>
+<tr><td>OPEN</td><td>Not detected</td><td>-</td><td>RECOVERING</td><td>Start grace period</td></tr>
+<tr><td>RECOVERING</td><td>Detected</td><td>-</td><td>OPEN</td><td>Resume incident</td></tr>
+<tr><td>RECOVERING</td><td>Not detected</td><td>missed &lt; N</td><td>RECOVERING</td><td>Continue grace</td></tr>
+<tr><td>RECOVERING</td><td>Not detected</td><td>missed ≥ N</td><td>CLOSED</td><td><strong>Send resolution</strong></td></tr>
+<tr><td>Any</td><td>Detected</td><td>gap &gt; separation</td><td>SUSPECTED</td><td>Close stale, create new</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="state-transition-diagram"><a class="header" href="#state-transition-diagram">State Transition Diagram</a></h2>
+<pre><code>┌──────────────────────────────────────────────────────────────────────────┐
+│                        Incident State Machine                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│    ┌─────────────────────────────────────────────────────────────────┐   │
+│    │                        NO INCIDENT                              │   │
+│    └─────────────────────────────┬───────────────────────────────────┘   │
+│                                  │                                       │
+│                                  │ Anomaly detected                      │
+│                                  ▼                                       │
+│    ┌─────────────────────────────────────────────────────────────────┐   │
+│    │                        SUSPECTED                                │   │
+│    │  • No alert sent                                                │   │
+│    │  • consecutive_detections = 1                                   │   │
+│    │  • Waiting for confirmation                                     │   │
+│    └─────────────────────────────┬───────────────────────────────────┘   │
+│           │                      │                      │                │
+│           │ Not detected         │ Detected again       │ Not detected   │
+│           │ (missed &lt; grace)     │ (consecutive ≥ N)    │ (missed ≥ N)   │
+│           │                      │                      │                │
+│           ▼                      ▼                      ▼                │
+│    ┌──────────────┐    ┌──────────────┐    ┌─────────────────────────┐   │
+│    │ Stay         │    │    OPEN      │    │        CLOSED           │   │
+│    │ SUSPECTED    │    │ (CONFIRMED)  │    │  (suspected_expired)    │   │
+│    │ +missed      │    │              │    │  • Silent close         │   │
+│    └──────────────┘    │ • ALERT SENT │    │  • No resolution sent   │   │
+│                        └──────┬───────┘    └─────────────────────────┘   │
+│                               │                                          │
+│               ┌───────────────┴───────────────┐                          │
+│               │                               │                          │
+│               │ Detected again                │ Not detected             │
+│               ▼                               ▼                          │
+│    ┌─────────────────────┐         ┌─────────────────────┐               │
+│    │      OPEN           │         │    RECOVERING       │               │
+│    │   (continue)        │◄────────│                     │               │
+│    │ • Reset missed      │ Detected│ • Grace period      │               │
+│    │ • occurrence_count++│  again  │ • missed_cycles++   │               │
+│    └─────────────────────┘         └──────────┬──────────┘               │
+│                                               │                          │
+│                                               │ Not detected             │
+│                                               │ (missed ≥ grace)         │
+│                                               ▼                          │
+│                                    ┌─────────────────────┐               │
+│                                    │       CLOSED        │               │
+│                                    │    (resolved)       │               │
+│                                    │ • RESOLUTION SENT   │               │
+│                                    └─────────────────────┘               │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="payload-fields-per-state"><a class="header" href="#payload-fields-per-state">Payload Fields Per State</a></h2>
+<h3 id="suspected"><a class="header" href="#suspected">SUSPECTED</a></h3>
+<pre><code class="language-json">{
+  "status": "SUSPECTED",
+  "incident_action": "CREATE",
+  "consecutive_detections": 1,
+  "missed_cycles": 0,
+  "confirmation_pending": true,
+  "cycles_to_confirm": 1,
+  "is_confirmed": false,
+  "newly_confirmed": false
+}
+</code></pre>
+<h3 id="open-newly-confirmed"><a class="header" href="#open-newly-confirmed">OPEN (Newly Confirmed)</a></h3>
+<pre><code class="language-json">{
+  "status": "OPEN",
+  "previous_status": "SUSPECTED",
+  "incident_action": "CONTINUE",
+  "consecutive_detections": 2,
+  "missed_cycles": 0,
+  "confirmation_pending": false,
+  "is_confirmed": true,
+  "newly_confirmed": true
+}
+</code></pre>
+<h3 id="open-continuing"><a class="header" href="#open-continuing">OPEN (Continuing)</a></h3>
+<pre><code class="language-json">{
+  "status": "OPEN",
+  "incident_action": "CONTINUE",
+  "consecutive_detections": 5,
+  "occurrence_count": 5,
+  "incident_duration_minutes": 15
+}
+</code></pre>
+<h3 id="recovering"><a class="header" href="#recovering">RECOVERING</a></h3>
+<pre><code class="language-json">{
+  "status": "RECOVERING",
+  "missed_cycles": 1,
+  "incident_action": "CONTINUE"
+}
+</code></pre>
+<p>Note: RECOVERING is an internal state. The fingerprinting summary shows <code>status_summary.recovering: 1</code>.</p>
+<h3 id="closed-resolution"><a class="header" href="#closed-resolution">CLOSED (Resolution)</a></h3>
+<pre><code class="language-json">{
+  "fingerprint_id": "anomaly_061598e9ca91",
+  "incident_id": "incident_abc123def456",
+  "incident_action": "CLOSE",
+  "fingerprint_action": "RESOLVE",
+  "final_severity": "high",
+  "resolved_at": "2025-12-17T14:30:00",
+  "total_occurrences": 5,
+  "incident_duration_minutes": 45,
+  "resolution_reason": "resolved"
+}
+</code></pre>
+<h2 id="resolution-reasons"><a class="header" href="#resolution-reasons">Resolution Reasons</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Description</th><th>Resolution Sent?</th></tr>
+</thead>
+<tbody>
+<tr><td><code>resolved</code></td><td>Normal resolution after grace period</td><td>Yes</td></tr>
+<tr><td><code>suspected_expired</code></td><td>SUSPECTED state expired without confirmation</td><td>No</td></tr>
+<tr><td><code>auto_stale</code></td><td>Time gap exceeded separation threshold</td><td>Yes</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="configuration-2"><a class="header" href="#configuration-2">Configuration</a></h2>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "confirmation_cycles": 2,
+    "resolution_grace_cycles": 3,
+    "incident_separation_minutes": 30
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>confirmation_cycles</code></td><td>Consecutive detections needed to confirm</td></tr>
+<tr><td><code>resolution_grace_cycles</code></td><td>Non-detection cycles before closing</td></tr>
+<tr><td><code>incident_separation_minutes</code></td><td>Gap that triggers new incident</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="confirmation-logic"><a class="header" href="#confirmation-logic">Confirmation Logic</a></h1>
+<p>Confirmation prevents alert noise by requiring multiple consecutive detections before alerting.</p>
+<h2 id="why-confirmation-1"><a class="header" href="#why-confirmation-1">Why Confirmation?</a></h2>
+<p><strong>Without confirmation</strong>:</p>
+<pre><code>10:00 - Latency spike 450ms → ALERT
+10:03 - Latency normal 120ms → RESOLVE
+10:06 - Latency spike 455ms → ALERT
+10:09 - Latency normal 118ms → RESOLVE
+...
+</code></pre>
+<p>Result: Alert fatigue from flapping.</p>
+<p><strong>With confirmation</strong>:</p>
+<pre><code>10:00 - Latency spike 450ms → SUSPECTED (no alert)
+10:03 - Latency normal 120ms → SUSPECTED expires (no alert)
+10:06 - Latency spike 455ms → SUSPECTED (no alert)
+10:09 - Latency spike 448ms → OPEN (alert sent!)
+10:12 - Latency spike 440ms → CONTINUE
+...
+</code></pre>
+<p>Result: Only sustained issues generate alerts.</p>
+<h2 id="confirmation-flow"><a class="header" href="#confirmation-flow">Confirmation Flow</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                     Detection Cycle 1                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Anomaly detected for first time                               │
+│   ─────────────────────────────                                 │
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Status: SUSPECTED                                      │   │
+│   │  consecutive_detections: 1                              │   │
+│   │  confirmation_pending: true                             │   │
+│   │  cycles_to_confirm: 1                                   │   │
+│   │  is_confirmed: false                                    │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│   Web API: ❌ NOT notified (not confirmed yet)                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+                              │
+                              ▼
+
+┌─────────────────────────────────────────────────────────────────┐
+│                     Detection Cycle 2                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Same anomaly detected again                                   │
+│   ──────────────────────────                                    │
+│                                                                 │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Status: OPEN                                           │   │
+│   │  previous_status: SUSPECTED                             │   │
+│   │  consecutive_detections: 2                              │   │
+│   │  confirmation_pending: false                            │   │
+│   │  is_confirmed: true                                     │   │
+│   │  newly_confirmed: true  ← Important flag!               │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│   Web API: ✅ Alert sent (now confirmed)                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="key-fields"><a class="header" href="#key-fields">Key Fields</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>consecutive_detections</code></td><td>How many cycles in a row this was detected</td></tr>
+<tr><td><code>confirmation_pending</code></td><td>True if still in SUSPECTED state</td></tr>
+<tr><td><code>cycles_to_confirm</code></td><td>Remaining cycles needed for confirmation</td></tr>
+<tr><td><code>is_confirmed</code></td><td>True if status is OPEN</td></tr>
+<tr><td><code>newly_confirmed</code></td><td>True only on the cycle where SUSPECTED → OPEN</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="fingerprinting-summary"><a class="header" href="#fingerprinting-summary">Fingerprinting Summary</a></h2>
+<p>The top-level <code>fingerprinting</code> object summarizes confirmation status:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "overall_action": "CONFIRMED",
+    "status_summary": {
+      "suspected": 0,
+      "confirmed": 1,
+      "recovering": 0
+    },
+    "newly_confirmed_incidents": [
+      {
+        "fingerprint_id": "anomaly_8d4a011b83ca",
+        "incident_id": "incident_1dcbafc91480",
+        "anomaly_name": "latency_spike_recent"
+      }
+    ]
+  }
+}
+</code></pre>
+<h2 id="overall-action-values"><a class="header" href="#overall-action-values">Overall Action Values</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CREATE</code></td><td>New SUSPECTED incident(s) created</td></tr>
+<tr><td><code>CONFIRMED</code></td><td>Incident(s) transitioned from SUSPECTED → OPEN</td></tr>
+<tr><td><code>UPDATE</code></td><td>Existing OPEN incident(s) continued</td></tr>
+<tr><td><code>RESOLVE</code></td><td>Incident(s) closed</td></tr>
+<tr><td><code>MIXED</code></td><td>Multiple different actions in one cycle</td></tr>
+<tr><td><code>NO_CHANGE</code></td><td>No significant changes</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="web-api-integration"><a class="header" href="#web-api-integration">Web API Integration</a></h2>
+<p>Only confirmed anomalies are sent to the web API:</p>
+<pre><code class="language-python"># Filter to only confirmed anomalies
+confirmed_anomalies = {
+    name: anomaly for name, anomaly in anomalies.items()
+    if anomaly.get('is_confirmed', False) or
+       anomaly.get('status') in ('OPEN', 'RECOVERING')
+}
+
+if confirmed_anomalies:
+    # Send to web API
+    send_alert(confirmed_anomalies)
+</code></pre>
+<h2 id="suspected-expiration"><a class="header" href="#suspected-expiration">SUSPECTED Expiration</a></h2>
+<p>If an anomaly is never confirmed (not detected for <code>resolution_grace_cycles</code>):</p>
+<pre><code>10:00 - SUSPECTED created
+10:03 - Not detected (missed: 1)
+10:06 - Not detected (missed: 2)
+10:09 - Not detected (missed: 3)
+  → CLOSED with reason: "suspected_expired"
+  → No alert was ever sent
+  → No resolution is sent
+</code></pre>
+<p>This prevents orphaned incidents in the web API.</p>
+<h2 id="tuning-confirmation"><a class="header" href="#tuning-confirmation">Tuning Confirmation</a></h2>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "confirmation_cycles": 3
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Trade-off</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Immediate alerts (no confirmation)</td></tr>
+<tr><td>2</td><td>Default: ~4-6 min confirmation</td></tr>
+<tr><td>3</td><td>Stricter: ~6-9 min confirmation</td></tr>
+<tr><td>4+</td><td>Very strict: may miss real issues</td></tr>
+</tbody>
+</table>
+</div>
+<p>Higher values reduce false positives but increase detection latency.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="fingerprinting"><a class="header" href="#fingerprinting">Fingerprinting</a></h1>
+<p>Fingerprinting assigns stable identifiers to anomaly patterns, enabling tracking across detection cycles.</p>
+<h2 id="id-types"><a class="header" href="#id-types">ID Types</a></h2>
+<h3 id="fingerprint-id"><a class="header" href="#fingerprint-id">Fingerprint ID</a></h3>
+<p>A <strong>deterministic hash</strong> based on anomaly content:</p>
+<pre><code class="language-python">content = f"{service_name}_{model_name}_{anomaly_name}"
+fingerprint_id = f"anomaly_{sha256(content)[:12]}"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Property</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>Deterministic</td><td>Same pattern always gets same ID</td></tr>
+<tr><td>Content-based</td><td>Based on service + model + anomaly type</td></tr>
+<tr><td>Stable</td><td>Doesn’t change across time</td></tr>
+</tbody>
+</table>
+</div>
+<p>Example: <code>anomaly_8d4a011b83ca</code></p>
+<h3 id="incident-id"><a class="header" href="#incident-id">Incident ID</a></h3>
+<p>A <strong>unique occurrence</strong> identifier:</p>
+<pre><code class="language-python">incident_id = f"incident_{uuid4().hex[:16]}"
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Property</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>Unique</td><td>Each occurrence gets new ID</td></tr>
+<tr><td>UUID-based</td><td>Random generation</td></tr>
+<tr><td>Transient</td><td>New ID when pattern reappears</td></tr>
+</tbody>
+</table>
+</div>
+<p>Example: <code>incident_1dcbafc91480</code></p>
+<h2 id="relationship"><a class="header" href="#relationship">Relationship</a></h2>
+<pre><code>                 Fingerprint: anomaly_abc123
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   Incident A         Incident B         Incident C
+   (Jan 10)           (Jan 15)           (Jan 22)
+
+   Same pattern can create multiple incidents over time
+</code></pre>
+<h2 id="how-fingerprinting-works"><a class="header" href="#how-fingerprinting-works">How Fingerprinting Works</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    Fingerprinting Flow                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   Detection Result                                              │
+│   ────────────────                                              │
+│   anomaly: latency_spike_recent                                 │
+│   service: booking                                              │
+│   model: business_hours                                         │
+│                                                                 │
+│          │                                                      │
+│          ▼                                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Generate Fingerprint ID                                │   │
+│   │  hash("booking_business_hours_latency_spike_recent")    │   │
+│   │  → anomaly_d18f6ae2bf62                                 │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│          │                                                      │
+│          ▼                                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │  Check Database                                         │   │
+│   │  Active incident with this fingerprint?                 │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│          │                                                      │
+│    ┌─────┴─────┐                                                │
+│    │           │                                                │
+│   NO          YES                                               │
+│    │           │                                                │
+│    ▼           ▼                                                │
+│  CREATE      UPDATE                                             │
+│  - New ID    - Same IDs                                         │
+│  - SUSPECTED - Increment count                                  │
+│              - Check staleness                                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="database-schema"><a class="header" href="#database-schema">Database Schema</a></h2>
+<pre><code class="language-sql">CREATE TABLE anomaly_incidents (
+    fingerprint_id TEXT NOT NULL,
+    incident_id TEXT PRIMARY KEY,
+    service_name TEXT NOT NULL,
+    anomaly_name TEXT NOT NULL,
+    status TEXT NOT NULL,  -- SUSPECTED, OPEN, RECOVERING, CLOSED
+    severity TEXT NOT NULL,
+    first_seen TIMESTAMP NOT NULL,
+    last_updated TIMESTAMP NOT NULL,
+    resolved_at TIMESTAMP NULL,
+    occurrence_count INTEGER NOT NULL,
+    consecutive_detections INTEGER NOT NULL,
+    missed_cycles INTEGER NOT NULL,
+    ...
+);
+</code></pre>
+<h2 id="staleness-check-1"><a class="header" href="#staleness-check-1">Staleness Check</a></h2>
+<p>If the time gap between detections exceeds <code>incident_separation_minutes</code>:</p>
+<pre><code>Last detected: 10:00
+Current time:  11:15 (75 min gap)
+Threshold:     30 min
+
+Result:
+  → Old incident auto-closed (auto_stale)
+  → New SUSPECTED incident created
+</code></pre>
+<p>This prevents an incident from continuing indefinitely across unrelated events.</p>
+<h2 id="per-anomaly-fields"><a class="header" href="#per-anomaly-fields">Per-Anomaly Fields</a></h2>
+<p>Each anomaly in the output includes fingerprinting metadata:</p>
+<pre><code class="language-json">{
+  "latency_spike_recent": {
+    "fingerprint_id": "anomaly_d18f6ae2bf62",
+    "fingerprint_action": "UPDATE",
+    "incident_id": "incident_31e9e23d4b2b",
+    "incident_action": "CONTINUE",
+    "status": "OPEN",
+    "previous_status": "OPEN",
+    "incident_duration_minutes": 15,
+    "first_seen": "2025-12-17T13:45:00",
+    "last_updated": "2025-12-17T14:00:00",
+    "occurrence_count": 5,
+    "consecutive_detections": 5,
+    "is_confirmed": true
+  }
+}
+</code></pre>
+<h2 id="action-types"><a class="header" href="#action-types">Action Types</a></h2>
+<h3 id="fingerprint-actions"><a class="header" href="#fingerprint-actions">Fingerprint Actions</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CREATE</code></td><td>New pattern, new fingerprint entry</td></tr>
+<tr><td><code>UPDATE</code></td><td>Existing pattern, updating state</td></tr>
+<tr><td><code>RESOLVE</code></td><td>Pattern resolved, closing entry</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="incident-actions"><a class="header" href="#incident-actions">Incident Actions</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CREATE</code></td><td>New incident created</td></tr>
+<tr><td><code>CONTINUE</code></td><td>Incident continuing</td></tr>
+<tr><td><code>CLOSE</code></td><td>Incident closed</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="resolution-payload"><a class="header" href="#resolution-payload">Resolution Payload</a></h2>
+<p>When an incident resolves:</p>
+<pre><code class="language-json">{
+  "resolved_incidents": [
+    {
+      "fingerprint_id": "anomaly_d18f6ae2bf62",
+      "incident_id": "incident_31e9e23d4b2b",
+      "anomaly_name": "latency_spike_recent",
+      "fingerprint_action": "RESOLVE",
+      "incident_action": "CLOSE",
+      "final_severity": "high",
+      "resolved_at": "2025-12-17T14:30:00",
+      "total_occurrences": 8,
+      "incident_duration_minutes": 45,
+      "first_seen": "2025-12-17T13:45:00",
+      "resolution_reason": "resolved"
+    }
+  ]
+}
+</code></pre>
+<h2 id="database-cleanup"><a class="header" href="#database-cleanup">Database Cleanup</a></h2>
+<p>Closed incidents are cleaned up after a configurable period:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "cleanup_max_age_hours": 72
+  }
+}
+</code></pre>
+<p>Incidents older than 72 hours (closed status) are removed to prevent unbounded database growth.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="decision-matrix"><a class="header" href="#decision-matrix">Decision Matrix</a></h1>
+<p>Quick reference for how different conditions map to alert decisions.</p>
+<h2 id="end-to-end-decision-flow"><a class="header" href="#end-to-end-decision-flow">End-to-End Decision Flow</a></h2>
+<pre><code>Metrics
+   │
+   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 1. Detection: Is this behavior unusual?                                  │
+│    Isolation Forest + Pattern Matching                                   │
+│    Output: anomaly detected (yes/no), severity, pattern name             │
+└────────────────────────────────────────────────────────────────────────┬─┘
+                                                                         │
+   ┌─────────────────────────────────────────────────────────────────────┘
+   │
+   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 2. SLO Evaluation: Does it matter operationally?                         │
+│    Latency, Errors, DB Latency, Request Rate vs thresholds              │
+│    Output: slo_status (ok/warning/breached), adjusted severity           │
+└────────────────────────────────────────────────────────────────────────┬─┘
+                                                                         │
+   ┌─────────────────────────────────────────────────────────────────────┘
+   │
+   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 3. Incident Lifecycle: Should we alert now?                              │
+│    Confirmation cycles, grace periods                                    │
+│    Output: alert (yes/no), status (SUSPECTED/OPEN/RECOVERING/CLOSED)     │
+└──────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="detection-decision-matrix"><a class="header" href="#detection-decision-matrix">Detection Decision Matrix</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Traffic</th><th>Latency</th><th>Errors</th><th>Pattern</th><th>Severity</th></tr>
+</thead>
+<tbody>
+<tr><td>High</td><td>Normal</td><td>Normal</td><td><code>traffic_surge_healthy</code></td><td>low</td></tr>
+<tr><td>High</td><td>High</td><td>Normal</td><td><code>traffic_surge_degrading</code></td><td>high</td></tr>
+<tr><td>High</td><td>High</td><td>High</td><td><code>traffic_surge_failing</code></td><td>critical</td></tr>
+<tr><td>Very Low</td><td>Any</td><td>Any</td><td><code>traffic_cliff</code></td><td>critical</td></tr>
+<tr><td>Normal</td><td>High</td><td>Normal</td><td><code>latency_spike_recent</code></td><td>high</td></tr>
+<tr><td>Normal</td><td>High</td><td>Normal (deps healthy)</td><td><code>internal_latency_issue</code></td><td>high</td></tr>
+<tr><td>Normal</td><td>Normal</td><td>High</td><td><code>error_rate_elevated</code></td><td>high</td></tr>
+<tr><td>Normal</td><td>Normal</td><td>Very High</td><td><code>error_rate_critical</code></td><td>critical</td></tr>
+<tr><td>Normal</td><td>Low</td><td>High</td><td><code>fast_failure</code></td><td>critical</td></tr>
+<tr><td>Normal</td><td>Very Low</td><td>Very High</td><td><code>fast_rejection</code></td><td>critical</td></tr>
+<tr><td>Normal</td><td>High (DB dominant)</td><td>Normal</td><td><code>database_bottleneck</code></td><td>high</td></tr>
+<tr><td>Normal</td><td>Normal (DB high)</td><td>Normal</td><td><code>database_degradation</code></td><td>medium</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="slo-severity-adjustment-matrix"><a class="header" href="#slo-severity-adjustment-matrix">SLO Severity Adjustment Matrix</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>ML Severity</th><th>Latency SLO</th><th>Error SLO</th><th>DB SLO</th><th>Final Severity</th></tr>
+</thead>
+<tbody>
+<tr><td>critical</td><td>ok</td><td>ok</td><td>ok</td><td><strong>low</strong></td></tr>
+<tr><td>critical</td><td>ok</td><td>ok</td><td>warning</td><td><strong>low</strong></td></tr>
+<tr><td>critical</td><td>warning</td><td>ok</td><td>ok</td><td>high</td></tr>
+<tr><td>critical</td><td>ok</td><td>warning</td><td>ok</td><td>high</td></tr>
+<tr><td>critical</td><td>breached</td><td>ok</td><td>ok</td><td><strong>critical</strong></td></tr>
+<tr><td>critical</td><td>ok</td><td>breached</td><td>ok</td><td><strong>critical</strong></td></tr>
+<tr><td>high</td><td>ok</td><td>ok</td><td>ok</td><td><strong>low</strong></td></tr>
+<tr><td>high</td><td>warning</td><td>ok</td><td>ok</td><td>high</td></tr>
+<tr><td>medium</td><td>ok</td><td>ok</td><td>ok</td><td><strong>low</strong></td></tr>
+<tr><td>any</td><td>breached</td><td>breached</td><td>any</td><td><strong>critical</strong></td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Key Rule</strong>: SLO status <code>ok</code> → Final severity <code>low</code> (regardless of ML severity)</p>
+<h2 id="incident-state-decision-matrix"><a class="header" href="#incident-state-decision-matrix">Incident State Decision Matrix</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Current State</th><th>Anomaly Detected?</th><th>Consecutive</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>None</td><td>Yes</td><td>1</td><td>CREATE (SUSPECTED)</td></tr>
+<tr><td>SUSPECTED</td><td>Yes</td><td>&lt; threshold</td><td>Stay SUSPECTED</td></tr>
+<tr><td>SUSPECTED</td><td>Yes</td><td>≥ threshold</td><td>→ OPEN (alert)</td></tr>
+<tr><td>SUSPECTED</td><td>No</td><td>&lt; grace</td><td>Stay SUSPECTED</td></tr>
+<tr><td>SUSPECTED</td><td>No</td><td>≥ grace</td><td>→ CLOSED (silent)</td></tr>
+<tr><td>OPEN</td><td>Yes</td><td>any</td><td>Continue OPEN</td></tr>
+<tr><td>OPEN</td><td>No</td><td>1</td><td>→ RECOVERING</td></tr>
+<tr><td>RECOVERING</td><td>Yes</td><td>any</td><td>→ OPEN (resume)</td></tr>
+<tr><td>RECOVERING</td><td>No</td><td>&lt; grace</td><td>Stay RECOVERING</td></tr>
+<tr><td>RECOVERING</td><td>No</td><td>≥ grace</td><td>→ CLOSED (resolve)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="alert-decision-summary"><a class="header" href="#alert-decision-summary">Alert Decision Summary</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Condition</th><th>Alert Sent?</th><th>Reason</th></tr>
+</thead>
+<tbody>
+<tr><td>First detection</td><td>No</td><td>SUSPECTED, waiting for confirmation</td></tr>
+<tr><td>Second consecutive</td><td>Yes</td><td>Confirmed (OPEN)</td></tr>
+<tr><td>Continuing OPEN</td><td>No</td><td>Already alerting</td></tr>
+<tr><td>First non-detection</td><td>No</td><td>Grace period (RECOVERING)</td></tr>
+<tr><td>Resolved</td><td>Resolution</td><td>CLOSED after grace period</td></tr>
+<tr><td>Stale gap (&gt;30 min)</td><td>New alert</td><td>Old closed, new SUSPECTED</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="complete-example-scenarios"><a class="header" href="#complete-example-scenarios">Complete Example Scenarios</a></h2>
+<h3 id="scenario-1-transient-spike-no-alert"><a class="header" href="#scenario-1-transient-spike-no-alert">Scenario 1: Transient Spike (No Alert)</a></h3>
+<pre><code>10:00 - Latency 450ms detected
+        → ML: latency_spike_recent (high)
+        → SLO: 450ms &lt; 500ms acceptable → status: ok
+        → Adjusted severity: low
+        → Status: SUSPECTED (first detection)
+        → Alert: ❌ NO
+
+10:03 - Latency 120ms normal
+        → No anomaly detected
+        → Status: SUSPECTED (missed: 1)
+
+10:06 - Latency 115ms normal
+        → No anomaly detected
+        → Status: SUSPECTED (missed: 2)
+
+10:09 - Latency 118ms normal
+        → Status: CLOSED (suspected_expired)
+        → Alert: ❌ NO (never confirmed)
+</code></pre>
+<h3 id="scenario-2-real-incident-alert"><a class="header" href="#scenario-2-real-incident-alert">Scenario 2: Real Incident (Alert)</a></h3>
+<pre><code>10:00 - Latency 850ms detected
+        → ML: latency_spike_recent (critical)
+        → SLO: 850ms &gt; 800ms warning → status: warning
+        → Adjusted severity: high
+        → Status: SUSPECTED
+        → Alert: ❌ NO (not confirmed)
+
+10:03 - Latency 900ms detected
+        → Status: OPEN (confirmed!)
+        → Alert: ✅ YES
+
+10:06 - Latency 920ms detected
+        → Status: OPEN (continue)
+        → Alert: Already sent
+
+...
+
+10:30 - Latency 200ms normal
+        → Status: RECOVERING (grace: 1)
+
+10:33 - Latency 180ms normal
+        → Status: RECOVERING (grace: 2)
+
+10:36 - Latency 175ms normal
+        → Status: CLOSED (resolved)
+        → Resolution: ✅ YES
+</code></pre>
+<h3 id="scenario-3-slo-suppression-low-priority"><a class="header" href="#scenario-3-slo-suppression-low-priority">Scenario 3: SLO Suppression (Low Priority)</a></h3>
+<pre><code>10:00 - Latency 280ms detected
+        → ML: latency_spike_recent (high)
+        → SLO: 280ms &lt; 300ms acceptable → status: ok
+        → Adjusted severity: low (!!!)
+        → Status: SUSPECTED
+        → Alert: ❌ NO
+
+10:03 - Latency 285ms detected
+        → Status: OPEN (confirmed)
+        → Severity: low
+        → Alert: ✅ YES (low priority)
+</code></pre>
+<h2 id="quick-reference-when-to-alert"><a class="header" href="#quick-reference-when-to-alert">Quick Reference: When to Alert</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Must be True</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>Anomaly detected</td><td>ML flagged unusual behavior</td></tr>
+<tr><td>Pattern matched</td><td>Known operational scenario</td></tr>
+<tr><td>2+ consecutive</td><td>Confirmed, not transient</td></tr>
+<tr><td>SLO evaluated</td><td>Operational impact assessed</td></tr>
+</tbody>
+</table>
+</div>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Final Severity</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>critical</td><td>PagerDuty, immediate action</td></tr>
+<tr><td>high</td><td>Alert, investigate soon</td></tr>
+<tr><td>low</td><td>Log only, informational</td></tr>
+<tr><td>none</td><td>No action</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h1>
+<p>Complete configuration reference for <code>config.json</code>.</p>
+<h2 id="configuration-file-location"><a class="header" href="#configuration-file-location">Configuration File Location</a></h2>
+<p>The system searches for configuration in this order:</p>
+<ol>
+<li><code>CONFIG_FILE</code> environment variable</li>
+<li><code>./config.json</code> (current directory)</li>
+<li><code>./config/config.json</code></li>
+<li><code>~/.smartbox/config.json</code></li>
+<li><code>/etc/smartbox/config.json</code></li>
+</ol>
+<h2 id="core-sections"><a class="header" href="#core-sections">Core Sections</a></h2>
+<h3 id="victoriametrics"><a class="header" href="#victoriametrics">VictoriaMetrics</a></h3>
+<pre><code class="language-json">{
+  "victoria_metrics": {
+    "endpoint": "https://otel-metrics.production.smartbox.com",
+    "timeout_seconds": 10,
+    "max_retries": 3,
+    "pool_connections": 20,
+    "circuit_breaker_threshold": 5,
+    "circuit_breaker_timeout_seconds": 300
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>endpoint</code></td><td>required</td><td>VictoriaMetrics server URL</td></tr>
+<tr><td><code>timeout_seconds</code></td><td>10</td><td>Request timeout</td></tr>
+<tr><td><code>max_retries</code></td><td>3</td><td>Retry attempts</td></tr>
+<tr><td><code>circuit_breaker_threshold</code></td><td>5</td><td>Failures before circuit opens</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="slo-configuration"><a class="header" href="#slo-configuration">SLO Configuration</a></h3>
+<pre><code class="language-json">{
+  "slos": {
+    "enabled": true,
+    "allow_downgrade_to_informational": true,
+    "require_slo_breach_for_critical": true,
+    "defaults": {
+      "latency_acceptable_ms": 500,
+      "latency_warning_ms": 800,
+      "latency_critical_ms": 1000,
+      "error_rate_acceptable": 0.005,
+      "error_rate_warning": 0.01,
+      "error_rate_critical": 0.02,
+      "error_rate_floor": 0,
+      "database_latency_floor_ms": 5.0,
+      "database_latency_ratios": {
+        "info": 1.5,
+        "warning": 2.0,
+        "high": 3.0,
+        "critical": 5.0
+      },
+      "busy_period_factor": 1.5
+    },
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300,
+        "latency_critical_ms": 500,
+        "error_rate_acceptable": 0.002,
+        "error_rate_floor": 0.002
+      }
+    },
+    "busy_periods": [
+      {
+        "start": "2024-12-20T00:00:00",
+        "end": "2025-01-05T23:59:59"
+      }
+    ]
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>true</td><td>Enable SLO evaluation</td></tr>
+<tr><td><code>allow_downgrade_to_informational</code></td><td>true</td><td>Allow severity reduction when SLO ok</td></tr>
+<tr><td><code>require_slo_breach_for_critical</code></td><td>true</td><td>Only critical if SLO breached</td></tr>
+<tr><td><code>latency_acceptable_ms</code></td><td>500</td><td>Latency SLO acceptable threshold</td></tr>
+<tr><td><code>latency_critical_ms</code></td><td>1000</td><td>Latency SLO critical threshold</td></tr>
+<tr><td><code>error_rate_acceptable</code></td><td>0.005</td><td>Error rate acceptable (0.5%)</td></tr>
+<tr><td><code>error_rate_floor</code></td><td>0</td><td>Error rate suppression floor</td></tr>
+<tr><td><code>database_latency_floor_ms</code></td><td>5.0</td><td>DB latency noise floor</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="fingerprinting-1"><a class="header" href="#fingerprinting-1">Fingerprinting</a></h3>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "db_path": "./anomaly_state.db",
+    "cleanup_max_age_hours": 72,
+    "incident_separation_minutes": 30,
+    "confirmation_cycles": 2,
+    "resolution_grace_cycles": 3
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>db_path</code></td><td>./anomaly_state.db</td><td>SQLite database path</td></tr>
+<tr><td><code>cleanup_max_age_hours</code></td><td>72</td><td>Hours before cleanup</td></tr>
+<tr><td><code>incident_separation_minutes</code></td><td>30</td><td>Gap triggering new incident</td></tr>
+<tr><td><code>confirmation_cycles</code></td><td>2</td><td>Cycles to confirm (send alert)</td></tr>
+<tr><td><code>resolution_grace_cycles</code></td><td>3</td><td>Cycles before closing</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="services"><a class="header" href="#services">Services</a></h3>
+<pre><code class="language-json">{
+  "services": {
+    "critical": ["booking", "search", "mobile-api"],
+    "standard": ["friday", "gambit", "titan"],
+    "micro": ["fa5"],
+    "admin": ["m2-fr-adm", "m2-it-adm"],
+    "core": ["m2-bb", "m2-fr"]
+  }
+}
+</code></pre>
+<p>Service categories affect default contamination rates:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Category</th><th>Contamination</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>critical</td><td>0.03</td><td>Revenue-critical services</td></tr>
+<tr><td>standard</td><td>0.05</td><td>Normal production</td></tr>
+<tr><td>core</td><td>0.04</td><td>Platform infrastructure</td></tr>
+<tr><td>admin</td><td>0.06</td><td>Administrative tools</td></tr>
+<tr><td>micro</td><td>0.08</td><td>Low-traffic services</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h3>
+<pre><code class="language-json">{
+  "dependencies": {
+    "graph": {
+      "booking": ["search", "vms", "r2d2"],
+      "vms": ["titan"],
+      "search": ["catalog", "r2d2"]
+    },
+    "cascade_detection": {
+      "enabled": true,
+      "max_depth": 5
+    }
+  }
+}
+</code></pre>
+<h3 id="model-configuration"><a class="header" href="#model-configuration">Model Configuration</a></h3>
+<pre><code class="language-json">{
+  "model": {
+    "models_directory": "./smartbox_models/",
+    "min_training_samples": 500,
+    "min_multivariate_samples": 1000,
+    "default_contamination": 0.05,
+    "default_n_estimators": 200,
+    "contamination_by_service": {
+      "booking": 0.02,
+      "search": 0.04
+    }
+  }
+}
+</code></pre>
+<h3 id="time-periods"><a class="header" href="#time-periods">Time Periods</a></h3>
+<pre><code class="language-json">{
+  "time_periods": {
+    "business_hours": {"start": 8, "end": 18, "weekdays_only": true},
+    "evening_hours": {"start": 18, "end": 22, "weekdays_only": true},
+    "night_hours": {"start": 22, "end": 6, "weekdays_only": true},
+    "weekend_day": {"start": 8, "end": 22, "weekends_only": true},
+    "weekend_night": {"start": 22, "end": 8, "weekends_only": true}
+  }
+}
+</code></pre>
+<h3 id="inference"><a class="header" href="#inference">Inference</a></h3>
+<pre><code class="language-json">{
+  "inference": {
+    "alerts_directory": "./alerts/",
+    "max_workers": 3,
+    "inter_service_delay_seconds": 0.2,
+    "check_drift": false
+  }
+}
+</code></pre>
+<h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variable</th><th>Config Path</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CONFIG_FILE</code></td><td>-</td><td>Path to config file</td></tr>
+<tr><td><code>VM_ENDPOINT</code></td><td>victoria_metrics.endpoint</td><td>VictoriaMetrics URL</td></tr>
+<tr><td><code>FINGERPRINT_DB</code></td><td>fingerprinting.db_path</td><td>SQLite path</td></tr>
+<tr><td><code>OBSERVABILITY_URL</code></td><td>observability_api.base_url</td><td>API server URL</td></tr>
+<tr><td><code>OBSERVABILITY_ENABLED</code></td><td>observability_api.enabled</td><td>Enable API</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="docker-configuration"><a class="header" href="#docker-configuration">Docker Configuration</a></h2>
+<pre><code class="language-yaml">environment:
+  - TZ=UTC
+  - CONFIG_PATH=/app/config.json
+  - TRAIN_SCHEDULE=0 2 * * *
+  - INFERENCE_SCHEDULE=*/10 * * * *
+volumes:
+  - ./smartbox_models:/app/smartbox_models
+  - ./data:/app/data
+  - ./config.json:/app/config.json
+</code></pre>
+<h2 id="adding-new-services"><a class="header" href="#adding-new-services">Adding New Services</a></h2>
+<ol>
+<li>Add to appropriate category in <code>services</code> section</li>
+<li>Optionally add per-service SLO thresholds</li>
+<li>Optionally add contamination override</li>
+<li>Run training: <code>docker compose run --rm yaga train</code></li>
+<li>Verify: <code>docker compose run --rm yaga inference --verbose</code></li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="api-payload-reference"><a class="header" href="#api-payload-reference">API Payload Reference</a></h1>
+<p>Reference for the JSON payload structure sent by the inference engine.</p>
+<h2 id="alert-types"><a class="header" href="#alert-types">Alert Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>anomaly_detected</code></td><td>Anomalies detected for service</td></tr>
+<tr><td><code>no_anomaly</code></td><td>Service is healthy</td></tr>
+<tr><td><code>metrics_unavailable</code></td><td>Metrics collection failed</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="top-level-structure"><a class="header" href="#top-level-structure">Top-Level Structure</a></h2>
+<pre><code class="language-json">{
+  "alert_type": "anomaly_detected",
+  "service_name": "booking",
+  "timestamp": "2024-01-15T10:30:00",
+  "time_period": "business_hours",
+  "model_name": "business_hours",
+  "model_type": "time_aware_5period",
+
+  "anomaly_count": 1,
+  "overall_severity": "high",
+
+  "anomalies": { ... },
+  "current_metrics": { ... },
+  "slo_evaluation": { ... },
+  "exception_context": { ... },
+  "service_graph_context": { ... },
+  "fingerprinting": { ... }
+}
+</code></pre>
+<h2 id="current-metrics"><a class="header" href="#current-metrics">Current Metrics</a></h2>
+<pre><code class="language-json">{
+  "current_metrics": {
+    "request_rate": 52.7,
+    "application_latency": 110.5,
+    "client_latency": 1.4,
+    "database_latency": 0.8,
+    "error_rate": 0.0001
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Unit</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>request_rate</td><td>req/s</td><td>Requests per second</td></tr>
+<tr><td>application_latency</td><td>ms</td><td>Server processing time</td></tr>
+<tr><td>client_latency</td><td>ms</td><td>External dependency latency</td></tr>
+<tr><td>database_latency</td><td>ms</td><td>Database query time</td></tr>
+<tr><td>error_rate</td><td>ratio</td><td>Error rate (0.05 = 5%)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="anomaly-object"><a class="header" href="#anomaly-object">Anomaly Object</a></h2>
+<pre><code class="language-json">{
+  "latency_spike_recent": {
+    "type": "consolidated",
+    "root_metric": "application_latency",
+    "severity": "high",
+    "confidence": 0.80,
+    "score": -0.5,
+    "signal_count": 2,
+
+    "description": "Latency degradation: 636ms (92nd percentile)",
+    "interpretation": "Latency recently increased...",
+    "pattern_name": "latency_spike_recent",
+
+    "detection_signals": [ ... ],
+    "recommended_actions": [ ... ],
+    "comparison_data": { ... },
+
+    "fingerprint_id": "anomaly_d18f6ae2bf62",
+    "incident_id": "incident_31e9e23d4b2b",
+    "status": "OPEN",
+    "occurrence_count": 5,
+    "is_confirmed": true
+  }
+}
+</code></pre>
+<h2 id="detection-signals"><a class="header" href="#detection-signals">Detection Signals</a></h2>
+<pre><code class="language-json">{
+  "detection_signals": [
+    {
+      "method": "isolation_forest",
+      "type": "ml_isolation",
+      "severity": "low",
+      "score": -0.01,
+      "direction": "high",
+      "percentile": 91.7
+    },
+    {
+      "method": "named_pattern_matching",
+      "type": "multivariate_pattern",
+      "severity": "high",
+      "score": -0.5,
+      "pattern": "latency_spike_recent"
+    }
+  ]
+}
+</code></pre>
+<h2 id="slo-evaluation"><a class="header" href="#slo-evaluation">SLO Evaluation</a></h2>
+<pre><code class="language-json">{
+  "slo_evaluation": {
+    "original_severity": "critical",
+    "adjusted_severity": "low",
+    "severity_changed": true,
+    "slo_status": "ok",
+    "slo_proximity": 0.56,
+    "operational_impact": "informational",
+
+    "latency_evaluation": {
+      "status": "ok",
+      "value": 280.0,
+      "threshold_acceptable": 300,
+      "proximity": 0.93
+    },
+    "error_rate_evaluation": {
+      "status": "ok",
+      "value": 0.001,
+      "value_percent": "0.10%",
+      "within_acceptable": true
+    },
+    "database_latency_evaluation": {
+      "status": "warning",
+      "value_ms": 25.0,
+      "baseline_mean_ms": 10.0,
+      "ratio": 2.5
+    },
+    "request_rate_evaluation": {
+      "status": "ok",
+      "type": "normal",
+      "value_rps": 52.7,
+      "baseline_mean_rps": 50.0,
+      "ratio": 1.05
+    },
+
+    "explanation": "Severity adjusted from critical to low..."
+  }
+}
+</code></pre>
+<h2 id="cascade-analysis"><a class="header" href="#cascade-analysis">Cascade Analysis</a></h2>
+<pre><code class="language-json">{
+  "cascade_analysis": {
+    "is_cascade": true,
+    "root_cause_service": "titan",
+    "affected_chain": ["titan", "vms"],
+    "cascade_type": "upstream_cascade",
+    "confidence": 0.85,
+    "propagation_path": [
+      {"service": "titan", "has_anomaly": true, "anomaly_type": "database_bottleneck"},
+      {"service": "vms", "has_anomaly": true, "anomaly_type": "downstream_cascade"}
+    ]
+  }
+}
+</code></pre>
+<h2 id="fingerprinting-2"><a class="header" href="#fingerprinting-2">Fingerprinting</a></h2>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "service_name": "booking",
+    "model_name": "business_hours",
+    "timestamp": "2025-12-17T13:56:06",
+    "overall_action": "UPDATE",
+    "total_active_incidents": 1,
+    "total_alerting_incidents": 1,
+
+    "action_summary": {
+      "incident_creates": 0,
+      "incident_continues": 1,
+      "incident_closes": 0,
+      "newly_confirmed": 0
+    },
+    "status_summary": {
+      "suspected": 0,
+      "confirmed": 1,
+      "recovering": 0
+    },
+    "resolved_incidents": [],
+    "newly_confirmed_incidents": []
+  }
+}
+</code></pre>
+<h2 id="exception-context"><a class="header" href="#exception-context">Exception Context</a></h2>
+<p>Present when error SLO breached:</p>
+<pre><code class="language-json">{
+  "exception_context": {
+    "service_name": "search",
+    "timestamp": "2024-01-15T10:30:00",
+    "total_exception_rate": 0.35,
+    "exception_count": 3,
+    "top_exceptions": [
+      {
+        "type": "Smartbox\\Search\\R2D2\\Exception\\R2D2Exception",
+        "short_name": "R2D2Exception",
+        "rate": 0.217,
+        "percentage": 62.0
+      }
+    ],
+    "query_successful": true
+  }
+}
+</code></pre>
+<h2 id="service-graph-context"><a class="header" href="#service-graph-context">Service Graph Context</a></h2>
+<p>Present when client latency SLO breached:</p>
+<pre><code class="language-json">{
+  "service_graph_context": {
+    "service_name": "cmhub",
+    "total_request_rate": 2.1,
+    "routes": [
+      {
+        "server": "r2d2",
+        "route": "roomavailabilitylistener",
+        "request_rate": 0.117,
+        "avg_latency_ms": 29.0,
+        "percentage": 5.6
+      }
+    ],
+    "top_route": { ... },
+    "slowest_route": { ... },
+    "summary": "Service graph for cmhub..."
+  }
+}
+</code></pre>
+<h2 id="resolution-payload-1"><a class="header" href="#resolution-payload-1">Resolution Payload</a></h2>
+<pre><code class="language-json">{
+  "resolved_incidents": [
+    {
+      "fingerprint_id": "anomaly_061598e9ca91",
+      "incident_id": "incident_abc123def456",
+      "anomaly_name": "database_degradation",
+      "fingerprint_action": "RESOLVE",
+      "incident_action": "CLOSE",
+      "final_severity": "medium",
+      "resolved_at": "2025-12-17T14:30:00",
+      "total_occurrences": 5,
+      "incident_duration_minutes": 45,
+      "first_seen": "2025-12-17T13:45:00",
+      "resolution_reason": "resolved"
+    }
+  ]
+}
+</code></pre>
+<h2 id="severity-values"><a class="header" href="#severity-values">Severity Values</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Severity</th><th>Priority</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>critical</td><td>1</td><td>Immediate action required</td></tr>
+<tr><td>high</td><td>2</td><td>Investigate promptly</td></tr>
+<tr><td>medium</td><td>3</td><td>Monitor closely</td></tr>
+<tr><td>low</td><td>4</td><td>Informational</td></tr>
+<tr><td>none</td><td>5</td><td>No anomaly</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="named-patterns-1"><a class="header" href="#named-patterns-1">Named Patterns</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Pattern</th><th>Severity</th><th>Trigger Condition</th></tr>
+</thead>
+<tbody>
+<tr><td><code>traffic_surge_healthy</code></td><td>low</td><td>High traffic, normal latency/errors</td></tr>
+<tr><td><code>traffic_surge_degrading</code></td><td>high</td><td>High traffic, high latency</td></tr>
+<tr><td><code>traffic_surge_failing</code></td><td>critical</td><td>High traffic, high latency, high errors</td></tr>
+<tr><td><code>traffic_cliff</code></td><td>critical</td><td>Very low traffic</td></tr>
+<tr><td><code>latency_spike_recent</code></td><td>high</td><td>Normal traffic, high latency</td></tr>
+<tr><td><code>internal_latency_issue</code></td><td>high</td><td>High latency, healthy deps</td></tr>
+<tr><td><code>error_rate_elevated</code></td><td>high</td><td>Elevated error rate</td></tr>
+<tr><td><code>error_rate_critical</code></td><td>critical</td><td>Very high error rate</td></tr>
+<tr><td><code>fast_failure</code></td><td>critical</td><td>Low latency, high errors</td></tr>
+<tr><td><code>fast_rejection</code></td><td>critical</td><td>Very low latency, very high errors</td></tr>
+<tr><td><code>database_bottleneck</code></td><td>high</td><td>High DB latency, DB dominant</td></tr>
+<tr><td><code>database_degradation</code></td><td>medium</td><td>High DB latency, compensating</td></tr>
+<tr><td><code>upstream_cascade</code></td><td>high</td><td>High latency + upstream anomaly</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
+<p>Common issues and solutions for the anomaly detection system.</p>
+<h2 id="detection-issues"><a class="header" href="#detection-issues">Detection Issues</a></h2>
+<h3 id="no-anomalies-detected-when-expected"><a class="header" href="#no-anomalies-detected-when-expected">No Anomalies Detected (When Expected)</a></h3>
+<p><strong>Symptoms</strong>: Real incidents but no alerts.</p>
+<p><strong>Checks</strong>:</p>
+<pre><code class="language-bash"># Verify models exist
+ls -la smartbox_models/&lt;service-name&gt;/
+
+# Check inference logs
+docker compose exec yaga tail -20 /app/logs/inference.log
+
+# Run verbose inference
+docker compose run --rm yaga inference --verbose
+</code></pre>
+<p><strong>Common Causes</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Cause</th><th>Solution</th></tr>
+</thead>
+<tbody>
+<tr><td>No trained model</td><td>Run <code>docker compose run --rm yaga train</code></td></tr>
+<tr><td>Service not in config</td><td>Add to <code>services</code> section</td></tr>
+<tr><td>Contamination too high</td><td>Lower contamination for service</td></tr>
+<tr><td>Model stale</td><td>Retrain with fresh data</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="too-many-false-positives"><a class="header" href="#too-many-false-positives">Too Many False Positives</a></h3>
+<p><strong>Symptoms</strong>: Alerts for normal behavior.</p>
+<p><strong>Solutions</strong>:</p>
+<ol>
+<li><strong>Increase contamination</strong>:</li>
+</ol>
+<pre><code class="language-json">{
+  "model": {
+    "contamination_by_service": {
+      "noisy-service": 0.08
+    }
+  }
+}
+</code></pre>
+<ol start="2">
+<li><strong>Adjust SLO thresholds</strong>:</li>
+</ol>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "noisy-service": {
+        "latency_acceptable_ms": 600,
+        "error_rate_floor": 0.005
+      }
+    }
+  }
+}
+</code></pre>
+<ol start="3">
+<li><strong>Retrain models</strong> after configuration change.</li>
+</ol>
+<h3 id="alerts-always-low-severity"><a class="header" href="#alerts-always-low-severity">Alerts Always Low Severity</a></h3>
+<p><strong>Symptom</strong>: All alerts show <code>severity: low</code>.</p>
+<p><strong>Cause</strong>: SLO status is <code>ok</code> for all anomalies.</p>
+<p><strong>Check</strong>: Review SLO thresholds - they may be too lenient.</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 200,  // Was 500
+        "latency_critical_ms": 400     // Was 1000
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="incident-lifecycle-issues"><a class="header" href="#incident-lifecycle-issues">Incident Lifecycle Issues</a></h2>
+<h3 id="alerts-not-being-sent"><a class="header" href="#alerts-not-being-sent">Alerts Not Being Sent</a></h3>
+<p><strong>Symptom</strong>: Anomalies detected but no alerts reach web API.</p>
+<p><strong>Possible Causes</strong>:</p>
+<ol>
+<li>
+<p><strong>Still in SUSPECTED state</strong> (not confirmed):</p>
+<ul>
+<li>Wait for 2 consecutive detections</li>
+<li>Check <code>is_confirmed: false</code> in output</li>
+</ul>
+</li>
+<li>
+<p><strong>Web API unreachable</strong>:</p>
+<pre><code class="language-bash">docker compose exec yaga curl http://observability-api:8000/health
+</code></pre>
+</li>
+<li>
+<p><strong>API disabled in config</strong>:</p>
+<pre><code class="language-json">{
+  "observability_api": {
+    "enabled": true  // Check this
+  }
+}
+</code></pre>
+</li>
+</ol>
+<h3 id="orphaned-incidents-in-web-api"><a class="header" href="#orphaned-incidents-in-web-api">Orphaned Incidents in Web API</a></h3>
+<p><strong>Symptom</strong>: OPEN incidents that never resolve.</p>
+<p><strong>Cause</strong>: SUSPECTED alerts were sent before v1.3.2.</p>
+<p><strong>Solution</strong>: Clean up orphaned incidents manually or wait for next detection cycle.</p>
+<h3 id="incidents-restarting-unexpectedly"><a class="header" href="#incidents-restarting-unexpectedly">Incidents Restarting Unexpectedly</a></h3>
+<p><strong>Symptom</strong>: Same anomaly creates new incident ID.</p>
+<p><strong>Cause</strong>: Time gap exceeded <code>incident_separation_minutes</code>.</p>
+<p><strong>Check</strong>: Look for <code>resolution_reason: "auto_stale"</code> in logs.</p>
+<p><strong>Adjust</strong>:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "incident_separation_minutes": 60  // Was 30
+  }
+}
+</code></pre>
+<h2 id="metrics-issues"><a class="header" href="#metrics-issues">Metrics Issues</a></h2>
+<h3 id="metrics_unavailable-alerts"><a class="header" href="#metrics_unavailable-alerts">metrics_unavailable Alerts</a></h3>
+<p><strong>Symptom</strong>: <code>alert_type: "metrics_unavailable"</code> instead of detection.</p>
+<p><strong>Cause</strong>: VictoriaMetrics unreachable.</p>
+<p><strong>Checks</strong>:</p>
+<pre><code class="language-bash"># Test connectivity
+docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
+
+# Check circuit breaker
+docker compose exec yaga tail -50 /app/logs/inference.log | grep -i "circuit"
+</code></pre>
+<p><strong>Solutions</strong>:</p>
+<ul>
+<li>Fix VM connectivity</li>
+<li>Wait for circuit breaker timeout (5 min default)</li>
+<li>Increase timeout in config</li>
+</ul>
+<h3 id="validation-warnings"><a class="header" href="#validation-warnings">Validation Warnings</a></h3>
+<p><strong>Symptom</strong>: <code>validation_warnings</code> in output.</p>
+<p><strong>Example</strong>:</p>
+<pre><code class="language-json">{
+  "validation_warnings": [
+    "error_rate: value 1.5 &gt; 1.0, capping at 1.0"
+  ]
+}
+</code></pre>
+<p><strong>Cause</strong>: Upstream data quality issue.</p>
+<p><strong>Action</strong>: Investigate metric source. Detection still runs with sanitized values.</p>
+<h2 id="slo-issues"><a class="header" href="#slo-issues">SLO Issues</a></h2>
+<h3 id="slo-evaluation-failed"><a class="header" href="#slo-evaluation-failed">SLO Evaluation Failed</a></h3>
+<p><strong>Symptom</strong>: Warning in logs about SLO evaluation.</p>
+<p><strong>Check</strong>: Ensure SLOEvaluator has correct method calls:</p>
+<pre><code class="language-python"># Correct
+slo_evaluator.evaluate_metrics(current_metrics, service_name)
+
+# Incorrect
+slo_evaluator.evaluate(...)  # Method doesn't exist
+</code></pre>
+<h3 id="database-latency-always-ok"><a class="header" href="#database-latency-always-ok">Database Latency Always OK</a></h3>
+<p><strong>Symptom</strong>: DB latency anomalies show <code>status: "ok"</code>.</p>
+<p><strong>Cause</strong>: Values below noise floor.</p>
+<p><strong>Check</strong>: Current value vs floor:</p>
+<pre><code class="language-json">{
+  "database_latency_evaluation": {
+    "value_ms": 2.0,
+    "floor_ms": 5.0,
+    "below_floor": true  // ← This is why
+  }
+}
+</code></pre>
+<p><strong>Adjust</strong>: Lower floor if needed:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "fast-db-service": {
+        "database_latency_floor_ms": 1.0
+      }
+    }
+  }
+}
+</code></pre>
+<h2 id="training-issues"><a class="header" href="#training-issues">Training Issues</a></h2>
+<h3 id="training-fails"><a class="header" href="#training-fails">Training Fails</a></h3>
+<p><strong>Symptoms</strong>: Models not updating.</p>
+<p><strong>Checks</strong>:</p>
+<pre><code class="language-bash"># Check training logs
+docker compose exec yaga cat /app/logs/train.log
+
+# Check VM connectivity
+docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
+
+# Verify disk space
+df -h
+</code></pre>
+<p><strong>Common Causes</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Cause</th><th>Solution</th></tr>
+</thead>
+<tbody>
+<tr><td>VM unreachable</td><td>Check network</td></tr>
+<tr><td>Not enough data</td><td>Need 30 days minimum</td></tr>
+<tr><td>Disk full</td><td>Clean old models/logs</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="model-drift-detected"><a class="header" href="#model-drift-detected">Model Drift Detected</a></h3>
+<p><strong>Symptom</strong>: <code>drift_warning</code> in output.</p>
+<p><strong>Check drift score</strong>:</p>
+<ul>
+<li>Score &lt; 3: Normal</li>
+<li>Score 3-5: Monitor, consider retraining</li>
+<li>Score &gt; 5: Retrain soon</li>
+</ul>
+<pre><code class="language-bash"># Retrain
+docker compose run --rm yaga train
+</code></pre>
+<h2 id="container-issues"><a class="header" href="#container-issues">Container Issues</a></h2>
+<h3 id="container-keeps-restarting"><a class="header" href="#container-keeps-restarting">Container Keeps Restarting</a></h3>
+<p><strong>Check exit code</strong>:</p>
+<pre><code class="language-bash">docker compose ps -a
+docker compose logs --tail 50
+</code></pre>
+<p><strong>Common Causes</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Cause</th><th>Solution</th></tr>
+</thead>
+<tbody>
+<tr><td>Config missing</td><td>Ensure config.json exists</td></tr>
+<tr><td>Invalid JSON</td><td>Validate config syntax</td></tr>
+<tr><td>OOM killed</td><td>Increase memory limit</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="database-locked"><a class="header" href="#database-locked">Database Locked</a></h3>
+<p><strong>Symptom</strong>: <code>database is locked</code> error.</p>
+<p><strong>Cause</strong>: Concurrent access to SQLite.</p>
+<p><strong>Solution</strong>: Only run one inference at a time, or use proper locking.</p>
+<h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
+<h3 id="enable-verbose-logging"><a class="header" href="#enable-verbose-logging">Enable Verbose Logging</a></h3>
+<pre><code class="language-bash"># Run with verbose
+docker compose run --rm yaga inference --verbose
+
+# Or set in config
+</code></pre>
+<pre><code class="language-json">{
+  "logging": {
+    "level": "DEBUG"
+  }
+}
+</code></pre>
+<h3 id="inspect-model-details"><a class="header" href="#inspect-model-details">Inspect Model Details</a></h3>
+<pre><code class="language-bash"># Check model metadata
+docker compose exec yaga cat /app/smartbox_models/&lt;service&gt;/business_hours/metadata.json | python -m json.tool
+</code></pre>
+<h3 id="check-fingerprint-database"><a class="header" href="#check-fingerprint-database">Check Fingerprint Database</a></h3>
+<pre><code class="language-bash"># List active incidents
+docker compose exec yaga sqlite3 /app/data/anomaly_state.db \
+  "SELECT fingerprint_id, status, occurrence_count FROM anomaly_incidents WHERE status != 'CLOSED';"
+</code></pre>
+<h2 id="getting-help"><a class="header" href="#getting-help">Getting Help</a></h2>
+<ol>
+<li>Check logs: <code>docker compose logs --tail 100</code></li>
+<li>Run verbose: <code>docker compose run --rm yaga inference --verbose</code></li>
+<li>Review configuration: Ensure all paths and URLs are correct</li>
+<li>Check documentation: See detailed docs in <code>docs/</code> directory</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

@@ -70,11 +70,26 @@ from smartbox_anomaly.core.logging import (
     verbose_mode,
 )
 from smartbox_anomaly.core.types import (
+    # Dataclasses
     CascadeAnalysis,
     CascadeDetectionConfig,
     DependencyContext,
     DependencyGraphConfig,
     DependencyStatus,
+    # TypedDicts for inference pipeline
+    AnomalyData,
+    ComparisonMetric,
+    DetectionSignalDict,
+    FingerprintingActionSummary,
+    FingerprintingData,
+    FingerprintingStats,
+    FingerprintingStatusSummary,
+    InferenceResultDict,
+    MetricsDict,
+    ResolvedIncidentData,
+    SLOEvaluationData,
+    SLOErrorRateEvaluation,
+    SLOLatencyEvaluation,
 )
 from smartbox_anomaly.core.utils import (
     build_full_service_name,
@@ -183,4 +198,18 @@ __all__ = [
     "CascadeAnalysis",
     "CascadeDetectionConfig",
     "DependencyGraphConfig",
+    # TypedDicts for inference pipeline
+    "AnomalyData",
+    "ComparisonMetric",
+    "DetectionSignalDict",
+    "FingerprintingActionSummary",
+    "FingerprintingData",
+    "FingerprintingStats",
+    "FingerprintingStatusSummary",
+    "InferenceResultDict",
+    "MetricsDict",
+    "ResolvedIncidentData",
+    "SLOEvaluationData",
+    "SLOErrorRateEvaluation",
+    "SLOLatencyEvaluation",
 ]
