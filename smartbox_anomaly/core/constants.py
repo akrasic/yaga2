@@ -82,13 +82,16 @@ class IncidentAction(str, Enum):
 
 
 class TimePeriod(str, Enum):
-    """Time periods for time-aware anomaly detection."""
+    """Time periods for time-aware anomaly detection.
 
-    BUSINESS_HOURS = "business_hours"
-    EVENING_HOURS = "evening_hours"
-    NIGHT_HOURS = "night_hours"
-    WEEKEND_DAY = "weekend_day"
-    WEEKEND_NIGHT = "weekend_night"
+    Uses 3 time-of-day buckets that include all 7 days of the week.
+    This provides more training data per period compared to separating
+    weekends, leading to more stable models.
+    """
+
+    BUSINESS_HOURS = "business_hours"  # 8-18 all days (renamed for clarity: "day hours")
+    EVENING_HOURS = "evening_hours"    # 18-22 all days
+    NIGHT_HOURS = "night_hours"        # 22-8 all days
 
     @classmethod
     def all_periods(cls) -> tuple[TimePeriod, ...]:
@@ -97,13 +100,17 @@ class TimePeriod(str, Enum):
 
     @property
     def is_weekend(self) -> bool:
-        """Check if this period is a weekend period."""
-        return self in (self.WEEKEND_DAY, self.WEEKEND_NIGHT)
+        """Check if this period is a weekend period.
+
+        Note: With 3-period model, periods are time-of-day based, not day-of-week.
+        This always returns False as weekend data is combined with weekday data.
+        """
+        return False
 
     @property
     def is_night(self) -> bool:
         """Check if this period is a night period."""
-        return self in (self.NIGHT_HOURS, self.WEEKEND_NIGHT)
+        return self == self.NIGHT_HOURS
 
 
 class ServiceCategory(str, Enum):
@@ -244,46 +251,28 @@ class Thresholds:
 
 
 # Fallback period priorities when primary period model is unavailable
+# With 3-period model, fallback is simpler - use adjacent time periods
 PERIOD_FALLBACK_MAP: Final[dict[str, tuple[str, ...]]] = {
     TimePeriod.BUSINESS_HOURS.value: (
         TimePeriod.EVENING_HOURS.value,
-        TimePeriod.WEEKEND_DAY.value,
         TimePeriod.NIGHT_HOURS.value,
-        TimePeriod.WEEKEND_NIGHT.value,
-    ),
-    TimePeriod.NIGHT_HOURS.value: (
-        TimePeriod.WEEKEND_NIGHT.value,
-        TimePeriod.EVENING_HOURS.value,
-        TimePeriod.BUSINESS_HOURS.value,
-        TimePeriod.WEEKEND_DAY.value,
     ),
     TimePeriod.EVENING_HOURS.value: (
         TimePeriod.BUSINESS_HOURS.value,
-        TimePeriod.WEEKEND_DAY.value,
-        TimePeriod.NIGHT_HOURS.value,
-        TimePeriod.WEEKEND_NIGHT.value,
-    ),
-    TimePeriod.WEEKEND_DAY.value: (
-        TimePeriod.BUSINESS_HOURS.value,
-        TimePeriod.EVENING_HOURS.value,
-        TimePeriod.WEEKEND_NIGHT.value,
         TimePeriod.NIGHT_HOURS.value,
     ),
-    TimePeriod.WEEKEND_NIGHT.value: (
-        TimePeriod.NIGHT_HOURS.value,
-        TimePeriod.WEEKEND_DAY.value,
+    TimePeriod.NIGHT_HOURS.value: (
         TimePeriod.EVENING_HOURS.value,
         TimePeriod.BUSINESS_HOURS.value,
     ),
 }
 
 # Time confidence scores by period (higher = more reliable detection)
+# With 3-period model, all periods have more data so confidence is generally higher
 PERIOD_CONFIDENCE_SCORES: Final[dict[str, float]] = {
-    TimePeriod.BUSINESS_HOURS.value: 0.9,
-    TimePeriod.NIGHT_HOURS.value: 0.95,
-    TimePeriod.EVENING_HOURS.value: 0.8,
-    TimePeriod.WEEKEND_DAY.value: 0.7,
-    TimePeriod.WEEKEND_NIGHT.value: 0.6,
+    TimePeriod.BUSINESS_HOURS.value: 0.9,   # Highest - most predictable traffic
+    TimePeriod.EVENING_HOURS.value: 0.85,   # Good - transition period
+    TimePeriod.NIGHT_HOURS.value: 0.8,      # Still good - more data than old weekend periods
 }
 
 
@@ -308,10 +297,13 @@ SERVICE_CATEGORY_PATTERNS: Final[dict[ServiceCategory, tuple[str, ...]]] = {
 
 
 # Time period suffixes used in model directory names
+# Current 3-period model uses: business_hours, evening_hours, night_hours
+# Legacy suffixes kept for backwards compatibility when loading old models
 TIME_PERIOD_SUFFIXES: Final[tuple[str, ...]] = (
     "_business_hours",
     "_evening_hours",
     "_night_hours",
+    # Legacy 5-period model suffixes (for backwards compatibility)
     "_weekend_day",
     "_weekend_night",
     "_weekend",  # Legacy 4-period compatibility

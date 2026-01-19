@@ -1,6 +1,6 @@
 # Inference Engine API Payload Specification
 
-**Schema Version**: 1.4.0
+**Schema Version**: 1.5.0
 
 This document describes the JSON payload format sent by the inference engine to the API server after anomaly detection.
 
@@ -41,6 +41,7 @@ For API consumers: All anomalies in `alert_type: "anomaly_detected"` payloads ar
   "current_metrics": { ... },
   "exception_context": { ... },
   "service_graph_context": { ... },
+  "envoy_context": { ... },
   "fingerprinting": { ... },
   "performance_info": { ... },
   "metadata": { ... },
@@ -74,6 +75,7 @@ For API consumers: All anomalies in `alert_type: "anomaly_detected"` payloads ar
 | `partial_metrics_failure` | object | Present when some non-critical metrics failed but detection proceeded |
 | `exception_context` | object \| null | Exception breakdown when error-related anomalies detected (see Exception Context section) |
 | `service_graph_context` | object \| null | Downstream service call breakdown when latency anomalies detected (see Service Graph Context section) |
+| `envoy_context` | object \| null | Envoy edge/ingress metrics context (see Envoy Context section) |
 
 ### Alert Types
 
@@ -541,6 +543,133 @@ sum(rate(traces_service_graph_request_server_seconds_sum{client="<SERVICE>"}[5m]
 2. **Traffic distribution** - The `percentage` field shows where most traffic is going
 3. **Root cause analysis** - Compare `top_route` vs `slowest_route` to see if high-traffic routes are also slow
 4. **External vs internal** - Routes without HTTP route data (null) are typically external services
+
+---
+
+## Envoy Context Object
+
+Present when a service has an Envoy cluster mapping configured. Provides edge-level context from Envoy proxy metrics showing how the service appears from the ingress perspective - useful for correlating application metrics with edge metrics.
+
+```json
+{
+  "envoy_context": {
+    "service_name": "booking",
+    "envoy_cluster_name": "booking",
+    "timestamp": "2026-01-15T10:30:00",
+
+    "request_rates": {
+      "2xx": 68.88,
+      "3xx": 5.80,
+      "4xx": 0.51,
+      "5xx": 0.003,
+      "total": 75.19
+    },
+
+    "edge_error_rate": 0.0068,
+    "edge_server_error_rate": 0.00004,
+
+    "latency_percentiles": {
+      "p50_ms": 245.0,
+      "p90_ms": 892.0,
+      "p99_ms": 1920.1
+    },
+
+    "active_connections": 48,
+
+    "summary": "Edge: 75.19 req/s (68.88 2xx, 0.51 4xx, 0.003 5xx). P99: 1920ms. 48 active connections.",
+
+    "query_successful": true,
+    "error_message": null
+  }
+}
+```
+
+### Envoy Context Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `service_name` | string | OTel service name |
+| `envoy_cluster_name` | string \| null | Mapped Envoy cluster name |
+| `timestamp` | string | ISO8601 timestamp of the query |
+| `request_rates` | object | Request rates by HTTP response class |
+| `edge_error_rate` | float | Combined 4xx + 5xx error rate (0.0-1.0) |
+| `edge_server_error_rate` | float | 5xx server error rate only (0.0-1.0) |
+| `latency_percentiles` | object | Latency percentiles at the edge |
+| `active_connections` | integer | Current active connections to the cluster |
+| `summary` | string | Human-readable summary of edge metrics |
+| `query_successful` | boolean | Whether the Mimir query succeeded |
+| `error_message` | string \| null | Error message if query failed |
+
+### Request Rates Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `2xx` | float | Successful responses per second |
+| `3xx` | float | Redirects per second |
+| `4xx` | float | Client errors per second |
+| `5xx` | float | Server errors per second |
+| `total` | float | Total requests per second |
+
+### Latency Percentiles Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `p50_ms` | float \| null | 50th percentile (median) latency in milliseconds |
+| `p90_ms` | float \| null | 90th percentile latency in milliseconds |
+| `p99_ms` | float \| null | 99th percentile latency in milliseconds |
+
+### When Envoy Context is Populated
+
+The `envoy_context` field is populated when ALL of the following conditions are met:
+
+1. **Envoy enrichment enabled** - `envoy_enrichment.enabled: true` in config
+2. **Service has cluster mapping** - The service name maps to an Envoy cluster
+3. **Anomaly detected** - The service has at least one anomaly
+
+If any condition is not met, `envoy_context` will be `null`.
+
+### Mimir Queries Used
+
+**Request Rate by Response Class:**
+```promql
+sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name="<CLUSTER>"}[5m]))
+    by (envoy_response_code_class)
+```
+
+**Latency Percentiles:**
+```promql
+histogram_quantile(0.99,
+    sum(rate(envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name="<CLUSTER>"}[5m]))
+    by (le))
+```
+
+**Active Connections:**
+```promql
+sum(envoy_cluster_upstream_cx_active{envoy_cluster_name="<CLUSTER>"})
+```
+
+### Use Cases
+
+1. **Traffic discrepancy detection** - Compare OTel `request_rate` with Envoy `total` to detect dropped requests or internal traffic
+2. **Edge error correlation** - Compare OTel `error_rate` with `edge_error_rate` to distinguish application vs edge errors
+3. **Latency attribution** - Compare OTel latency with Envoy percentiles to identify network/serialization overhead
+4. **Connection pool analysis** - Monitor `active_connections` for pool exhaustion during traffic spikes
+
+### Service Name to Cluster Mapping
+
+OTel service names may not match Envoy cluster names. The mapping is configured in `config.json`:
+
+| OTel Service | Envoy Cluster |
+|--------------|---------------|
+| `booking` | `booking` |
+| `search` | `search_k8s` |
+| `mobile-api` | `mobile-api` |
+| `shire-api` | `shireapi_cluster` |
+| `fa5` | `fa5-public` |
+| `titan` | `titan` |
+| `friday` | `friday` |
+
+Services without a cluster mapping will not have `envoy_context` populated.
 
 ---
 

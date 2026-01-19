@@ -906,20 +906,19 @@ class SLOEvaluator:
         """
         Compute adjusted severity based on SLO status and operational impact.
 
-        The key logic:
+        SLO is authoritative for operational severity. The key logic:
         - If SLO breached -> critical (regardless of ML severity)
-        - If SLO warning -> at least medium
-        - If anomaly but within acceptable -> downgrade to informational (if allowed)
+        - If SLO warning -> high (caps pattern-assigned critical to high)
+        - If anomaly but within acceptable -> downgrade to low (if allowed)
         - If no anomaly but SLO issue -> use SLO-based severity
         """
         # SLO breach always results in critical
         if slo_status == "breached":
             return "critical"
 
-        # SLO warning results in at least high
+        # SLO warning caps severity at high - SLO is authoritative for operational impact
+        # If SLO says warning (no critical thresholds breached), we shouldn't alert as critical
         if slo_status == "warning":
-            if original_severity == "critical":
-                return "critical"
             return "high"
 
         # Anomaly detected but within acceptable thresholds

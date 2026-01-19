@@ -10,7 +10,7 @@ This module handles the core detection logic including:
 
 import logging
 import math
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,6 +45,7 @@ class DetectionRunner:
         dependency_graph: Dict[str, List[str]],
         check_drift: bool = False,
         verbose: bool = False,
+        max_workers: int = 3,
     ):
         """Initialize the detection runner.
 
@@ -55,6 +56,7 @@ class DetectionRunner:
             dependency_graph: Service dependency graph for cascade analysis.
             check_drift: Whether to check for model drift.
             verbose: Enable verbose logging.
+            max_workers: Maximum parallel workers for metrics collection.
         """
         self.vm_client = vm_client
         self.model_manager = model_manager
@@ -62,6 +64,7 @@ class DetectionRunner:
         self.dependency_graph = dependency_graph
         self.check_drift = check_drift
         self.verbose = verbose
+        self.max_workers = max_workers
 
     # Validation bounds (class-level constants)
     MAX_REQUEST_RATE = 1_000_000.0  # 1M req/s
@@ -329,11 +332,34 @@ class DetectionRunner:
             detection_timestamp=datetime.now().isoformat(),
         )
 
+    def _collect_single_service_metrics(self, service_name: str) -> Tuple[str, Any]:
+        """Collect metrics for a single service (thread-safe helper).
+
+        Args:
+            service_name: Name of the service to collect metrics for.
+
+        Returns:
+            Tuple of (service_name, metrics_or_None).
+        """
+        try:
+            if self.verbose:
+                logger.info(f"Collecting metrics from VictoriaMetrics for {service_name}")
+            return (service_name, self.vm_client.collect_service_metrics(service_name))
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logger.error(f"Network error collecting metrics for {service_name}: {e}")
+            return (service_name, None)
+        except ValueError as e:
+            logger.error(f"Invalid metrics data for {service_name}: {e}")
+            return (service_name, None)
+        except Exception as e:
+            logger.error(f"Failed to collect metrics for {service_name}: {e}", exc_info=True)
+            return (service_name, None)
+
     def collect_metrics_for_services(
         self,
         service_names: List[str],
     ) -> Dict[str, Any]:
-        """Collect metrics from VictoriaMetrics for all services.
+        """Collect metrics from VictoriaMetrics for all services in parallel.
 
         Args:
             service_names: List of service names to collect metrics for.
@@ -342,17 +368,21 @@ class DetectionRunner:
             Dictionary mapping service names to their collected metrics.
         """
         metrics_cache: Dict[str, Any] = {}
-        for service_name in service_names:
-            try:
-                if self.verbose:
-                    logger.info(f"Collecting metrics from VictoriaMetrics for {service_name}")
-                metrics_cache[service_name] = self.vm_client.collect_service_metrics(service_name)
-            except (ConnectionError, TimeoutError, OSError) as e:
-                logger.error(f"Network error collecting metrics for {service_name}: {e}")
-            except ValueError as e:
-                logger.error(f"Invalid metrics data for {service_name}: {e}")
-            except Exception as e:
-                logger.error(f"Failed to collect metrics for {service_name}: {e}", exc_info=True)
+
+        # Use ThreadPoolExecutor for parallel I/O-bound metrics collection
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all collection tasks
+            futures = {
+                executor.submit(self._collect_single_service_metrics, name): name
+                for name in service_names
+            }
+
+            # Collect results as they complete
+            for future in as_completed(futures):
+                service_name, metrics = future.result()
+                if metrics is not None:
+                    metrics_cache[service_name] = metrics
+
         return metrics_cache
 
     def run_pass1_detection(
@@ -392,8 +422,6 @@ class DetectionRunner:
                     service_name, metrics_cache, service_timestamp, validation_warnings_by_service, model_error
                 )
                 pass1_results[service_name] = result
-
-            time.sleep(0.1)
 
         return pass1_results, validation_warnings_by_service
 
@@ -594,7 +622,5 @@ class DetectionRunner:
 
             except Exception as e:
                 logger.warning(f"Pass 2 failed for {service_name}, keeping Pass 1 result: {e}")
-
-            time.sleep(0.05)
 
         return results

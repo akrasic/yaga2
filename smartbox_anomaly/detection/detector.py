@@ -306,15 +306,20 @@ class SmartboxAnomalyDetector:
         MetricName.DATABASE_LATENCY,
     ]
 
-    def __init__(self, service_name: str, auto_tune: bool = True) -> None:
+    def __init__(
+        self, service_name: str, auto_tune: bool = True, period: str | None = None
+    ) -> None:
         """Initialize the anomaly detector.
 
         Args:
             service_name: Name of the service to detect anomalies for.
             auto_tune: Whether to enable automatic parameter tuning.
+            period: Time period for this detector (e.g., "business_hours", "night_hours").
+                   Used for period-specific contamination adjustment.
         """
         self.service_name = service_name
         self.auto_tune = auto_tune
+        self.period = period
 
         # Model storage
         self.models: dict[str, IsolationForest] = {}
@@ -707,6 +712,35 @@ class SmartboxAnomalyDetector:
             if not (s.metric_name in lower_is_better and s.direction == "low")
         ]
 
+        # Special case: Low application_latency is only concerning when combined with errors.
+        # Low latency + normal errors = fast responses (good!)
+        # Low latency + high errors = fast-fail (bad, will match fast_failure patterns)
+        # Filter out low application_latency signals when error_rate is not elevated
+        error_rate = metrics.get(MetricName.ERROR_RATE, 0.0)
+        error_threshold = 0.01  # 1% - below this, low latency is not concerning
+        if error_rate < error_threshold:
+            actionable_signals = [
+                s for s in actionable_signals
+                if not (s.metric_name == MetricName.APPLICATION_LATENCY and s.direction == "low")
+            ]
+
+        # Special case: Sub-millisecond database_latency is operationally insignificant.
+        # Even if statistically "high", a 0.3ms → 0.4ms change is noise, not a real issue.
+        # Filter out database_latency signals when the actual value is below floor.
+        db_latency_floor_ms = 1.0
+        db_latency_value = metrics.get(MetricName.DATABASE_LATENCY, 0.0)
+        if db_latency_value < db_latency_floor_ms:
+            pre_filter_count = len(actionable_signals)
+            actionable_signals = [
+                s for s in actionable_signals
+                if s.metric_name != MetricName.DATABASE_LATENCY
+            ]
+            if len(actionable_signals) < pre_filter_count:
+                logger.debug(
+                    f"Filtered database_latency signal: {db_latency_value:.2f}ms below "
+                    f"{db_latency_floor_ms}ms floor (operationally insignificant)"
+                )
+
         # If all signals were improvements, return empty (no anomaly to report)
         if not actionable_signals:
             logger.debug(
@@ -763,11 +797,17 @@ class SmartboxAnomalyDetector:
         Applies semantic interpretation:
         - "Lower is better" metrics (database_latency, dependency_latency, error_rate):
           Low values are treated as "normal" since they represent improvements.
+        - Absolute floor check for database_latency: sub-millisecond values are operationally
+          meaningless even if statistically "high". A change from 0.3ms to 0.4ms is noise.
         """
         levels: dict[str, str] = {}
 
         # Metrics where lower values are desirable (not anomalous)
         lower_is_better = MetricName.lower_is_better_metrics()
+
+        # Absolute floor for database_latency (ms) - below this, any percentile is "normal"
+        # Sub-millisecond database operations are operationally insignificant
+        db_latency_floor_ms = 1.0
 
         # Metrics with IF signals get their level from signal
         # Level thresholds (percentile-based):
@@ -781,6 +821,18 @@ class SmartboxAnomalyDetector:
             if metric in lower_is_better and signal.direction == "low":
                 levels[metric] = "normal"
                 continue
+
+            # Absolute floor check for database_latency: sub-millisecond is always "normal"
+            # Even if statistically "high", a 0.3ms → 0.4ms change is operationally meaningless
+            if metric == MetricName.DATABASE_LATENCY:
+                db_value = metrics.get(MetricName.DATABASE_LATENCY, 0.0)
+                if db_value < db_latency_floor_ms:
+                    levels[metric] = "normal"
+                    logger.debug(
+                        f"database_latency {db_value:.2f}ms below floor {db_latency_floor_ms}ms, "
+                        "treating as normal despite statistical percentile"
+                    )
+                    continue
 
             if signal.direction == "activated":
                 levels[metric] = "high"  # Treat activation as high
@@ -1468,12 +1520,13 @@ class SmartboxAnomalyDetector:
                 if self.estimated_contamination is None:
                     self.estimated_contamination = estimated_contamination
 
-            # Get optimal parameters with estimated contamination
+            # Get optimal parameters with estimated contamination and period
             params = get_service_parameters(
                 self.service_name,
                 data=clean_df if self.auto_tune else None,
                 auto_tune=self.auto_tune,
                 estimated_contamination=estimated_contamination,
+                period=self.period,
             )
 
             model = IsolationForest(**params.to_isolation_forest_params())
@@ -1535,11 +1588,12 @@ class SmartboxAnomalyDetector:
 
             self.multivariate_feature_names = clean_data.columns.tolist()
 
-            # Get parameters
+            # Get parameters with period for contamination adjustment
             params = get_service_parameters(
                 self.service_name,
                 data=clean_data if self.auto_tune else None,
                 auto_tune=self.auto_tune,
+                period=self.period,
             )
 
             # Use higher n_estimators for multivariate

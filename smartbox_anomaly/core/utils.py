@@ -132,6 +132,11 @@ def extract_base_service_names(service_names: list[str]) -> list[str]:
 def get_time_period(timestamp: datetime) -> TimePeriod:
     """Determine which time period a timestamp falls into.
 
+    Uses 3 time-of-day buckets for all 7 days of the week:
+    - BUSINESS_HOURS: 8-18 (day hours)
+    - EVENING_HOURS: 18-22 (transition period)
+    - NIGHT_HOURS: 22-8 (overnight)
+
     Args:
         timestamp: The datetime to classify.
 
@@ -139,20 +144,14 @@ def get_time_period(timestamp: datetime) -> TimePeriod:
         TimePeriod enum value.
     """
     hour = timestamp.hour
-    day_of_week = timestamp.weekday()
-    is_weekend = day_of_week >= 5
 
-    if is_weekend:
-        if 8 <= hour < 22:
-            return TimePeriod.WEEKEND_DAY
-        else:
-            return TimePeriod.WEEKEND_NIGHT
-    elif 8 <= hour < 18:
+    # 3 time-of-day buckets, same for all days
+    if 8 <= hour < 18:
         return TimePeriod.BUSINESS_HOURS
-    elif hour >= 22 or hour < 6:
-        return TimePeriod.NIGHT_HOURS
-    else:
+    elif 18 <= hour < 22:
         return TimePeriod.EVENING_HOURS
+    else:  # 22-8
+        return TimePeriod.NIGHT_HOURS
 
 
 def get_period_type(period: str | TimePeriod) -> str:
@@ -167,10 +166,8 @@ def get_period_type(period: str | TimePeriod) -> str:
     period_value = period.value if isinstance(period, TimePeriod) else period
     return {
         "business_hours": "peak_activity",
-        "night_hours": "minimal_activity",
         "evening_hours": "transition_activity",
-        "weekend_day": "weekend_moderate_activity",
-        "weekend_night": "weekend_minimal_activity",
+        "night_hours": "minimal_activity",
     }.get(period_value, "unknown_activity")
 
 

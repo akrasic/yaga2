@@ -12,7 +12,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from smartbox_anomaly.core import AnomalySeverity
-from smartbox_anomaly.enrichment import ExceptionEnrichmentService, ServiceGraphEnrichmentService
+from smartbox_anomaly.enrichment import (
+    EnvoyEnrichmentService,
+    ExceptionEnrichmentService,
+    ServiceGraphEnrichmentService,
+)
 from smartbox_anomaly.slo import SLOEvaluator
 from vmclient import InferenceMetrics
 
@@ -28,6 +32,7 @@ class EnrichmentRunner:
     - SLO-aware severity evaluation and adjustment
     - Exception context enrichment for error-related anomalies
     - Service graph enrichment for latency-related anomalies
+    - Envoy edge metrics enrichment for ingress context
     """
 
     def __init__(
@@ -35,6 +40,7 @@ class EnrichmentRunner:
         slo_evaluator: Optional[SLOEvaluator],
         exception_enrichment: ExceptionEnrichmentService,
         service_graph_enrichment: ServiceGraphEnrichmentService,
+        envoy_enrichment: Optional[EnvoyEnrichmentService] = None,
         verbose: bool = False,
     ):
         """Initialize the enrichment runner.
@@ -43,11 +49,13 @@ class EnrichmentRunner:
             slo_evaluator: SLO evaluator for severity adjustment (may be None if disabled).
             exception_enrichment: Service for exception context enrichment.
             service_graph_enrichment: Service for service graph enrichment.
+            envoy_enrichment: Service for Envoy edge metrics enrichment (optional).
             verbose: Enable verbose logging.
         """
         self.slo_evaluator = slo_evaluator
         self.exception_enrichment = exception_enrichment
         self.service_graph_enrichment = service_graph_enrichment
+        self.envoy_enrichment = envoy_enrichment
         self.verbose = verbose
 
     def apply_slo_evaluation(
@@ -216,6 +224,68 @@ class EnrichmentRunner:
 
             except Exception as e:
                 logger.warning(f"Service graph enrichment failed for {service_name}: {e}")
+
+        return results
+
+    def apply_envoy_enrichment(
+        self,
+        results: Dict[str, Dict],
+    ) -> Dict[str, Dict]:
+        """Apply Envoy edge metrics enrichment to all anomalies.
+
+        Envoy enrichment provides edge-level context showing how a service appears
+        from the ingress perspective - useful for any type of anomaly to correlate
+        application metrics with edge metrics.
+
+        Args:
+            results: Detection results dictionary.
+
+        Returns:
+            Updated results with Envoy context added where available.
+        """
+        if not self.envoy_enrichment or not self.envoy_enrichment.enabled:
+            return results
+
+        for service_name, result in results.items():
+            if "error" in result or result.get("alert_type") == "metrics_unavailable":
+                continue
+
+            anomalies = result.get("anomalies", {})
+            if not anomalies:
+                continue
+
+            # Only enrich services that have Envoy cluster mapping
+            if not self.envoy_enrichment.is_service_supported(service_name):
+                continue
+
+            try:
+                # Get timestamp for aligned query
+                timestamp_str = result.get("timestamp")
+                if timestamp_str:
+                    anomaly_timestamp = datetime.fromisoformat(timestamp_str)
+                else:
+                    anomaly_timestamp = datetime.now()
+
+                # Query Envoy edge metrics
+                envoy_context = self.envoy_enrichment.get_envoy_context(
+                    service_name=service_name,
+                    anomaly_timestamp=anomaly_timestamp,
+                )
+
+                if envoy_context and envoy_context.query_successful and envoy_context.has_data:
+                    result["envoy_context"] = envoy_context.to_dict()
+
+                    if self.verbose:
+                        rates = envoy_context.request_rates
+                        logger.info(
+                            f"Envoy enrichment for {service_name}: "
+                            f"{rates.total:.1f} req/s "
+                            f"({rates.rate_2xx:.1f} 2xx, {rates.rate_5xx:.3f} 5xx), "
+                            f"P99: {envoy_context.latency_percentiles.p99_ms or 0:.0f}ms"
+                        )
+
+            except Exception as e:
+                logger.warning(f"Envoy enrichment failed for {service_name}: {e}")
 
         return results
 

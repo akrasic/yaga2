@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e4c30426.js"></script>
@@ -180,60 +180,202 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="yaga2-anomaly-detection-guide"><a class="header" href="#yaga2-anomaly-detection-guide">Yaga2 Anomaly Detection Guide</a></h1>
-<p>Welcome to the comprehensive guide for the Yaga2 Anomaly Detection system. This documentation covers how anomalies are detected, evaluated against SLOs, and managed through their incident lifecycle.</p>
-<h2 id="what-is-yaga2"><a class="header" href="#what-is-yaga2">What is Yaga2?</a></h2>
-<p>Yaga2 is an ML-based anomaly detection system for Smartbox services. It:</p>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>Yaga2 is an ML-based anomaly detection system for monitoring service health in production environments. This guide explains how the system detects anomalies, evaluates their operational significance, and manages incident lifecycles.</p>
+<h2 id="what-problem-does-yaga2-solve"><a class="header" href="#what-problem-does-yaga2-solve">What Problem Does Yaga2 Solve?</a></h2>
+<p>Modern microservice architectures generate massive amounts of metrics data. Manually setting static thresholds for every service and metric combination is:</p>
 <ul>
-<li><strong>Detects</strong> statistical anomalies using Isolation Forest and pattern matching</li>
-<li><strong>Evaluates</strong> anomalies against operational SLO thresholds</li>
-<li><strong>Adjusts</strong> severity based on business impact</li>
-<li><strong>Manages</strong> incident lifecycle with confirmation and grace periods</li>
+<li><strong>Impractical</strong>: Hundreds of services × multiple metrics × different time periods = thousands of thresholds</li>
+<li><strong>Brittle</strong>: Traffic patterns change seasonally, after deployments, and as services evolve</li>
+<li><strong>Noisy</strong>: Static thresholds either miss real issues or generate alert fatigue</li>
 </ul>
-<h2 id="key-concepts"><a class="header" href="#key-concepts">Key Concepts</a></h2>
+<p>Yaga2 addresses these challenges by:</p>
+<ol>
+<li><strong>Learning normal behavior</strong> from historical data using machine learning</li>
+<li><strong>Detecting deviations</strong> that represent genuine anomalies, not just threshold breaches</li>
+<li><strong>Evaluating operational impact</strong> to determine if anomalies actually matter</li>
+<li><strong>Managing alert lifecycle</strong> to reduce noise and prevent duplicate alerts</li>
+</ol>
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<h3 id="what-is-anomaly-detection"><a class="header" href="#what-is-anomaly-detection">What is Anomaly Detection?</a></h3>
+<p>Anomaly detection identifies data points that deviate significantly from expected patterns. Unlike threshold-based alerting (e.g., “alert if latency &gt; 500ms”), anomaly detection learns what “normal” looks like for each service and flags when behavior deviates from that baseline.</p>
+<p><strong>Example:</strong></p>
+<ul>
+<li>Service A normally has 200ms latency → 350ms is anomalous</li>
+<li>Service B normally has 800ms latency → 350ms is actually <em>better</em> than normal</li>
+<li>A static 500ms threshold would miss the anomaly for Service A and false-alarm for Service B</li>
+</ul>
+<h3 id="what-is-an-slo"><a class="header" href="#what-is-an-slo">What is an SLO?</a></h3>
+<p><strong>SLO (Service Level Objective)</strong> is a target level of service reliability. It defines what “good enough” means for your service.</p>
+<p>Common SLOs include:</p>
+<ul>
+<li><strong>Latency SLO</strong>: “99% of requests complete in under 500ms”</li>
+<li><strong>Availability SLO</strong>: “Service is available 99.9% of the time”</li>
+<li><strong>Error Rate SLO</strong>: “Less than 0.5% of requests result in errors”</li>
+</ul>
+<p><strong>Why SLOs Matter for Anomaly Detection:</strong></p>
+<p>An anomaly might be statistically significant but operationally irrelevant:</p>
+<ul>
+<li>ML detects latency at 280ms (unusual compared to baseline of 150ms)</li>
+<li>But SLO says 500ms is acceptable</li>
+<li>Result: The anomaly is real but doesn’t warrant immediate action</li>
+</ul>
+<p>Yaga2 combines ML detection with SLO evaluation to answer two questions:</p>
+<ol>
+<li><strong>Is this unusual?</strong> (ML detection)</li>
+<li><strong>Does it matter?</strong> (SLO evaluation)</li>
+</ol>
+<h3 id="what-is-isolation-forest"><a class="header" href="#what-is-isolation-forest">What is Isolation Forest?</a></h3>
+<p><strong>Isolation Forest</strong> is the machine learning algorithm at the heart of Yaga2’s anomaly detection. It’s an “unsupervised” algorithm, meaning it doesn’t need labeled examples of anomalies—it learns what’s normal from your data and identifies deviations.</p>
+<p>The key insight: <strong>Anomalies are easier to isolate than normal points.</strong></p>
+<p>Think of it like a game of “20 questions” for data points:</p>
+<ul>
+<li>Normal data points are similar to many others, requiring many questions to identify uniquely</li>
+<li>Anomalies are outliers that can be identified with just a few questions</li>
+</ul>
+<p>We’ll explore Isolation Forest in detail in the <a href="./detection/isolation-forest.html">Detection Layer</a> section.</p>
+<h3 id="what-is-an-incident"><a class="header" href="#what-is-an-incident">What is an Incident?</a></h3>
+<p>An <strong>incident</strong> is a tracked occurrence of an anomaly pattern. Yaga2 doesn’t just detect anomalies—it tracks them over time to:</p>
+<ul>
+<li><strong>Confirm</strong> anomalies aren’t transient glitches (require 2+ consecutive detections)</li>
+<li><strong>Track duration</strong> of ongoing issues</li>
+<li><strong>Prevent duplicates</strong> by recognizing the same issue across detection cycles</li>
+<li><strong>Manage resolution</strong> with grace periods to avoid flapping</li>
+</ul>
+<h2 id="system-architecture"><a class="header" href="#system-architecture">System Architecture</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Yaga2 Pipeline                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌───────────────┐                                                         │
+│   │ VictoriaMetrics│    Collect 5 core metrics every 2-3 minutes            │
+│   │   (Metrics)    │    • request_rate    • dependency_latency                  │
+│   └───────┬───────┘    • app_latency      • db_latency                      │
+│           │            • error_rate                                         │
+│           ▼                                                                 │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                     1. DETECTION LAYER                            │     │
+│   │  ┌─────────────────────────┐    ┌─────────────────────────────┐   │     │
+│   │  │    Isolation Forest     │    │    Pattern Matching         │   │     │
+│   │  │    (ML Detection)       │───▶│    (Interpretation)         │   │     │
+│   │  │                         │    │                             │   │     │
+│   │  │ "Is this unusual?"      │    │ "What does it mean?"        │   │     │
+│   │  └─────────────────────────┘    └─────────────────────────────┘   │     │
+│   │                                                                   │     │
+│   │  Output: anomaly detected, severity, pattern name                 │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│           │                                                                 │
+│           ▼                                                                 │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                     2. SLO EVALUATION LAYER                       │     │
+│   │                                                                   │     │
+│   │  Compare metrics against operational thresholds:                  │     │
+│   │  • Latency vs SLO targets (acceptable/warning/critical)           │     │
+│   │  • Error rate vs SLO targets                                      │     │
+│   │  • Database latency vs baseline ratio                             │     │
+│   │  • Request rate for surge/cliff                                   │     │
+│   │                                                                   │     │
+│   │  "Does this anomaly matter operationally?"                        │     │
+│   │                                                                   │     │
+│   │  Output: adjusted severity (critical/high/low), SLO status        │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│           │                                                                 │
+│           ▼                                                                 │
+│   ┌───────────────────────────────────────────────────────────────────┐     │
+│   │                     3. INCIDENT LIFECYCLE                         │     │
+│   │                                                                   │     │
+│   │  SUSPECTED ──▶ OPEN ──▶ RECOVERING ──▶ CLOSED                     │     │
+│   │   (wait)     (alert)    (grace)       (resolve)                   │     │
+│   │                                                                   │     │
+│   │  • Confirmation: 2 consecutive detections before alerting         │     │
+│   │  • Grace period: 3 cycles without detection before closing        │     │
+│   │  • Fingerprinting: Track same issue across time                   │     │
+│   │                                                                   │     │
+│   │  "Should we alert now, or wait for confirmation?"                 │     │
+│   └───────────────────────────────────────────────────────────────────┘     │
+│           │                                                                 │
+│           ▼                                                                 │
+│   ┌───────────────┐                                                         │
+│   │  Web API      │    Alert payload sent for confirmed incidents           │
+│   │  Dashboard    │    Resolution payload sent when incidents close         │
+│   └───────────────┘                                                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="time-aware-detection"><a class="header" href="#time-aware-detection">Time-Aware Detection</a></h2>
+<p>Service behavior varies significantly by time:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Concept</th><th>Description</th></tr>
+<tr><th>Time Period</th><th>Typical Behavior</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Anomaly</strong></td><td>A statistically unusual metric pattern detected by ML</td></tr>
-<tr><td><strong>SLO Evaluation</strong></td><td>Comparing metrics against operational thresholds</td></tr>
-<tr><td><strong>Severity</strong></td><td>Alert priority: <code>low</code>, <code>medium</code>, <code>high</code>, <code>critical</code></td></tr>
-<tr><td><strong>Incident</strong></td><td>A confirmed anomaly requiring attention</td></tr>
-<tr><td><strong>Fingerprint</strong></td><td>Unique identifier for an anomaly pattern</td></tr>
+<tr><td>Business hours (Mon-Fri 8-18)</td><td>High traffic, tight latency requirements</td></tr>
+<tr><td>Evening (Mon-Fri 18-22)</td><td>Moderate traffic</td></tr>
+<tr><td>Night (22-06)</td><td>Low traffic, batch jobs</td></tr>
+<tr><td>Weekend</td><td>Different patterns entirely</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="pipeline-flow"><a class="header" href="#pipeline-flow">Pipeline Flow</a></h2>
-<pre><code>┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  Metrics    │───▶│  Detection  │───▶│    SLO      │───▶│  Incident   │
-│ Collection  │    │  (ML+Rules) │    │ Evaluation  │    │  Lifecycle  │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                          │                  │                  │
-                          ▼                  ▼                  ▼
-                    "Is this unusual?"  "Does it matter?"  "Should we alert?"
-</code></pre>
+<p>A 3 AM traffic level that would be alarming at 3 PM is completely normal at night. Yaga2 trains <strong>separate models for each time period</strong> to avoid false positives from expected behavioral differences.</p>
+<h2 id="the-five-metrics"><a class="header" href="#the-five-metrics">The Five Metrics</a></h2>
+<p>Yaga2 monitors five core metrics for each service:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>What It Measures</th><th>Why It Matters</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>request_rate</strong></td><td>Requests per second</td><td>Traffic volume - sudden drops or spikes indicate problems</td></tr>
+<tr><td><strong>application_latency</strong></td><td>Server processing time (ms)</td><td>User experience - slow responses frustrate users</td></tr>
+<tr><td><strong>dependency_latency</strong></td><td>External dependency call time (ms)</td><td>Downstream issues - if a dependency is slow, you’ll be slow</td></tr>
+<tr><td><strong>database_latency</strong></td><td>Database query time (ms)</td><td>Database health - often the bottleneck</td></tr>
+<tr><td><strong>error_rate</strong></td><td>Failed requests (0-1 ratio)</td><td>Reliability - errors directly impact users</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="how-to-use-this-guide"><a class="header" href="#how-to-use-this-guide">How to Use This Guide</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>If You Want To…</th><th>Read…</th></tr>
+</thead>
+<tbody>
+<tr><td>Understand how ML detection works</td><td><a href="./detection/isolation-forest.html">Isolation Forest</a></td></tr>
+<tr><td>Learn about named patterns</td><td><a href="./detection/pattern-matching.html">Pattern Matching</a></td></tr>
+<tr><td>Configure SLO thresholds</td><td><a href="./slo/README.html">SLO Evaluation</a></td></tr>
+<tr><td>Understand alert timing</td><td><a href="./incidents/README.html">Incident Lifecycle</a></td></tr>
+<tr><td>Troubleshoot issues</td><td><a href="./reference/troubleshooting.html">Troubleshooting</a></td></tr>
+<tr><td>Quick reference</td><td><a href="./reference/decision-matrix.html">Decision Matrix</a></td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="quick-reference"><a class="header" href="#quick-reference">Quick Reference</a></h2>
-<p><strong>When does an alert fire?</strong></p>
-<ol>
-<li>ML detects anomaly → Pattern interprets it → Anomaly created as <code>SUSPECTED</code></li>
-<li>Anomaly persists for 2+ cycles → Status becomes <code>OPEN</code> → <strong>Alert sent</strong></li>
-<li>SLO evaluation adjusts severity based on operational impact</li>
-</ol>
-<p><strong>When does an incident resolve?</strong></p>
-<ol>
-<li>Anomaly not detected → Status becomes <code>RECOVERING</code></li>
-<li>Not detected for 3 cycles → Status becomes <code>CLOSED</code> → <strong>Resolution sent</strong></li>
-</ol>
-<h2 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h2>
-<ul>
-<li><a href="./overview.html">Overview</a> - High-level system architecture</li>
-<li><a href="./detection/README.html">Detection Layer</a> - How anomalies are detected</li>
-<li><a href="./slo/README.html">SLO Evaluation</a> - How severity is adjusted</li>
-<li><a href="./incidents/README.html">Incident Lifecycle</a> - How alerts are managed</li>
-<li><a href="./reference/decision-matrix.html">Decision Matrix</a> - Complete reference table</li>
-</ul>
+<h3 id="severity-levels"><a class="header" href="#severity-levels">Severity Levels</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Severity</th><th>Meaning</th><th>Action Required</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>critical</strong></td><td>SLO breached, users impacted</td><td>Immediate response</td></tr>
+<tr><td><strong>high</strong></td><td>Approaching SLO limits</td><td>Investigate promptly</td></tr>
+<tr><td><strong>low</strong></td><td>Anomaly detected but within SLO</td><td>Monitor, no action</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="alert-flow-summary"><a class="header" href="#alert-flow-summary">Alert Flow Summary</a></h3>
+<pre><code>Anomaly detected → SUSPECTED (no alert, wait for confirmation)
+                        │
+                        ▼ (detected again)
+                    OPEN (alert sent!)
+                        │
+                        ▼ (not detected)
+                  RECOVERING (grace period)
+                        │
+                        ▼ (still not detected)
+                    CLOSED (resolution sent)
+</code></pre>
 
                     </main>
 

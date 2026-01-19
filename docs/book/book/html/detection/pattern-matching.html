@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,144 +181,844 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="pattern-matching"><a class="header" href="#pattern-matching">Pattern Matching</a></h1>
-<p>Pattern matching interprets ML signals by comparing metric levels against known operational scenarios.</p>
-<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
-<ol>
-<li><strong>Level Classification</strong>: Each metric is classified based on IF signals</li>
-<li><strong>Pattern Matching</strong>: Current levels are compared against defined patterns</li>
-<li><strong>Interpretation</strong>: Matched patterns provide context and recommendations</li>
-</ol>
-<h2 id="named-patterns"><a class="header" href="#named-patterns">Named Patterns</a></h2>
-<h3 id="traffic-patterns"><a class="header" href="#traffic-patterns">Traffic Patterns</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>traffic_surge_healthy</code></td><td>high traffic, normal latency/errors</td><td>low</td><td>Handling load well</td></tr>
-<tr><td><code>traffic_surge_degrading</code></td><td>high traffic, high latency, normal errors</td><td>high</td><td>Approaching capacity</td></tr>
-<tr><td><code>traffic_surge_failing</code></td><td>high traffic, high latency, high errors</td><td>critical</td><td>Beyond capacity</td></tr>
-<tr><td><code>traffic_cliff</code></td><td>very low traffic (sudden drop)</td><td>critical</td><td>May be unreachable</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="error-patterns"><a class="header" href="#error-patterns">Error Patterns</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>error_rate_elevated</code></td><td>normal traffic/latency, high errors</td><td>high</td><td>Specific operation failing</td></tr>
-<tr><td><code>error_rate_critical</code></td><td>normal traffic/latency, very high errors</td><td>critical</td><td>Significant failures</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="latency-patterns"><a class="header" href="#latency-patterns">Latency Patterns</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>latency_spike_recent</code></td><td>normal traffic, high latency, normal errors</td><td>high</td><td>Recent change caused slowdown</td></tr>
-<tr><td><code>latency_elevated</code></td><td>high latency above threshold</td><td>high</td><td>Response time degraded</td></tr>
-<tr><td><code>internal_latency_issue</code></td><td>high app latency, healthy deps</td><td>high</td><td>Internal problem</td></tr>
-<tr><td><code>database_degradation</code></td><td>high DB latency, normal app latency</td><td>medium</td><td>DB slow but compensating</td></tr>
-<tr><td><code>database_bottleneck</code></td><td>high DB latency, DB &gt;70% of total</td><td>high</td><td>DB is constraint</td></tr>
-<tr><td><code>downstream_cascade</code></td><td>high client latency, &gt;60% of total</td><td>high</td><td>External dependency issue</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="fast-fail-patterns"><a class="header" href="#fast-fail-patterns">Fast-Fail Patterns</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>fast_rejection</code></td><td>very low latency, very high errors</td><td>critical</td><td>Rejected before processing</td></tr>
-<tr><td><code>fast_failure</code></td><td>low latency, high errors</td><td>critical</td><td>Quick failures</td></tr>
-<tr><td><code>partial_rejection</code></td><td>low latency, moderate errors</td><td>high</td><td>Some requests rejected</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="cascade-patterns"><a class="header" href="#cascade-patterns">Cascade Patterns</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Pattern</th><th>Conditions</th><th>Severity</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>upstream_cascade</code></td><td>high latency + upstream anomaly</td><td>high</td><td>Root cause upstream</td></tr>
-<tr><td><code>dependency_chain_degradation</code></td><td>high latency + multiple deps affected</td><td>high</td><td>Chain degraded</td></tr>
-</tbody>
-</table>
-</div>
-<h2 id="pattern-definition-example"><a class="header" href="#pattern-definition-example">Pattern Definition Example</a></h2>
-<pre><code class="language-python">"traffic_surge_failing": PatternDefinition(
-    name="traffic_surge_failing",
-    conditions={
-        "request_rate": "high",
-        "application_latency": "high",
-        "error_rate": "high",
-    },
-    severity="critical",
-    message_template=(
-        "Traffic surge overwhelming service: {request_rate:.1f} req/s "
-        "with {application_latency:.0f}ms latency and {error_rate:.2%} errors"
-    ),
-    interpretation=(
-        "Service at or beyond capacity. "
-        "Both latency and errors elevated indicates system cannot handle load."
-    ),
-    recommended_actions=[
-        "IMMEDIATE: Scale horizontally or enable rate limiting",
-        "INVESTIGATE: Confirm this is legitimate traffic",
-        "PREPARE: Have rollback ready",
-    ],
-)
+<p>Pattern matching interprets ML signals by comparing metric combinations against known operational scenarios. This chapter explains what pattern matching is, how it works, and provides detailed examples of each pattern type.</p>
+<h2 id="what-is-pattern-matching"><a class="header" href="#what-is-pattern-matching">What is Pattern Matching?</a></h2>
+<p>While Isolation Forest answers <strong>“Is this unusual?”</strong>, pattern matching answers <strong>“What does this unusual behavior mean?”</strong></p>
+<p>Pattern matching is a <strong>rule-based interpretation layer</strong> that recognizes known operational scenarios by examining how metrics relate to each other.</p>
+<h3 id="why-pattern-matching"><a class="header" href="#why-pattern-matching">Why Pattern Matching?</a></h3>
+<p>ML detection tells you something is anomalous, but not what it means:</p>
+<pre><code>ML Output:
+  application_latency: anomalous (score: -0.35)
+  request_rate: anomalous (score: -0.28)
+  error_rate: normal
+
+Human question: "So... is this bad? What should I do?"
 </code></pre>
-<h2 id="detection-output"><a class="header" href="#detection-output">Detection Output</a></h2>
-<p>When a pattern matches:</p>
-<pre><code class="language-json">{
-  "traffic_surge_degrading": {
-    "type": "multivariate_pattern",
-    "pattern_name": "traffic_surge_degrading",
-    "severity": "high",
-    "score": -0.5,
-    "description": "Traffic surge causing slowdown: 850 req/s driving latency to 450ms",
-    "interpretation": "Service slowing under load - approaching capacity",
-    "detection_method": "named_pattern_matching",
-    "recommended_actions": [
-      "IMMEDIATE: Scale horizontally if possible",
-      "CHECK: Resource bottlenecks",
-      "MONITOR: Error rate for impending failure"
-    ],
-    "metric_levels": {
-      "request_rate": "high",
-      "application_latency": "high",
-      "error_rate": "normal"
+<p>Pattern matching adds semantic meaning:</p>
+<pre><code>Pattern Match: traffic_surge_degrading
+
+Interpretation: "You have a traffic surge (3x normal) that's causing
+  latency degradation (450ms vs 150ms normal). Errors are still normal,
+  so you're approaching capacity but not failing yet."
+
+Recommended Actions:
+  1. Scale horizontally if possible
+  2. Check resource bottlenecks (CPU, connections)
+  3. Monitor error rate for signs of impending failure
+</code></pre>
+<h3 id="ml-vs-pattern-matching"><a class="header" href="#ml-vs-pattern-matching">ML vs Pattern Matching</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Aspect</th><th>Isolation Forest</th><th>Pattern Matching</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Approach</strong></td><td>Statistical (unsupervised ML)</td><td>Rule-based (expert knowledge)</td></tr>
+<tr><td><strong>Question answered</strong></td><td>“Is this unusual?”</td><td>“What does it mean?”</td></tr>
+<tr><td><strong>Learns from</strong></td><td>Historical data</td><td>Domain expertise</td></tr>
+<tr><td><strong>Catches</strong></td><td>Novel/unknown issues</td><td>Known operational scenarios</td></tr>
+<tr><td><strong>Output</strong></td><td>Anomaly score</td><td>Named pattern + recommendations</td></tr>
+<tr><td><strong>Adapts</strong></td><td>Automatically via training</td><td>Manually via pattern definitions</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="how-they-work-together"><a class="header" href="#how-they-work-together">How They Work Together</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                   Sequential Detection Pipeline                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Current Metrics                                                   │
+│   ┌────────────────────────────────────┐                           │
+│   │ request_rate: 850 req/s           │                           │
+│   │ application_latency: 450ms         │                           │
+│   │ error_rate: 1.5%                   │                           │
+│   │ database_latency: 15ms             │                           │
+│   └─────────────────┬──────────────────┘                           │
+│                     │                                               │
+│                     ▼                                               │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  Phase 1: Isolation Forest Detection                        │   │
+│   │                                                             │   │
+│   │  For each metric, compute anomaly score:                    │   │
+│   │    request_rate: score=-0.28, direction=high               │   │
+│   │    application_latency: score=-0.35, direction=high        │   │
+│   │    error_rate: score=-0.05, direction=normal               │   │
+│   │    database_latency: score=0.1, direction=normal           │   │
+│   │                                                             │   │
+│   │  Output: List of AnomalySignal objects                     │   │
+│   └─────────────────────────┬───────────────────────────────────┘   │
+│                             │                                       │
+│                             ▼                                       │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  Phase 2: Pattern Interpretation                            │   │
+│   │                                                             │   │
+│   │  Convert signals to levels:                                 │   │
+│   │    request_rate: high                                      │   │
+│   │    application_latency: high                               │   │
+│   │    error_rate: normal                                      │   │
+│   │    database_latency: normal                                │   │
+│   │                                                             │   │
+│   │  Match against patterns:                                    │   │
+│   │    traffic_surge_failing? No (errors not high)             │   │
+│   │    traffic_surge_degrading? ✓ YES                          │   │
+│   │                                                             │   │
+│   │  Output: Interpreted anomaly with recommendations          │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="how-pattern-matching-works"><a class="header" href="#how-pattern-matching-works">How Pattern Matching Works</a></h2>
+<h3 id="step-1-convert-if-signals-to-metric-levels"><a class="header" href="#step-1-convert-if-signals-to-metric-levels">Step 1: Convert IF Signals to Metric Levels</a></h3>
+<p>Each metric is classified based on its Isolation Forest signal:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Percentile Range</th><th>Level</th></tr>
+</thead>
+<tbody>
+<tr><td>&gt; 95th</td><td><code>very_high</code></td></tr>
+<tr><td>90th - 95th</td><td><code>high</code></td></tr>
+<tr><td>80th - 90th</td><td><code>elevated</code></td></tr>
+<tr><td>70th - 80th</td><td><code>moderate</code></td></tr>
+<tr><td>10th - 70th</td><td><code>normal</code></td></tr>
+<tr><td>5th - 10th</td><td><code>low</code></td></tr>
+<tr><td>&lt; 5th</td><td><code>very_low</code></td></tr>
+<tr><td>No IF signal</td><td><code>normal</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Example:</strong></p>
+<pre><code>IF says: latency is at 92nd percentile (score: -0.35)
+Level: high (between 90th-95th)
+</code></pre>
+<h3 id="step-2-handle-lower-is-better-metrics"><a class="header" href="#step-2-handle-lower-is-better-metrics">Step 2: Handle “Lower is Better” Metrics</a></h3>
+<p>Some metrics are better when low:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Lower is Better?</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>error_rate</code></td><td>Yes</td><td>0% errors is ideal</td></tr>
+<tr><td><code>database_latency</code></td><td>Yes</td><td>Faster DB is better</td></tr>
+<tr><td><code>dependency_latency</code></td><td>Yes</td><td>Faster dependencies is better</td></tr>
+<tr><td><code>application_latency</code></td><td>No*</td><td>Low + high errors = fast-fail</td></tr>
+</tbody>
+</table>
+</div>
+<p>*Application latency is NOT in “lower is better” because low latency with high errors indicates fast failures (requests rejected before processing).</p>
+<p>When IF flags a “lower is better” metric as anomalously low, it’s treated as <code>normal</code>:</p>
+<pre><code>IF says: database_latency is unusually low (faster than normal)
+Pattern matching: Treat as "normal" (this is good, not a problem)
+</code></pre>
+<h3 id="step-3-match-against-pattern-conditions"><a class="header" href="#step-3-match-against-pattern-conditions">Step 3: Match Against Pattern Conditions</a></h3>
+<p>Each pattern has conditions that must be met:</p>
+<pre><code class="language-python">"traffic_surge_degrading": {
+    "conditions": {
+        "request_rate": "high",           # Must be high
+        "application_latency": "high",    # Must be high
+        "error_rate": "normal",           # Must be normal
     }
+}
+</code></pre>
+<p>The pattern matches only if <strong>all conditions</strong> are satisfied.</p>
+<h3 id="step-4-generate-interpreted-output"><a class="header" href="#step-4-generate-interpreted-output">Step 4: Generate Interpreted Output</a></h3>
+<p>When a pattern matches, generate:</p>
+<ul>
+<li>Human-readable description</li>
+<li>Semantic interpretation</li>
+<li>Recommended actions</li>
+<li>Contributing metrics</li>
+</ul>
+<h2 id="named-patterns---detailed-reference"><a class="header" href="#named-patterns---detailed-reference">Named Patterns - Detailed Reference</a></h2>
+<h3 id="traffic-patterns"><a class="header" href="#traffic-patterns">Traffic Patterns</a></h3>
+<p>These patterns relate to changes in traffic volume (request rate).</p>
+<h4 id="traffic_surge_healthy"><a class="header" href="#traffic_surge_healthy"><code>traffic_surge_healthy</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: traffic_surge_healthy                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: high                                              │
+│    application_latency: normal                                     │
+│    error_rate: normal                                              │
+│                                                                     │
+│  Severity: low                                                      │
+│                                                                     │
+│  What It Means:                                                     │
+│    Traffic has increased significantly (e.g., 3x normal) but       │
+│    the service is handling it gracefully. Latency and errors       │
+│    remain normal - your system has headroom.                       │
+│                                                                     │
+│  Possible Causes:                                                   │
+│    • Marketing campaign launched                                   │
+│    • Viral content / social media mention                          │
+│    • Seasonal peak (holiday shopping)                              │
+│    • Organic growth                                                │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • Monitor for signs of degradation                              │
+│    • Verify traffic is legitimate (not bot/attack)                 │
+│    • Consider pre-emptive scaling if trend continues               │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Black Friday starts. Traffic jumps from 100 req/s to 350 req/s. │
+│    Latency stays at 150ms, errors at 0.1%.                         │
+│    System is handling the surge well.                              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="traffic_surge_degrading"><a class="header" href="#traffic_surge_degrading"><code>traffic_surge_degrading</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: traffic_surge_degrading                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: high                                              │
+│    application_latency: high                                       │
+│    error_rate: normal                                              │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    Traffic surge is causing performance degradation. Users are     │
+│    experiencing slower responses, but requests are still           │
+│    completing successfully. You're approaching capacity.           │
+│                                                                     │
+│  Why Errors Are Still Normal:                                       │
+│    The system is slowing down to cope with load rather than        │
+│    failing. This is often due to:                                  │
+│    • Thread pools filling up (requests queue)                      │
+│    • Connection pools near exhaustion                              │
+│    • CPU at high utilization but not 100%                          │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Scale horizontally if possible                     │
+│    • CHECK: Resource utilization (CPU, memory, connections)        │
+│    • MONITOR: Error rate for signs of impending failure            │
+│    • CONSIDER: Enable request throttling to protect backend        │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 850 req/s (normally 200 req/s)                         │
+│    Latency: 450ms (normally 120ms)                                 │
+│    Errors: 0.5% (normal)                                           │
+│                                                                     │
+│    Users notice slowness but can still complete transactions.      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="traffic_surge_failing"><a class="header" href="#traffic_surge_failing"><code>traffic_surge_failing</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: traffic_surge_failing                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: high                                              │
+│    application_latency: high                                       │
+│    error_rate: high                                                │
+│                                                                     │
+│  Severity: critical                                                 │
+│                                                                     │
+│  What It Means:                                                     │
+│    Service is at or beyond capacity. The traffic surge has         │
+│    overwhelmed the system - both latency and errors are elevated.  │
+│    Users are actively being impacted.                              │
+│                                                                     │
+│  Why This Is Critical:                                              │
+│    High errors + high latency = users are both waiting AND         │
+│    failing. This is the worst user experience - slow failures.     │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Scale horizontally or add capacity                 │
+│    • IMMEDIATE: Enable rate limiting to protect backend            │
+│    • INVESTIGATE: Confirm traffic is legitimate vs attack          │
+│    • PREPARE: Have rollback ready if recent deployment caused it   │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 1200 req/s (normally 200 req/s)                        │
+│    Latency: 2500ms (normally 120ms)                                │
+│    Errors: 15%                                                     │
+│                                                                     │
+│    System is collapsing under load. Many users seeing errors,      │
+│    others waiting forever for timeouts.                            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="traffic_cliff"><a class="header" href="#traffic_cliff"><code>traffic_cliff</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: traffic_cliff                                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: very_low (sudden drop to &lt;10% of normal)          │
+│                                                                     │
+│  Severity: critical                                                 │
+│                                                                     │
+│  What It Means:                                                     │
+│    Traffic has suddenly dropped to near-zero. This often           │
+│    indicates an upstream problem preventing requests from          │
+│    reaching the service.                                           │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • DNS failure (users can't resolve hostname)                    │
+│    • Load balancer misconfigured (routing to wrong backend)        │
+│    • Firewall rule blocking traffic                                │
+│    • CDN/edge failure                                              │
+│    • Upstream service failure                                      │
+│    • Network partition                                             │
+│                                                                     │
+│  Why Not Low Latency Pattern:                                       │
+│    The few requests getting through might show normal latency,     │
+│    but the problem is that NO requests are arriving.               │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Check upstream services and load balancers         │
+│    • CHECK: DNS resolution from multiple locations                 │
+│    • VERIFY: Network connectivity and firewall rules               │
+│    • CORRELATE: Check if other services are also affected          │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 5 req/s (normally 200 req/s) - 97.5% drop             │
+│                                                                     │
+│    At 2:15 PM, traffic suddenly drops from 200 req/s to 5 req/s.  │
+│    Investigation reveals DNS TTL expired and DNS provider had      │
+│    an outage, causing resolution failures.                         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="error-patterns"><a class="header" href="#error-patterns">Error Patterns</a></h3>
+<p>These patterns relate to error rate anomalies.</p>
+<h4 id="error_rate_elevated"><a class="header" href="#error_rate_elevated"><code>error_rate_elevated</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: error_rate_elevated                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: normal                                            │
+│    application_latency: normal                                     │
+│    error_rate: high                                                │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    Error rate has increased significantly, but traffic and         │
+│    latency are normal. This usually indicates a specific code      │
+│    path or endpoint is failing, not a systemic issue.              │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Bug in a specific endpoint                                    │
+│    • External dependency failing for certain operations            │
+│    • Bad input data causing validation failures                    │
+│    • Feature flag enabled broken code                              │
+│    • Database constraint violations                                │
+│                                                                     │
+│  Why Latency Is Normal:                                             │
+│    Most requests succeed normally - only a subset is failing.      │
+│    The average latency doesn't change much because successes       │
+│    dominate the metrics.                                           │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • INVESTIGATE: Check exception types in exception_context       │
+│    • CHECK: Recent deployments or configuration changes            │
+│    • IDENTIFY: Which endpoints/operations are failing              │
+│    • VERIFY: External dependency health                            │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 150 req/s (normal)                                     │
+│    Latency: 120ms (normal)                                         │
+│    Errors: 3.5% (normally 0.1%)                                    │
+│                                                                     │
+│    Exception breakdown shows 85% of errors are                     │
+│    "PaymentGatewayException" - the payment provider is having      │
+│    issues, but only checkout flow is affected.                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="error_rate_critical"><a class="header" href="#error_rate_critical"><code>error_rate_critical</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: error_rate_critical                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: normal                                            │
+│    application_latency: normal                                     │
+│    error_rate: very_high (&gt;5%)                                     │
+│                                                                     │
+│  Severity: critical                                                 │
+│                                                                     │
+│  What It Means:                                                     │
+│    A significant portion of requests are failing. While the        │
+│    service responds quickly (suggesting infrastructure is OK),     │
+│    business logic is failing at a high rate.                       │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Critical bug in recent deployment                             │
+│    • Database schema mismatch after migration                      │
+│    • External API contract changed                                 │
+│    • Authentication/authorization failure                          │
+│    • Missing configuration or secrets                              │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Check recent deployments (rollback candidate)      │
+│    • INVESTIGATE: Exception breakdown for root cause               │
+│    • CHECK: Database connectivity and schema                       │
+│    • VERIFY: All required configuration/secrets present            │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 150 req/s (normal)                                     │
+│    Latency: 80ms (normal - fast errors)                           │
+│    Errors: 25%                                                     │
+│                                                                     │
+│    Exception breakdown: 100% "DatabaseSchemaException"             │
+│    Recent deployment added a required column, but migration        │
+│    didn't run in production.                                       │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="latency-patterns"><a class="header" href="#latency-patterns">Latency Patterns</a></h3>
+<p>These patterns relate to response time anomalies.</p>
+<h4 id="latency_spike_recent"><a class="header" href="#latency_spike_recent"><code>latency_spike_recent</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: latency_spike_recent                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    request_rate: normal                                            │
+│    application_latency: high                                       │
+│    error_rate: normal                                              │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    Latency increased without traffic change. Something changed     │
+│    in the system - this is NOT a capacity issue (traffic is        │
+│    normal). Likely a recent deployment, config change, or          │
+│    dependency degradation.                                         │
+│                                                                     │
+│  Why Traffic Being Normal Matters:                                  │
+│    If traffic were high, latency increase would make sense         │
+│    (capacity). With normal traffic, the slowdown is internal.      │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Recent deployment introduced inefficiency                     │
+│    • Database query plan regression                                │
+│    • New logging/tracing overhead                                  │
+│    • Downstream service slower                                     │
+│    • GC pressure from memory leak                                  │
+│    • Missing cache (cold cache after restart)                      │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Check deployments in last 2 hours                  │
+│    • CHECK: Configuration changes (feature flags, settings)        │
+│    • CHECK: External dependency response times                     │
+│    • CHECK: Database query performance                             │
+│    • CHECK: GC behavior and memory pressure                        │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Traffic: 150 req/s (normal)                                     │
+│    Latency: 450ms (normally 150ms)                                 │
+│    Errors: 0.1% (normal)                                           │
+│                                                                     │
+│    Timeline shows latency jumped at 10:30 AM.                      │
+│    Deployment log shows release v2.3.4 deployed at 10:28 AM.       │
+│    New release added detailed audit logging that's synchronous.    │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="internal_latency_issue"><a class="header" href="#internal_latency_issue"><code>internal_latency_issue</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: internal_latency_issue                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    application_latency: high                                       │
+│    dependency_latency: normal                                          │
+│    database_latency: normal                                        │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    The service itself is slow, but all its dependencies            │
+│    (database, external services) are fast. The problem is          │
+│    INTERNAL to the application code.                               │
+│                                                                     │
+│  Why This Is Significant:                                           │
+│    Eliminates external causes. The fix must be in this service,    │
+│    not upstream/downstream.                                        │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • CPU-intensive computation                                     │
+│    • Memory allocation/GC pressure                                 │
+│    • Lock contention / thread starvation                           │
+│    • Inefficient algorithm (O(n²) loop)                           │
+│    • Synchronous I/O blocking event loop                           │
+│    • Missing async/await causing serialization                     │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • PROFILE: CPU profiling to find hot paths                      │
+│    • CHECK: Thread dumps for lock contention                       │
+│    • CHECK: Memory usage and GC logs                               │
+│    • REVIEW: Recent code changes for algorithmic issues            │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    App latency: 800ms                                              │
+│    Client latency: 50ms (fast external calls)                      │
+│    DB latency: 10ms (fast queries)                                 │
+│                                                                     │
+│    Where's the extra 740ms? Profiling reveals a nested loop        │
+│    iterating over large collections - O(n²) complexity.            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="database_bottleneck"><a class="header" href="#database_bottleneck"><code>database_bottleneck</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: database_bottleneck                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    database_latency: high                                          │
+│    application_latency: high                                       │
+│    db_latency_ratio: &gt; 0.7 (DB is &gt;70% of total latency)          │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    Database operations dominate response time. The database        │
+│    is the bottleneck - fixing app code won't help much.            │
+│                                                                     │
+│  Why The Ratio Matters:                                             │
+│    If DB is 15ms out of 500ms total, DB isn't the problem.         │
+│    If DB is 400ms out of 500ms total, DB IS the problem.           │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Missing database index                                        │
+│    • Query plan regression (statistics stale)                      │
+│    • Lock contention in database                                   │
+│    • Database server under-provisioned                             │
+│    • N+1 query pattern                                             │
+│    • Full table scans                                              │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • INVESTIGATE: Slow query logs                                  │
+│    • CHECK: Missing indexes on frequently queried columns          │
+│    • CHECK: Database CPU and I/O metrics                           │
+│    • ANALYZE: Query execution plans                                │
+│    • CONSIDER: Query caching or read replicas                      │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    App latency: 650ms                                              │
+│    DB latency: 520ms (80% of total)                                │
+│    Client latency: 10ms                                            │
+│                                                                     │
+│    Slow query log shows: SELECT * FROM orders WHERE                │
+│    customer_id = ? taking 500ms. Missing index on customer_id.     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="downstream_cascade"><a class="header" href="#downstream_cascade"><code>downstream_cascade</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: downstream_cascade                                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    dependency_latency: high                                            │
+│    application_latency: high                                       │
+│    dependency_latency_ratio: &gt; 0.6 (external calls &gt;60% of total)      │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    External dependency calls are dominating response time.         │
+│    The service you're looking at is slow BECAUSE something         │
+│    it depends on is slow.                                          │
+│                                                                     │
+│  Why This Pattern Exists:                                           │
+│    Helps you avoid blaming the wrong service. If booking           │
+│    is slow because search is slow, fix search, not booking.        │
+│                                                                     │
+│  What To Look At:                                                   │
+│    • service_graph_context shows downstream call breakdown         │
+│    • Identify which downstream service is slowest                  │
+│    • That service is likely the root cause                         │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • FOCUS: Investigate the slow downstream service                │
+│    • CHECK: service_graph_context for detailed breakdown           │
+│    • CORRELATE: Does downstream service also have anomalies?       │
+│    • CONSIDER: Circuit breaker to fail fast                        │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    App latency: 1200ms                                             │
+│    Client latency: 950ms (79% of total)                            │
+│    DB latency: 15ms                                                │
+│                                                                     │
+│    service_graph_context shows:                                    │
+│      search-api: 850ms avg (highest)                               │
+│      payment-api: 50ms avg                                         │
+│      inventory-api: 40ms avg                                       │
+│                                                                     │
+│    Root cause: search-api is slow, causing booking to be slow.     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="fast-fail-patterns"><a class="header" href="#fast-fail-patterns">Fast-Fail Patterns</a></h3>
+<p>These patterns indicate requests failing before normal processing.</p>
+<h4 id="fast_rejection"><a class="header" href="#fast_rejection"><code>fast_rejection</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: fast_rejection                                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    application_latency: very_low                                   │
+│    error_rate: very_high                                           │
+│                                                                     │
+│  Severity: critical                                                 │
+│                                                                     │
+│  What It Means:                                                     │
+│    Requests are failing VERY fast. They're being rejected          │
+│    before reaching normal application logic. Something is          │
+│    blocking requests at the entry point.                           │
+│                                                                     │
+│  Why Low Latency + High Errors Is Bad:                              │
+│    Normal errors take time (processing, then failure).             │
+│    Fast errors mean immediate rejection - no processing at all.    │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Circuit breaker OPEN (rejecting all requests)                 │
+│    • Rate limiter active (over quota)                              │
+│    • Authentication/authorization failure                          │
+│    • Invalid API key or expired token                              │
+│    • TLS certificate mismatch                                      │
+│    • Connection pool exhausted (immediate rejection)               │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • IMMEDIATE: Check circuit breaker status                       │
+│    • CHECK: Rate limiter configuration and current rate            │
+│    • CHECK: Authentication service health                          │
+│    • VERIFY: API keys and certificates are valid                   │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Latency: 5ms (normally 150ms)                                   │
+│    Errors: 95%                                                     │
+│                                                                     │
+│    5ms is just enough time to check auth and reject.               │
+│    Auth service is down, causing all requests to fail at           │
+│    the middleware layer before reaching business logic.            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="fast_failure"><a class="header" href="#fast_failure"><code>fast_failure</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: fast_failure                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    application_latency: low                                        │
+│    error_rate: high                                                │
+│                                                                     │
+│  Severity: critical                                                 │
+│                                                                     │
+│  What It Means:                                                     │
+│    Requests are failing quickly - faster than normal processing    │
+│    would take. Similar to fast_rejection but with slightly         │
+│    more processing time (maybe some validation runs).              │
+│                                                                     │
+│  The Latency-Error Relationship:                                    │
+│    Normal request: Validate → Process → DB → External → Return     │
+│    Fast failure: Validate → Fail (skip processing)                 │
+│                                                                     │
+│  Common Causes:                                                     │
+│    • Early validation failure                                      │
+│    • Feature flag disabled critical path                           │
+│    • Missing required configuration                                │
+│    • Database connection failure (fail after connect attempt)      │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • CHECK: Application logs for error patterns                    │
+│    • CHECK: Required configuration and feature flags               │
+│    • CHECK: Database and cache connectivity                        │
+│    • REVIEW: Recent deployments for breaking changes               │
+│                                                                     │
+│  Example Scenario:                                                  │
+│    Latency: 25ms (normally 200ms)                                  │
+│    Errors: 80%                                                     │
+│                                                                     │
+│    Logs show: "Redis connection failed"                            │
+│    Redis cluster is unreachable. Service tries to connect          │
+│    (25ms timeout), fails, returns error.                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="cascade-patterns"><a class="header" href="#cascade-patterns">Cascade Patterns</a></h3>
+<p>These patterns relate to dependency failures propagating.</p>
+<h4 id="upstream_cascade"><a class="header" href="#upstream_cascade"><code>upstream_cascade</code></a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│  PATTERN: upstream_cascade                                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Conditions:                                                        │
+│    application_latency: high                                       │
+│    _dependency_context: upstream_anomaly                           │
+│                                                                     │
+│  Severity: high                                                     │
+│                                                                     │
+│  What It Means:                                                     │
+│    This service is slow, AND at least one of its upstream          │
+│    dependencies also has an anomaly. The root cause is likely      │
+│    in the upstream service, not here.                              │
+│                                                                     │
+│  How Cascade Detection Works:                                       │
+│    1. Yaga2 runs detection for all services (Pass 1)               │
+│    2. For services with latency anomalies, check dependencies      │
+│    3. If a dependency has an anomaly, it's a cascade               │
+│    4. Trace the chain to find the root cause service               │
+│                                                                     │
+│  Why This Matters:                                                  │
+│    Without cascade detection, you'd get 5 alerts for 5 services    │
+│    when only 1 service (the root cause) needs fixing.              │
+│                                                                     │
+│  Example Dependency Chain:                                          │
+│    mobile-api → booking → vms → titan                              │
+│                                                                     │
+│    If titan has a database issue, all 4 services will be slow.     │
+│    Cascade detection identifies titan as root cause.               │
+│                                                                     │
+│  cascade_analysis Output:                                           │
+│    {                                                                │
+│      "is_cascade": true,                                           │
+│      "root_cause_service": "titan",                                │
+│      "affected_chain": ["titan", "vms", "booking", "mobile-api"],  │
+│      "cascade_type": "upstream_cascade"                            │
+│    }                                                                │
+│                                                                     │
+│  Recommended Actions:                                               │
+│    • FOCUS: Investigate root_cause_service first                   │
+│    • IGNORE: Don't fix downstream services (they'll recover)       │
+│    • CORRELATE: Check root cause service's anomaly for details     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="pattern-matching-in-action"><a class="header" href="#pattern-matching-in-action">Pattern Matching in Action</a></h2>
+<h3 id="complete-example-traffic-surge"><a class="header" href="#complete-example-traffic-surge">Complete Example: Traffic Surge</a></h3>
+<pre><code>Input Metrics at 2:30 PM:
+─────────────────────────────────────────────────────────────
+  request_rate: 850 req/s (baseline: 200 req/s)
+  application_latency: 420ms (baseline: 120ms)
+  error_rate: 0.5% (baseline: 0.1%)
+  database_latency: 15ms (baseline: 12ms)
+  dependency_latency: 45ms (baseline: 40ms)
+
+Phase 1: Isolation Forest
+─────────────────────────────────────────────────────────────
+  request_rate:        score=-0.42  percentile=96  → very_high
+  application_latency: score=-0.35  percentile=94  → high
+  error_rate:          score=-0.08  percentile=72  → normal
+  database_latency:    score=0.05   percentile=55  → normal
+  dependency_latency:      score=0.02   percentile=52  → normal
+
+Phase 2: Level Classification
+─────────────────────────────────────────────────────────────
+  request_rate: very_high (&gt;95th percentile)
+  application_latency: high (90-95th percentile)
+  error_rate: normal (errors not anomalous)
+  database_latency: normal (not flagged by IF)
+  dependency_latency: normal (not flagged by IF)
+
+Phase 3: Pattern Matching
+─────────────────────────────────────────────────────────────
+  Checking: traffic_surge_failing
+    Conditions: request_rate=high ✓, latency=high ✓, errors=high ✗
+    Result: NO MATCH (errors are normal)
+
+  Checking: traffic_surge_degrading
+    Conditions: request_rate=high ✓, latency=high ✓, errors=normal ✓
+    Result: MATCH ✓
+
+Output:
+─────────────────────────────────────────────────────────────
+{
+  "pattern_name": "traffic_surge_degrading",
+  "severity": "high",
+  "description": "Traffic surge causing slowdown: 850 req/s driving
+    latency to 420ms (errors stable at 0.50%)",
+  "interpretation": "Service is slowing under load but not failing -
+    approaching capacity. Users experiencing degraded performance but
+    requests are completing.",
+  "recommended_actions": [
+    "IMMEDIATE: Scale horizontally if possible",
+    "CHECK: Resource bottlenecks (CPU, memory, connections)",
+    "MONITOR: Error rate for signs of impending failure",
+    "CONSIDER: Enable request throttling to protect backend"
+  ],
+  "metric_levels": {
+    "request_rate": "very_high",
+    "application_latency": "high",
+    "error_rate": "normal"
   }
 }
 </code></pre>
 <h2 id="adding-new-patterns"><a class="header" href="#adding-new-patterns">Adding New Patterns</a></h2>
-<p>Edit <code>smartbox_anomaly/detection/interpretations.py</code>:</p>
-<pre><code class="language-python">MULTIVARIATE_PATTERNS["my_new_pattern"] = PatternDefinition(
-    name="my_new_pattern",
+<p>To add a new pattern, edit <code>smartbox_anomaly/detection/interpretations.py</code>:</p>
+<pre><code class="language-python">MULTIVARIATE_PATTERNS["cache_miss_storm"] = PatternDefinition(
+    name="cache_miss_storm",
     conditions={
         "request_rate": "normal",
-        "application_latency": "high",
-        "error_rate": "low",
+        "database_latency": "high",
+        "db_latency_ratio": "&gt; 0.8",
     },
-    severity="medium",
-    message_template="Description with {metrics}",
-    interpretation="What this means...",
-    recommended_actions=["Action 1", "Action 2"],
+    severity="high",
+    message_template=(
+        "Cache miss storm: {database_latency:.0f}ms DB latency "
+        "({db_latency_ratio:.0%} of total response time)"
+    ),
+    interpretation=(
+        "Database is handling requests that should be cached. "
+        "Cache service may be down or TTL expired for hot keys."
+    ),
+    recommended_actions=[
+        "CHECK: Cache service health (Redis/Memcached)",
+        "CHECK: Cache hit rate metrics",
+        "VERIFY: Cache TTL hasn't expired for hot keys",
+        "CONSIDER: Implementing cache warming",
+    ],
 )
 </code></pre>
+<h3 id="pattern-conditions"><a class="header" href="#pattern-conditions">Pattern Conditions</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Condition Type</th><th>Example</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td>Level</td><td><code>"request_rate": "high"</code></td><td>Metric must be at this level</td></tr>
+<tr><td>Ratio</td><td><code>"db_latency_ratio": "&gt; 0.7"</code></td><td>Ratio must exceed threshold</td></tr>
+<tr><td>Any</td><td><code>"error_rate": "any"</code></td><td>Matches any level</td></tr>
+<tr><td>Dependency</td><td><code>"_dependency_context": "upstream_anomaly"</code></td><td>Cascade detection</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="recommendation-prefixes"><a class="header" href="#recommendation-prefixes">Recommendation Prefixes</a></h3>
+<p>Use these prefixes for consistent action ordering:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Prefix</th><th>Priority</th><th>Use For</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IMMEDIATE</code></td><td>1</td><td>Actions needed right now</td></tr>
+<tr><td><code>CHECK</code></td><td>2</td><td>Things to investigate</td></tr>
+<tr><td><code>INVESTIGATE</code></td><td>3</td><td>Deeper analysis needed</td></tr>
+<tr><td><code>MONITOR</code></td><td>4</td><td>Ongoing observation</td></tr>
+<tr><td><code>CONSIDER</code></td><td>5</td><td>Optional improvements</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further Reading</a></h2>
+<ul>
+<li><a href="./isolation-forest.html">Isolation Forest</a> - How ML detection works</li>
+<li><a href="./pipeline.html">Detection Pipeline</a> - End-to-end detection flow</li>
+<li><a href="../reference/api-payload.html">API Payload Reference</a> - Output format</li>
+</ul>
 
                     </main>
 

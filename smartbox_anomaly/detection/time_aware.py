@@ -5,19 +5,21 @@ This module provides time-aware detection with:
 - Separate models for different time periods (business, evening, night, weekend)
 - Lazy model loading for efficiency
 - Automatic fallback between time periods
+- Holiday variant model selection (dual-model architecture)
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from smartbox_anomaly.core.constants import (
     PERIOD_CONFIDENCE_SCORES,
     PERIOD_FALLBACK_MAP,
     TimePeriod,
 )
+from smartbox_anomaly.core.config import ExcludedPeriod
 from smartbox_anomaly.core.logging import get_logger
 from smartbox_anomaly.core.types import DependencyContext
 from smartbox_anomaly.core.utils import get_time_period, parse_service_model
@@ -44,6 +46,7 @@ class TimeAwareAnomalyDetector:
     - Lazy loading: Models are loaded only when needed
     - Fallback support: Uses fallback periods if primary model unavailable
     - Confidence scoring: Reports confidence based on model match
+    - Holiday variant selection: Uses holiday models during excluded periods
 
     Example:
         >>> detector = TimeAwareAnomalyDetector("booking")
@@ -51,19 +54,29 @@ class TimeAwareAnomalyDetector:
         >>> result = detector.detect(current_metrics)
     """
 
+    # 3 time-of-day buckets covering all 7 days
+    # This provides more training data per period compared to 5-period model
     TIME_PERIODS: dict[str, dict[str, Any]] = {
-        "business_hours": {"start": 8, "end": 18, "weekdays_only": True},
-        "evening_hours": {"start": 18, "end": 22, "weekdays_only": True},
-        "night_hours": {"start": 22, "end": 6, "weekdays_only": True},
-        "weekend_day": {"start": 8, "end": 22, "weekends_only": True},
-        "weekend_night": {"start": 22, "end": 8, "weekends_only": True},
+        "business_hours": {"start": 8, "end": 18},   # Day hours (all days)
+        "evening_hours": {"start": 18, "end": 22},   # Evening (all days)
+        "night_hours": {"start": 22, "end": 8},      # Night (all days)
     }
 
-    def __init__(self, service_name: str) -> None:
+    # Holiday variant subdirectory name
+    HOLIDAY_VARIANT_DIR = "_holiday_variant"
+
+    def __init__(
+        self,
+        service_name: str,
+        excluded_periods: Sequence[ExcludedPeriod] | None = None,
+    ) -> None:
         """Initialize the time-aware detector.
 
         Args:
             service_name: Base service name (without time period suffix).
+            excluded_periods: Optional sequence of excluded periods for holiday
+                variant selection. When the detection timestamp falls within an
+                excluded period, holiday variant models will be used if available.
         """
         self.service_name = service_name
         self.models: dict[str, SmartboxAnomalyDetector] = {}
@@ -72,10 +85,81 @@ class TimeAwareAnomalyDetector:
         self._loaded_periods: set[str] = set()
         self.validation_thresholds = get_validation_thresholds(service_name)
 
+        # Holiday variant support
+        self._excluded_periods: tuple[ExcludedPeriod, ...] = (
+            tuple(excluded_periods) if excluded_periods else ()
+        )
+        self._holiday_models: dict[str, SmartboxAnomalyDetector] = {}
+        self._available_holiday_periods: set[str] = set()
+        self._loaded_holiday_periods: set[str] = set()
+        self._holiday_models_directory: Path | None = None
+
     @property
     def available_periods(self) -> list[str]:
         """Get list of available time periods."""
         return sorted(self._available_periods)
+
+    @property
+    def available_holiday_periods(self) -> list[str]:
+        """Get list of available holiday variant time periods."""
+        return sorted(self._available_holiday_periods)
+
+    @property
+    def has_holiday_variants(self) -> bool:
+        """Check if holiday variant models are available."""
+        return len(self._available_holiday_periods) > 0
+
+    def set_excluded_periods(
+        self,
+        excluded_periods: Sequence[ExcludedPeriod],
+    ) -> None:
+        """Set excluded periods for holiday variant selection.
+
+        Args:
+            excluded_periods: Sequence of excluded periods from config.
+        """
+        self._excluded_periods = tuple(excluded_periods)
+        logger.debug(
+            f"Set {len(self._excluded_periods)} excluded periods for {self.service_name}"
+        )
+
+    def is_in_holiday_period(self, timestamp: datetime) -> bool:
+        """Check if a timestamp falls within an excluded (holiday) period.
+
+        Args:
+            timestamp: The timestamp to check.
+
+        Returns:
+            True if timestamp is within any excluded period, False otherwise.
+        """
+        if not self._excluded_periods:
+            return False
+
+        for period in self._excluded_periods:
+            if period.contains(timestamp):
+                logger.debug(
+                    f"Timestamp {timestamp.isoformat()} is in excluded period: "
+                    f"{period.reason or period.model_variant}"
+                )
+                return True
+        return False
+
+    def _should_use_holiday_model(self, timestamp: datetime) -> bool:
+        """Determine if holiday variant models should be used.
+
+        Returns True if:
+        1. Timestamp is within an excluded period
+        2. Holiday variant models are available
+
+        Args:
+            timestamp: The detection timestamp.
+
+        Returns:
+            True if holiday models should be used.
+        """
+        if not self.has_holiday_variants:
+            return False
+        return self.is_in_holiday_period(timestamp)
 
     def train_time_aware_models(
         self,
@@ -141,7 +225,8 @@ class TimeAwareAnomalyDetector:
                 f"{len(validation_data) if validation_data is not None else 0} validation samples)"
             )
 
-            model = SmartboxAnomalyDetector(f"{self.service_name}_{period}")
+            # Pass period for period-specific contamination adjustment
+            model = SmartboxAnomalyDetector(f"{self.service_name}_{period}", period=period)
 
             # Train with validation data for threshold calibration
             train_result = model.train(
@@ -195,6 +280,9 @@ class TimeAwareAnomalyDetector:
         This method scans the directory for available period models
         but does not load them until needed (lazy loading).
 
+        Also discovers holiday variant models in the `_holiday_variant`
+        subdirectory for dual-model architecture support.
+
         Args:
             directory: Directory containing model subdirectories.
         """
@@ -203,12 +291,23 @@ class TimeAwareAnomalyDetector:
         self._loaded_periods.clear()
         self.models.clear()
 
+        # Reset holiday variant state
+        self._available_holiday_periods.clear()
+        self._loaded_holiday_periods.clear()
+        self._holiday_models.clear()
+        self._holiday_models_directory = None
+
         if not self._models_directory.exists():
             logger.warning(f"Models directory does not exist: {directory}")
             return
 
+        # Discover baseline models
         for item in self._models_directory.iterdir():
             if not item.is_dir():
+                continue
+
+            # Skip holiday variant directory for baseline discovery
+            if item.name == self.HOLIDAY_VARIANT_DIR:
                 continue
 
             # Check if this is a model for our service
@@ -226,19 +325,53 @@ class TimeAwareAnomalyDetector:
                 self._available_periods.add(period)
 
         logger.info(
-            f"Discovered {len(self._available_periods)} models for {self.service_name}: "
-            f"{sorted(self._available_periods)}"
+            f"Discovered {len(self._available_periods)} baseline models for "
+            f"{self.service_name}: {sorted(self._available_periods)}"
         )
 
-    def _lazy_load_model(self, period: str) -> SmartboxAnomalyDetector | None:
+        # Discover holiday variant models
+        holiday_dir = self._models_directory / self.HOLIDAY_VARIANT_DIR
+        if holiday_dir.exists() and holiday_dir.is_dir():
+            self._holiday_models_directory = holiday_dir
+            for item in holiday_dir.iterdir():
+                if not item.is_dir():
+                    continue
+
+                model_data_file = item / "model_data.json"
+                if not model_data_file.exists():
+                    continue
+
+                dir_name = item.name
+                if not dir_name.startswith(self.service_name):
+                    continue
+
+                base_name, period = parse_service_model(dir_name)
+                if base_name == self.service_name and period in self.TIME_PERIODS:
+                    self._available_holiday_periods.add(period)
+
+            if self._available_holiday_periods:
+                logger.info(
+                    f"Discovered {len(self._available_holiday_periods)} holiday variant "
+                    f"models for {self.service_name}: {sorted(self._available_holiday_periods)}"
+                )
+
+    def _lazy_load_model(
+        self,
+        period: str,
+        use_holiday_variant: bool = False,
+    ) -> SmartboxAnomalyDetector | None:
         """Load a model for a specific period (lazy loading).
 
         Args:
             period: Time period to load.
+            use_holiday_variant: If True, load from holiday variant directory.
 
         Returns:
             Loaded detector or None if not available.
         """
+        if use_holiday_variant:
+            return self._lazy_load_holiday_model(period)
+
         if period in self._loaded_periods:
             return self.models.get(period)
 
@@ -256,10 +389,42 @@ class TimeAwareAnomalyDetector:
             )
             self.models[period] = model
             self._loaded_periods.add(period)
-            logger.debug(f"Lazy-loaded model for {period}")
+            logger.debug(f"Lazy-loaded baseline model for {period}")
             return model
         except Exception as e:
-            logger.error(f"Failed to load model for {period}: {e}")
+            logger.error(f"Failed to load baseline model for {period}: {e}")
+            return None
+
+    def _lazy_load_holiday_model(self, period: str) -> SmartboxAnomalyDetector | None:
+        """Load a holiday variant model for a specific period (lazy loading).
+
+        Args:
+            period: Time period to load.
+
+        Returns:
+            Loaded holiday variant detector or None if not available.
+        """
+        if period in self._loaded_holiday_periods:
+            return self._holiday_models.get(period)
+
+        if period not in self._available_holiday_periods:
+            return None
+
+        if self._holiday_models_directory is None:
+            return None
+
+        try:
+            model_name = f"{self.service_name}_{period}"
+            model = SmartboxAnomalyDetector.load_model(
+                str(self._holiday_models_directory),
+                model_name,
+            )
+            self._holiday_models[period] = model
+            self._loaded_holiday_periods.add(period)
+            logger.debug(f"Lazy-loaded holiday variant model for {period}")
+            return model
+        except Exception as e:
+            logger.error(f"Failed to load holiday variant model for {period}: {e}")
             return None
 
     def get_current_period(self, timestamp: datetime | None = None) -> TimePeriod:
@@ -297,7 +462,9 @@ class TimeAwareAnomalyDetector:
             timestamp = datetime.now()
 
         current_period = self.get_current_period(timestamp)
-        model, used_period, confidence = self._get_best_model(current_period.value)
+        model, used_period, confidence, is_holiday_variant = self._get_best_model(
+            current_period.value, timestamp
+        )
 
         if model is None:
             return {
@@ -313,14 +480,21 @@ class TimeAwareAnomalyDetector:
         # Run detection with optional dependency context and drift checking
         result = model.detect(metrics, timestamp, dependency_context, check_drift=check_drift)
 
+        # Determine which set of loaded periods to check
+        loaded_periods = (
+            self._loaded_holiday_periods if is_holiday_variant else self._loaded_periods
+        )
+
         # Enhance metadata
         result["metadata"].update({
             "time_period": current_period.value,
             "model_period": used_period,
             "is_fallback": used_period != current_period.value,
+            "is_holiday_variant": is_holiday_variant,
             "confidence": confidence,
-            "lazy_loaded": used_period in self._loaded_periods,
+            "lazy_loaded": used_period in loaded_periods,
             "available_periods": list(self._available_periods),
+            "available_holiday_periods": list(self._available_holiday_periods),
         })
 
         # Adjust severity based on time period characteristics
@@ -342,25 +516,47 @@ class TimeAwareAnomalyDetector:
     def _get_best_model(
         self,
         target_period: str,
-    ) -> tuple[SmartboxAnomalyDetector | None, str, float]:
+        timestamp: datetime | None = None,
+    ) -> tuple[SmartboxAnomalyDetector | None, str, float, bool]:
         """Get the best available model for a target period.
 
         Uses fallback chain if target period model is not available.
+        Uses holiday variant models when timestamp falls in an excluded period.
 
         Args:
             target_period: Target time period.
+            timestamp: Timestamp for holiday period checking.
 
         Returns:
-            Tuple of (model, used_period, confidence).
+            Tuple of (model, used_period, confidence, is_holiday_variant).
         """
-        # Try exact match first
+        # Check if we should use holiday variant
+        use_holiday = timestamp is not None and self._should_use_holiday_model(timestamp)
+
+        if use_holiday:
+            # Try holiday variant first
+            model, period, confidence = self._get_holiday_model(target_period)
+            if model is not None:
+                logger.debug(
+                    f"Using holiday variant model for {self.service_name}/{period} "
+                    f"(timestamp in excluded period)"
+                )
+                return model, period, confidence, True
+
+            # Fall back to baseline if holiday variant not available
+            logger.debug(
+                f"Holiday variant not available for {self.service_name}/{target_period}, "
+                f"falling back to baseline model"
+            )
+
+        # Try exact match first (baseline)
         if target_period in self._available_periods:
             model = self._lazy_load_model(target_period)
             if model is not None:
                 confidence = PERIOD_CONFIDENCE_SCORES.get(target_period, 0.85)
-                return model, target_period, confidence
+                return model, target_period, confidence, False
 
-        # Try fallbacks
+        # Try fallbacks (baseline)
         fallback_chain: tuple[str, ...] = PERIOD_FALLBACK_MAP.get(target_period, ())
         for fallback_period in fallback_chain:
             if fallback_period in self._available_periods:
@@ -373,9 +569,43 @@ class TimeAwareAnomalyDetector:
                         f"Using fallback model {fallback_period} for {target_period} "
                         f"(confidence: {confidence:.2f})"
                     )
-                    return model, fallback_period, confidence
+                    return model, fallback_period, confidence, False
 
         # No model available
+        return None, "", 0.0, False
+
+    def _get_holiday_model(
+        self,
+        target_period: str,
+    ) -> tuple[SmartboxAnomalyDetector | None, str, float]:
+        """Get holiday variant model for a target period with fallback.
+
+        Args:
+            target_period: Target time period.
+
+        Returns:
+            Tuple of (model, used_period, confidence).
+        """
+        # Try exact match first
+        if target_period in self._available_holiday_periods:
+            model = self._lazy_load_model(target_period, use_holiday_variant=True)
+            if model is not None:
+                confidence = PERIOD_CONFIDENCE_SCORES.get(target_period, 0.85)
+                return model, target_period, confidence
+
+        # Try fallbacks within holiday variants
+        fallback_chain: tuple[str, ...] = PERIOD_FALLBACK_MAP.get(target_period, ())
+        for fallback_period in fallback_chain:
+            if fallback_period in self._available_holiday_periods:
+                model = self._lazy_load_model(fallback_period, use_holiday_variant=True)
+                if model is not None:
+                    base_confidence = PERIOD_CONFIDENCE_SCORES.get(fallback_period, 0.75)
+                    confidence = base_confidence * 0.85
+                    logger.debug(
+                        f"Using holiday variant fallback {fallback_period} for {target_period}"
+                    )
+                    return model, fallback_period, confidence
+
         return None, "", 0.0
 
     def _adjust_for_time_period(

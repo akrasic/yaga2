@@ -37,20 +37,30 @@ DEFAULT_CONTAMINATION_RATES: dict[str, float] = {
     "background": 0.08,
 }
 
+# 3-period model validation thresholds (all 7 days combined by time-of-day)
+# With more training data per period, we can use stricter thresholds
 DEFAULT_VALIDATION_THRESHOLDS: dict[str, float] = {
-    "business_hours": 0.18,
-    "night_hours": 0.12,
-    "evening_hours": 0.20,
-    "weekend_day": 0.28,
-    "weekend_night": 0.32,
+    "business_hours": 0.22,  # Day hours (8-18) - most predictable
+    "evening_hours": 0.28,   # Transition period (18-22)
+    "night_hours": 0.40,     # Overnight (22-8) - higher natural variance
 }
 
+# Per-period contamination multipliers: low-traffic periods have higher natural variance,
+# so we expect more apparent "anomalies" that are actually normal variance.
+# This reduces false positives during quiet periods.
+# With 3-period model, night hours now include all 7 days of night data.
+DEFAULT_PERIOD_CONTAMINATION_MULTIPLIERS: dict[str, float] = {
+    "business_hours": 1.0,   # Baseline - most predictable traffic
+    "evening_hours": 1.3,    # Moderate traffic reduction
+    "night_hours": 1.8,      # Low traffic, higher variance (less extreme than 5-period)
+}
+
+# Confidence scores reflect reliability of detection per time period
+# With 3-period model, we have more data per period so confidence is generally higher
 DEFAULT_CONFIDENCE_SCORES: dict[str, float] = {
-    "business_hours": 0.9,
-    "evening_hours": 0.8,
-    "night_hours": 0.95,
-    "weekend_day": 0.7,
-    "weekend_night": 0.6,
+    "business_hours": 0.9,   # Highest confidence - most data, most predictable
+    "evening_hours": 0.85,   # Good confidence - transition period
+    "night_hours": 0.8,      # Still good - more data than old weekend_night
 }
 
 # Default config file locations (searched in order)
@@ -541,6 +551,174 @@ class SLOConfig:
 
 
 @dataclass(frozen=True)
+class ExcludedPeriod:
+    """A time period to exclude from training data (e.g., holidays, incidents)."""
+
+    start: str  # ISO date string: "2025-12-20"
+    end: str    # ISO date string: "2026-01-05"
+    reason: str = ""  # Optional description
+    model_variant: str = "holiday"  # Which model variant this data belongs to
+
+    def contains(self, timestamp: datetime) -> bool:
+        """Check if a timestamp falls within this excluded period."""
+        from datetime import datetime as dt
+        try:
+            start_dt = dt.fromisoformat(self.start)
+            end_dt = dt.fromisoformat(self.end)
+            # Handle both date-only and datetime strings
+            if start_dt.tzinfo is None and timestamp.tzinfo is not None:
+                timestamp = timestamp.replace(tzinfo=None)
+            return start_dt <= timestamp <= end_dt
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ExcludedPeriod:
+        """Create from config dict."""
+        return cls(
+            start=data.get("start", ""),
+            end=data.get("end", ""),
+            reason=data.get("reason", ""),
+            model_variant=data.get("model_variant", "holiday"),
+        )
+
+
+@dataclass(frozen=True)
+class ModelVariantConfig:
+    """Configuration for a model variant (e.g., baseline, holiday)."""
+
+    name: str
+    description: str = ""
+    weight_factor: float = 1.0  # Weight multiplier for this variant's data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], name: str) -> ModelVariantConfig:
+        """Create from config dict."""
+        return cls(
+            name=name,
+            description=data.get("description", ""),
+            weight_factor=data.get("weight_factor", 1.0),
+        )
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    """Configuration for model training pipeline.
+
+    Supports:
+    - Extended lookback periods (e.g., 60 days)
+    - Excluded periods (e.g., holidays) for filtering
+    - Dual-model training (baseline vs holiday variants)
+    - Temporal train/validation split
+    """
+
+    # Data collection
+    lookback_days: int = 60  # Extended from 30 to support dual-model
+    min_data_points: int = 2000
+
+    # Temporal validation split
+    validation_fraction: float = 0.2
+
+    # Contamination estimation
+    contamination_method: str = "knee"  # "knee" or "gap"
+    contamination_min_samples: int = 100
+    contamination_fallback: float = 0.05
+
+    # Threshold calibration
+    threshold_calibration_enabled: bool = True
+    threshold_percentiles: dict[str, float] = field(default_factory=lambda: {
+        "critical": 0.1,
+        "high": 1.0,
+        "medium": 5.0,
+        "low": 10.0,
+    })
+
+    # Drift detection at training time
+    drift_detection_enabled: bool = False
+    drift_z_score_warning: float = 3.0
+    drift_z_score_critical: float = 5.0
+
+    # Excluded periods (holidays, incidents, etc.)
+    excluded_periods: tuple[ExcludedPeriod, ...] = field(default_factory=tuple)
+
+    # Model variants configuration
+    train_baseline_model: bool = True   # Train on normal (non-excluded) data
+    train_holiday_model: bool = True    # Train on excluded period data
+    min_excluded_days_for_variant: int = 7  # Minimum days to train holiday variant
+
+    # Holiday data weighting (for future years)
+    holiday_data_weight: float = 0.3  # Reduce influence of holiday data in baseline
+
+    def is_in_excluded_period(self, timestamp: datetime) -> tuple[bool, str | None]:
+        """Check if timestamp falls within any excluded period.
+
+        Returns:
+            Tuple of (is_excluded, variant_name or None)
+        """
+        for period in self.excluded_periods:
+            if period.contains(timestamp):
+                return True, period.model_variant
+        return False, None
+
+    def get_excluded_period_days(self) -> int:
+        """Calculate total days covered by excluded periods."""
+        from datetime import datetime as dt
+        total_days = 0
+        for period in self.excluded_periods:
+            try:
+                start = dt.fromisoformat(period.start)
+                end = dt.fromisoformat(period.end)
+                total_days += (end - start).days + 1
+            except (ValueError, TypeError):
+                continue
+        return total_days
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> TrainingConfig:
+        """Create configuration from config dict."""
+        training_config = config.get("training", {})
+
+        # Parse excluded periods
+        excluded_list = training_config.get("excluded_periods", [])
+        excluded_periods = tuple(
+            ExcludedPeriod.from_dict(p) for p in excluded_list
+        )
+
+        # Parse contamination estimation
+        contam_config = training_config.get("contamination_estimation", {})
+
+        # Parse threshold calibration
+        threshold_config = training_config.get("threshold_calibration", {})
+
+        # Parse drift detection
+        drift_config = training_config.get("drift_detection", {})
+
+        # Parse model variants config
+        variants_config = training_config.get("model_variants", {})
+
+        return cls(
+            lookback_days=training_config.get("lookback_days", 60),
+            min_data_points=training_config.get("min_data_points", 2000),
+            validation_fraction=training_config.get("validation_fraction", 0.2),
+            contamination_method=contam_config.get("method", "knee"),
+            contamination_min_samples=contam_config.get("min_samples", 100),
+            contamination_fallback=contam_config.get("fallback", 0.05),
+            threshold_calibration_enabled=threshold_config.get("enabled", True),
+            threshold_percentiles=threshold_config.get("percentiles", {
+                "critical": 0.1, "high": 1.0, "medium": 5.0, "low": 10.0
+            }),
+            drift_detection_enabled=drift_config.get("enabled", False),
+            drift_z_score_warning=drift_config.get("z_score_warning", 3.0),
+            drift_z_score_critical=drift_config.get("z_score_critical", 5.0),
+            excluded_periods=excluded_periods,
+            train_baseline_model=variants_config.get("train_baseline", True),
+            train_holiday_model=variants_config.get("train_holiday", True),
+            min_excluded_days_for_variant=variants_config.get("min_excluded_days", 7),
+            holiday_data_weight=variants_config.get("holiday_data_weight", 0.3),
+        )
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Configuration for observability service integration."""
 
@@ -875,12 +1053,59 @@ class DetectionThresholdConfig:
         )
 
 
+@dataclass(frozen=True)
+class EnvoyEnrichmentConfig:
+    """Configuration for Envoy edge/ingress metrics enrichment.
+
+    Envoy enrichment adds edge-level context to anomaly alerts by querying
+    Mimir for Envoy proxy metrics (request rates by status class, latency
+    percentiles, active connections).
+    """
+
+    enabled: bool = False
+    mimir_endpoint: str = "https://mimir.sbxtest.net/prometheus"
+    lookback_minutes: int = 5
+    timeout_seconds: int = 10
+
+    # OTel service name to Envoy cluster name mapping
+    cluster_mapping: dict[str, str] = field(default_factory=lambda: {
+        "booking": "booking",
+        "search": "search_k8s",
+        "mobile-api": "mobile-api",
+        "shire-api": "shireapi_cluster",
+        "fa5": "fa5-public",
+        "titan": "titan",
+        "friday": "friday",
+    })
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> EnvoyEnrichmentConfig:
+        """Create configuration from config dict."""
+        envoy_config = config.get("envoy_enrichment", {})
+        return cls(
+            enabled=envoy_config.get("enabled", False),
+            mimir_endpoint=envoy_config.get("mimir_endpoint", "https://mimir.sbxtest.net/prometheus"),
+            lookback_minutes=envoy_config.get("lookback_minutes", 5),
+            timeout_seconds=envoy_config.get("timeout_seconds", 10),
+            cluster_mapping=envoy_config.get("cluster_mapping", {
+                "booking": "booking",
+                "search": "search_k8s",
+                "mobile-api": "mobile-api",
+                "shire-api": "shireapi_cluster",
+                "fa5": "fa5-public",
+                "titan": "titan",
+                "friday": "friday",
+            }),
+        )
+
+
 @dataclass
 class PipelineConfig:
     """Root configuration aggregating all sub-configurations."""
 
     victoria_metrics: VictoriaMetricsConfig = field(default_factory=VictoriaMetricsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
     fingerprinting: FingerprintingConfig = field(default_factory=FingerprintingConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
@@ -889,6 +1114,7 @@ class PipelineConfig:
     detection_thresholds: DetectionThresholdConfig = field(default_factory=DetectionThresholdConfig)
     slo: SLOConfig = field(default_factory=lambda: SLOConfig(enabled=False))
     alerting: AlertingConfig = field(default_factory=AlertingConfig)
+    envoy_enrichment: EnvoyEnrichmentConfig = field(default_factory=EnvoyEnrichmentConfig)
 
     # Track which config file was loaded (if any)
     config_file_path: str | None = None
@@ -926,6 +1152,7 @@ class PipelineConfig:
         return cls(
             victoria_metrics=VictoriaMetricsConfig.from_config(config),
             model=ModelConfig.from_config(config),
+            training=TrainingConfig.from_config(config),
             inference=InferenceConfig.from_config(config),
             fingerprinting=FingerprintingConfig.from_config(config),
             observability=ObservabilityConfig.from_config(config),
@@ -934,6 +1161,7 @@ class PipelineConfig:
             detection_thresholds=DetectionThresholdConfig.from_config(config),
             slo=SLOConfig.from_config(config),
             alerting=AlertingConfig.from_config(config),
+            envoy_enrichment=EnvoyEnrichmentConfig.from_config(config),
             config_file_path=config_file_path,
         )
 

@@ -433,8 +433,6 @@ class VictoriaMetricsClient(MetricsCollector):
                     collection_errors[metric_name] = error_msg[:200]
                     metrics_data[metric_name] = 0.0  # Still need a value for the dataclass
 
-                time.sleep(0.01)  # Reduced delay (was 0.1s)
-
             # Add failure tracking to the metrics object
             metrics_data["failed_metrics"] = failed_metrics if failed_metrics else None
             metrics_data["collection_errors"] = collection_errors if collection_errors else None

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,164 +181,447 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="confirmation-logic"><a class="header" href="#confirmation-logic">Confirmation Logic</a></h1>
-<p>Confirmation prevents alert noise by requiring multiple consecutive detections before alerting.</p>
-<h2 id="why-confirmation"><a class="header" href="#why-confirmation">Why Confirmation?</a></h2>
-<p><strong>Without confirmation</strong>:</p>
-<pre><code>10:00 - Latency spike 450ms → ALERT
-10:03 - Latency normal 120ms → RESOLVE
-10:06 - Latency spike 455ms → ALERT
-10:09 - Latency normal 118ms → RESOLVE
-...
-</code></pre>
-<p>Result: Alert fatigue from flapping.</p>
-<p><strong>With confirmation</strong>:</p>
-<pre><code>10:00 - Latency spike 450ms → SUSPECTED (no alert)
-10:03 - Latency normal 120ms → SUSPECTED expires (no alert)
-10:06 - Latency spike 455ms → SUSPECTED (no alert)
-10:09 - Latency spike 448ms → OPEN (alert sent!)
-10:12 - Latency spike 440ms → CONTINUE
-...
-</code></pre>
-<p>Result: Only sustained issues generate alerts.</p>
-<h2 id="confirmation-flow"><a class="header" href="#confirmation-flow">Confirmation Flow</a></h2>
-<pre><code>┌─────────────────────────────────────────────────────────────────┐
-│                     Detection Cycle 1                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   Anomaly detected for first time                               │
-│   ─────────────────────────────                                 │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  Status: SUSPECTED                                      │   │
-│   │  consecutive_detections: 1                              │   │
-│   │  confirmation_pending: true                             │   │
-│   │  cycles_to_confirm: 1                                   │   │
-│   │  is_confirmed: false                                    │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   Web API: ❌ NOT notified (not confirmed yet)                  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+<p>Confirmation prevents alert noise by requiring multiple consecutive detections before alerting. This chapter explains why confirmation is essential, how it works, and how to tune it for your environment.</p>
+<h2 id="what-is-confirmation"><a class="header" href="#what-is-confirmation">What is Confirmation?</a></h2>
+<p><strong>Confirmation</strong> is the process of validating that an anomaly is real and persistent before triggering an alert. Instead of alerting immediately when something looks wrong, the system waits to see if the issue persists across multiple detection cycles.</p>
+<pre><code>Without Confirmation:           With Confirmation:
 
-                              │
-                              ▼
+Detection 1 → ALERT!           Detection 1 → Wait...
+(might be noise)               (could be transient)
 
-┌─────────────────────────────────────────────────────────────────┐
-│                     Detection Cycle 2                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   Same anomaly detected again                                   │
-│   ──────────────────────────                                    │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  Status: OPEN                                           │   │
-│   │  previous_status: SUSPECTED                             │   │
-│   │  consecutive_detections: 2                              │   │
-│   │  confirmation_pending: false                            │   │
-│   │  is_confirmed: true                                     │   │
-│   │  newly_confirmed: true  ← Important flag!               │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│   Web API: ✅ Alert sent (now confirmed)                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+Detection 2 → ALERT!           Detection 2 → ALERT!
+(might be same issue)          (confirmed: real issue)
 </code></pre>
-<h2 id="key-fields"><a class="header" href="#key-fields">Key Fields</a></h2>
+<p>Think of it like a smoke detector: you don’t want it to alarm for every wisp of steam from a shower. You want it to confirm there’s actual smoke before waking everyone up.</p>
+<h2 id="why-confirmation-matters"><a class="header" href="#why-confirmation-matters">Why Confirmation Matters</a></h2>
+<h3 id="the-problem-alert-fatigue"><a class="header" href="#the-problem-alert-fatigue">The Problem: Alert Fatigue</a></h3>
+<p>In production environments, metrics naturally fluctuate. A latency spike might last 30 seconds then disappear. An error rate might briefly increase during a garbage collection pause. Without confirmation, every transient blip becomes an alert.</p>
+<p><strong>Without confirmation, operators experience:</strong></p>
+<ul>
+<li>Multiple alerts per hour for transient issues</li>
+<li>“Resolved” notifications seconds after alerts</li>
+<li>Loss of trust in the alerting system</li>
+<li>Critical alerts buried in noise</li>
+</ul>
+<h3 id="real-world-example"><a class="header" href="#real-world-example">Real-World Example</a></h3>
+<p>Consider a service during normal operation:</p>
+<pre><code>TIME      LATENCY   WITHOUT CONFIRMATION    WITH CONFIRMATION
+────────────────────────────────────────────────────────────────
+10:00     120ms     Normal                  Normal
+10:03     450ms     🔴 ALERT: Latency!      ⏳ SUSPECTED (1/2)
+10:06     125ms     🟢 RESOLVED             ⏳ Expires (no alert)
+10:09     448ms     🔴 ALERT: Latency!      ⏳ SUSPECTED (1/2)
+10:12     455ms     (still alerting)        🔴 CONFIRMED (2/2)
+10:15     460ms     (still alerting)        📊 Continue tracking
+10:18     130ms     🟢 RESOLVED             ⏳ Recovering (1/3)
+10:21     128ms     Normal                  ⏳ Recovering (2/3)
+10:24     125ms     Normal                  🟢 RESOLVED
+</code></pre>
+<p><strong>Results:</strong></p>
+<ul>
+<li>Without confirmation: 2 alerts, 2 resolutions (noisy)</li>
+<li>With confirmation: 1 alert, 1 resolution (accurate)</li>
+</ul>
+<p>The confirmed alert represents the real issue (10:09-10:15), while the transient spike at 10:03 was correctly filtered out.</p>
+<h2 id="how-confirmation-works"><a class="header" href="#how-confirmation-works">How Confirmation Works</a></h2>
+<h3 id="the-confirmation-counter"><a class="header" href="#the-confirmation-counter">The Confirmation Counter</a></h3>
+<p>Each incident tracks how many consecutive cycles it has been detected:</p>
+<pre><code>┌────────────────────────────────────────────────────────────────────┐
+│                    consecutive_detections Counter                   │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│   Cycle 1: Anomaly detected                                        │
+│   ┌────────────────────────────────────────────────────────────┐   │
+│   │  consecutive_detections: 1                                 │   │
+│   │  confirmation_cycles: 2  (configured)                      │   │
+│   │  cycles_to_confirm: 1   (remaining)                        │   │
+│   │                                                            │   │
+│   │  Is 1 &gt;= 2? No → Stay SUSPECTED                           │   │
+│   └────────────────────────────────────────────────────────────┘   │
+│                                                                    │
+│   Cycle 2: Anomaly detected again                                  │
+│   ┌────────────────────────────────────────────────────────────┐   │
+│   │  consecutive_detections: 2                                 │   │
+│   │  confirmation_cycles: 2  (configured)                      │   │
+│   │  cycles_to_confirm: 0   (remaining)                        │   │
+│   │                                                            │   │
+│   │  Is 2 &gt;= 2? Yes → Transition to OPEN                      │   │
+│   └────────────────────────────────────────────────────────────┘   │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="confirmation-flow-diagram"><a class="header" href="#confirmation-flow-diagram">Confirmation Flow Diagram</a></h3>
+<pre><code>                    ┌─────────────────────┐
+                    │  Anomaly Detected   │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+              ┌─────│ Active Incident?    │─────┐
+              │     └─────────────────────┘     │
+              │NO                               │YES
+              ▼                                 ▼
+    ┌─────────────────────┐           ┌─────────────────────┐
+    │  Create SUSPECTED   │           │  What's the status? │
+    │  consecutive = 1    │           └──────────┬──────────┘
+    └──────────┬──────────┘                      │
+               │                    ┌────────────┼────────────┐
+               ▼                    │            │            │
+    ┌─────────────────────┐    SUSPECTED       OPEN      RECOVERING
+    │  Wait for next      │         │            │            │
+    │  detection cycle    │         ▼            ▼            ▼
+    └─────────────────────┘    Increment     Continue     Resume to
+                               counter       tracking       OPEN
+                                   │
+                                   ▼
+                          ┌─────────────────────┐
+                          │ consecutive &gt;=      │
+                          │ confirmation_cycles?│
+                          └──────────┬──────────┘
+                               │           │
+                              YES          NO
+                               │           │
+                               ▼           ▼
+                    ┌─────────────────┐  ┌─────────────────┐
+                    │  CONFIRMED!     │  │  Still waiting  │
+                    │  Status → OPEN  │  │  Stay SUSPECTED │
+                    │  Send Alert     │  │  No alert       │
+                    └─────────────────┘  └─────────────────┘
+</code></pre>
+<h2 id="detection-cycles-explained"><a class="header" href="#detection-cycles-explained">Detection Cycles Explained</a></h2>
+<h3 id="cycle-1-first-detection-suspected"><a class="header" href="#cycle-1-first-detection-suspected">Cycle 1: First Detection (SUSPECTED)</a></h3>
+<p>When an anomaly is first detected, it enters the SUSPECTED state:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Detection Cycle 1                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Time: 10:00:00                                                    │
+│   Event: Latency spike detected (450ms, normally 120ms)             │
+│                                                                     │
+│   Actions taken:                                                    │
+│   ─────────────                                                     │
+│   1. Generate fingerprint_id from pattern content                   │
+│   2. Check database for active incident with this fingerprint       │
+│   3. No active incident found → Create new incident                 │
+│   4. Set status = SUSPECTED                                         │
+│                                                                     │
+│   Result:                                                           │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  fingerprint_id: anomaly_8d4a011b83ca                       │   │
+│   │  incident_id: incident_1dcbafc91480                         │   │
+│   │  status: SUSPECTED                                          │   │
+│   │  consecutive_detections: 1                                  │   │
+│   │  confirmation_pending: true                                 │   │
+│   │  cycles_to_confirm: 1                                       │   │
+│   │  is_confirmed: false                                        │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│   Web API: ❌ NOT notified                                          │
+│   Dashboard: ❌ No alert displayed                                  │
+│   Reason: Waiting for confirmation                                  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="cycle-2-confirmation-suspected--open"><a class="header" href="#cycle-2-confirmation-suspected--open">Cycle 2: Confirmation (SUSPECTED → OPEN)</a></h3>
+<p>If the same anomaly is detected again in the next cycle:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Detection Cycle 2                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Time: 10:03:00 (3 minutes later)                                  │
+│   Event: Same latency pattern detected again                        │
+│                                                                     │
+│   Actions taken:                                                    │
+│   ─────────────                                                     │
+│   1. Generate fingerprint_id from pattern content                   │
+│   2. Check database → Found existing SUSPECTED incident             │
+│   3. Increment consecutive_detections: 1 → 2                        │
+│   4. Check: 2 &gt;= confirmation_cycles (2)? YES!                      │
+│   5. Transition status: SUSPECTED → OPEN                            │
+│   6. Set newly_confirmed = true                                     │
+│   7. Send alert to Web API                                          │
+│                                                                     │
+│   Result:                                                           │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  fingerprint_id: anomaly_8d4a011b83ca                       │   │
+│   │  incident_id: incident_1dcbafc91480                         │   │
+│   │  status: OPEN                                               │   │
+│   │  previous_status: SUSPECTED  ← For tracking the transition  │   │
+│   │  consecutive_detections: 2                                  │   │
+│   │  confirmation_pending: false                                │   │
+│   │  is_confirmed: true                                         │   │
+│   │  newly_confirmed: true  ← Signals this is fresh confirmation│   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│   Web API: ✅ Alert sent!                                           │
+│   Dashboard: ✅ Alert displayed to operators                        │
+│   Reason: Confirmed after 2 consecutive detections                  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="the-newly_confirmed-flag"><a class="header" href="#the-newly_confirmed-flag">The <code>newly_confirmed</code> Flag</a></h3>
+<p>The <code>newly_confirmed</code> flag is crucial for downstream consumers:</p>
+<pre><code>When newly_confirmed = true:
+─────────────────────────────
+• This is the FIRST time this incident is being sent as confirmed
+• Web UI should create a new alert entry
+• Notification systems should send alerts
+• Only set on the exact cycle of confirmation
+
+When newly_confirmed = false:
+──────────────────────────────
+• Incident was already confirmed in a previous cycle
+• Web UI should update existing alert entry
+• Notification systems should NOT re-alert
+• Set for all subsequent cycles
+</code></pre>
+<h2 id="key-fields-reference"><a class="header" href="#key-fields-reference">Key Fields Reference</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Field</th><th>Description</th></tr>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>consecutive_detections</code></td><td>How many cycles in a row this was detected</td></tr>
-<tr><td><code>confirmation_pending</code></td><td>True if still in SUSPECTED state</td></tr>
-<tr><td><code>cycles_to_confirm</code></td><td>Remaining cycles needed for confirmation</td></tr>
-<tr><td><code>is_confirmed</code></td><td>True if status is OPEN</td></tr>
-<tr><td><code>newly_confirmed</code></td><td>True only on the cycle where SUSPECTED → OPEN</td></tr>
+<tr><td><code>consecutive_detections</code></td><td>integer</td><td>How many cycles in a row this anomaly was detected</td></tr>
+<tr><td><code>confirmation_pending</code></td><td>boolean</td><td><code>true</code> while still in SUSPECTED state</td></tr>
+<tr><td><code>cycles_to_confirm</code></td><td>integer</td><td>Remaining cycles needed for confirmation (0 when confirmed)</td></tr>
+<tr><td><code>is_confirmed</code></td><td>boolean</td><td><code>true</code> once status becomes OPEN</td></tr>
+<tr><td><code>newly_confirmed</code></td><td>boolean</td><td><code>true</code> only on the exact cycle where SUSPECTED → OPEN</td></tr>
+<tr><td><code>previous_status</code></td><td>string</td><td>What the status was before this cycle (for tracking transitions)</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="fingerprinting-summary"><a class="header" href="#fingerprinting-summary">Fingerprinting Summary</a></h2>
-<p>The top-level <code>fingerprinting</code> object summarizes confirmation status:</p>
+<h2 id="fingerprinting-summary-object"><a class="header" href="#fingerprinting-summary-object">Fingerprinting Summary Object</a></h2>
+<p>The top-level <code>fingerprinting</code> object provides a summary of all confirmation activity:</p>
 <pre><code class="language-json">{
   "fingerprinting": {
+    "service_name": "booking",
+    "model_name": "business_hours",
+    "timestamp": "2025-12-17T10:03:00",
     "overall_action": "CONFIRMED",
+
     "status_summary": {
       "suspected": 0,
       "confirmed": 1,
       "recovering": 0
     },
+
+    "action_summary": {
+      "incident_creates": 0,
+      "incident_continues": 0,
+      "incident_closes": 0,
+      "newly_confirmed": 1
+    },
+
     "newly_confirmed_incidents": [
       {
         "fingerprint_id": "anomaly_8d4a011b83ca",
         "incident_id": "incident_1dcbafc91480",
-        "anomaly_name": "latency_spike_recent"
+        "anomaly_name": "latency_spike_recent",
+        "severity": "high"
       }
     ]
   }
 }
 </code></pre>
-<h2 id="overall-action-values"><a class="header" href="#overall-action-values">Overall Action Values</a></h2>
+<h3 id="overall-action-values"><a class="header" href="#overall-action-values">Overall Action Values</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Action</th><th>Meaning</th></tr>
+<tr><th>Action</th><th>Meaning</th><th>When It Happens</th></tr>
 </thead>
 <tbody>
-<tr><td><code>CREATE</code></td><td>New SUSPECTED incident(s) created</td></tr>
-<tr><td><code>CONFIRMED</code></td><td>Incident(s) transitioned from SUSPECTED → OPEN</td></tr>
-<tr><td><code>UPDATE</code></td><td>Existing OPEN incident(s) continued</td></tr>
-<tr><td><code>RESOLVE</code></td><td>Incident(s) closed</td></tr>
-<tr><td><code>MIXED</code></td><td>Multiple different actions in one cycle</td></tr>
-<tr><td><code>NO_CHANGE</code></td><td>No significant changes</td></tr>
+<tr><td><code>CREATE</code></td><td>New incident(s) created in SUSPECTED state</td><td>First detection of new anomaly patterns</td></tr>
+<tr><td><code>CONFIRMED</code></td><td>Incident(s) transitioned SUSPECTED → OPEN</td><td>Anomaly detected for confirmation_cycles times</td></tr>
+<tr><td><code>UPDATE</code></td><td>Existing OPEN incident(s) continued</td><td>Ongoing anomaly still being detected</td></tr>
+<tr><td><code>RESOLVE</code></td><td>Incident(s) closed</td><td>Grace period exceeded without detection</td></tr>
+<tr><td><code>MIXED</code></td><td>Multiple different actions in one cycle</td><td>E.g., one confirmed while another closes</td></tr>
+<tr><td><code>NO_CHANGE</code></td><td>No significant state changes</td><td>Only RECOVERING incidents still waiting</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="web-api-integration"><a class="header" href="#web-api-integration">Web API Integration</a></h2>
-<p>Only confirmed anomalies are sent to the web API:</p>
-<pre><code class="language-python"># Filter to only confirmed anomalies
-confirmed_anomalies = {
-    name: anomaly for name, anomaly in anomalies.items()
-    if anomaly.get('is_confirmed', False) or
-       anomaly.get('status') in ('OPEN', 'RECOVERING')
-}
+<h3 id="confirmed-only-alerts-v132"><a class="header" href="#confirmed-only-alerts-v132">Confirmed-Only Alerts (v1.3.2)</a></h3>
+<p>Starting with version 1.3.2, only <strong>confirmed</strong> anomalies are sent to the web API. This is a critical feature for preventing orphaned incidents.</p>
+<pre><code class="language-python"># How the inference engine filters before sending to web API
 
-if confirmed_anomalies:
-    # Send to web API
-    send_alert(confirmed_anomalies)
+def process_results(anomalies):
+    # Filter to only confirmed anomalies
+    confirmed_anomalies = {
+        name: anomaly for name, anomaly in anomalies.items()
+        if anomaly.get('is_confirmed', False) or
+           anomaly.get('status') in ('OPEN', 'RECOVERING')
+    }
+
+    if confirmed_anomalies:
+        # Send only confirmed anomalies to web API
+        send_alert(confirmed_anomalies)
+    else:
+        # SUSPECTED anomalies are NOT sent
+        # This prevents orphaned incidents
+        pass
+</code></pre>
+<h3 id="why-this-matters"><a class="header" href="#why-this-matters">Why This Matters</a></h3>
+<p>Before v1.3.2, all anomalies (including SUSPECTED) were sent to the web API. This caused problems:</p>
+<pre><code>OLD BEHAVIOR (problematic):
+───────────────────────────
+10:00  Detection → SUSPECTED → Sent to Web API → Web API creates OPEN incident
+10:03  Not detected → SUSPECTED expires → No resolution sent (suspected_expired)
+10:06  ...
+Result: Orphaned OPEN incident in Web API that never gets resolved!
+
+NEW BEHAVIOR (correct):
+───────────────────────────
+10:00  Detection → SUSPECTED → NOT sent to Web API (waiting for confirmation)
+10:03  Not detected → SUSPECTED expires → Nothing to resolve (never sent)
+10:06  ...
+Result: No orphaned incident - Web API never knew about it!
+
+OR if it gets confirmed:
+
+10:00  Detection → SUSPECTED → NOT sent to Web API
+10:03  Detection → OPEN (confirmed) → Sent to Web API → Web API creates incident
+10:06  Detection → OPEN continues → Update sent
+...
+10:15  Not detected × 3 cycles → CLOSED → Resolution sent
+Result: Complete lifecycle - incident created when confirmed, resolved when cleared
 </code></pre>
 <h2 id="suspected-expiration"><a class="header" href="#suspected-expiration">SUSPECTED Expiration</a></h2>
-<p>If an anomaly is never confirmed (not detected for <code>resolution_grace_cycles</code>):</p>
-<pre><code>10:00 - SUSPECTED created
-10:03 - Not detected (missed: 1)
-10:06 - Not detected (missed: 2)
-10:09 - Not detected (missed: 3)
-  → CLOSED with reason: "suspected_expired"
-  → No alert was ever sent
-  → No resolution is sent
+<p>When an anomaly is detected but then disappears before confirmation:</p>
+<pre><code>Timeline of SUSPECTED Expiration:
+─────────────────────────────────
+
+10:00:00  Anomaly detected
+          ├─ Status: SUSPECTED
+          ├─ consecutive_detections: 1
+          └─ Web API: NOT notified
+
+10:03:00  Anomaly NOT detected
+          ├─ Status: still SUSPECTED
+          ├─ missed_cycles: 1
+          └─ Web API: still not notified
+
+10:06:00  Anomaly NOT detected
+          ├─ Status: still SUSPECTED
+          ├─ missed_cycles: 2
+          └─ Web API: still not notified
+
+10:09:00  Anomaly NOT detected
+          ├─ missed_cycles: 3 &gt;= resolution_grace_cycles
+          ├─ Status: SUSPECTED → CLOSED
+          ├─ resolution_reason: "suspected_expired"
+          ├─ Web API: NO resolution sent (never was an incident there)
+          └─ Incident removed from tracking
+
+Result:
+─────────
+• No alert was ever sent
+• No resolution is needed
+• Transient issue correctly filtered
+• Zero noise in the alerting system
 </code></pre>
-<p>This prevents orphaned incidents in the web API.</p>
-<h2 id="tuning-confirmation"><a class="header" href="#tuning-confirmation">Tuning Confirmation</a></h2>
-<pre><code class="language-json">{
-  "fingerprinting": {
-    "confirmation_cycles": 3
-  }
-}
-</code></pre>
+<h3 id="resolution-reasons-for-suspected"><a class="header" href="#resolution-reasons-for-suspected">Resolution Reasons for SUSPECTED</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Value</th><th>Trade-off</th></tr>
+<tr><th>Reason</th><th>Description</th><th>Web API Impact</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>Immediate alerts (no confirmation)</td></tr>
-<tr><td>2</td><td>Default: ~4-6 min confirmation</td></tr>
-<tr><td>3</td><td>Stricter: ~6-9 min confirmation</td></tr>
-<tr><td>4+</td><td>Very strict: may miss real issues</td></tr>
+<tr><td><code>suspected_expired</code></td><td>Never confirmed, disappeared before confirmation</td><td>Nothing sent (no orphan)</td></tr>
+<tr><td><code>resolved</code></td><td>Normal resolution after grace period</td><td>N/A (only applies to OPEN)</td></tr>
+<tr><td><code>auto_stale</code></td><td>Time gap exceeded threshold</td><td>N/A (only applies to OPEN)</td></tr>
 </tbody>
 </table>
 </div>
-<p>Higher values reduce false positives but increase detection latency.</p>
+<h2 id="tuning-confirmation-cycles"><a class="header" href="#tuning-confirmation-cycles">Tuning Confirmation Cycles</a></h2>
+<p>The <code>confirmation_cycles</code> configuration determines how many consecutive detections are required:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "confirmation_cycles": 2
+  }
+}
+</code></pre>
+<h3 id="trade-off-analysis"><a class="header" href="#trade-off-analysis">Trade-off Analysis</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Confirmation Time*</th><th>Pros</th><th>Cons</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Immediate</td><td>Fastest response</td><td>No filtering, all noise</td></tr>
+<tr><td><strong>2</strong></td><td>~4-6 min</td><td><strong>Good balance (default)</strong></td><td>1 cycle delay</td></tr>
+<tr><td>3</td><td>~6-9 min</td><td>Fewer false positives</td><td>May miss short incidents</td></tr>
+<tr><td>4</td><td>~8-12 min</td><td>Very strict filtering</td><td>Risk of missing real issues</td></tr>
+<tr><td>5+</td><td>10+ min</td><td>Maximum noise reduction</td><td>Likely too slow for production</td></tr>
+</tbody>
+</table>
+</div>
+<p>*Assuming 2-3 minute detection cycles</p>
+<h3 id="choosing-the-right-value"><a class="header" href="#choosing-the-right-value">Choosing the Right Value</a></h3>
+<p><strong>Use <code>confirmation_cycles: 1</code></strong> when:</p>
+<ul>
+<li>Testing or debugging the system</li>
+<li>You need immediate alerts regardless of noise</li>
+<li>You have other mechanisms to filter alerts downstream</li>
+</ul>
+<p><strong>Use <code>confirmation_cycles: 2</code></strong> (default) when:</p>
+<ul>
+<li>Running in production</li>
+<li>You want balanced noise reduction</li>
+<li>Detection cycle is 2-5 minutes</li>
+</ul>
+<p><strong>Use <code>confirmation_cycles: 3</code></strong> when:</p>
+<ul>
+<li>You have a noisy environment with frequent transient issues</li>
+<li>False positives are more costly than delayed detection</li>
+<li>You can tolerate 6-9 minute confirmation delay</li>
+</ul>
+<p><strong>Use <code>confirmation_cycles: 4+</code></strong> when:</p>
+<ul>
+<li>You have very long detection cycles (10+ minutes)</li>
+<li>You’re monitoring non-critical services</li>
+<li>Alert fatigue is a severe problem</li>
+</ul>
+<h2 id="edge-cases"><a class="header" href="#edge-cases">Edge Cases</a></h2>
+<h3 id="pattern-changes-during-confirmation"><a class="header" href="#pattern-changes-during-confirmation">Pattern Changes During Confirmation</a></h3>
+<p>If the anomaly pattern changes during confirmation, it’s treated as a new anomaly:</p>
+<pre><code>10:00  latency_spike_recent detected → SUSPECTED
+10:03  traffic_surge_failing detected → NEW SUSPECTED (different pattern)
+       (latency_spike_recent starts expiration countdown)
+</code></pre>
+<h3 id="multiple-anomalies-confirming-simultaneously"><a class="header" href="#multiple-anomalies-confirming-simultaneously">Multiple Anomalies Confirming Simultaneously</a></h3>
+<p>Multiple anomalies can confirm in the same cycle:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "overall_action": "MIXED",
+    "newly_confirmed_incidents": [
+      {"anomaly_name": "latency_spike_recent", ...},
+      {"anomaly_name": "error_rate_elevated", ...}
+    ],
+    "action_summary": {
+      "newly_confirmed": 2
+    }
+  }
+}
+</code></pre>
+<h3 id="confirmation-after-recovery"><a class="header" href="#confirmation-after-recovery">Confirmation After Recovery</a></h3>
+<p>If an incident is in RECOVERING state and the anomaly reappears, it doesn’t need re-confirmation:</p>
+<pre><code>10:00  SUSPECTED (1/2)
+10:03  OPEN (confirmed)
+10:06  OPEN (continuing)
+10:09  RECOVERING (not detected, 1/3)
+10:12  OPEN (detected again - immediately returns to OPEN, no confirmation needed)
+</code></pre>
+<p>This is because the incident was already confirmed before entering RECOVERING.</p>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>Confirmation is a critical noise-reduction mechanism that:</p>
+<ol>
+<li><strong>Prevents alert fatigue</strong> by filtering transient spikes</li>
+<li><strong>Ensures reliability</strong> by only alerting on persistent issues</li>
+<li><strong>Protects the web API</strong> from orphaned incidents (confirmed-only alerts)</li>
+<li><strong>Provides clear lifecycle</strong> with trackable state transitions</li>
+</ol>
+<p>The default configuration (<code>confirmation_cycles: 2</code>) provides a good balance between responsiveness and noise reduction for most production environments.</p>
 
                     </main>
 

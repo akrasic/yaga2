@@ -4,6 +4,47 @@ This document tracks changes to the API payload schema.
 
 ---
 
+## Version 2.0.1
+
+**Release Date**: 2026-01-15
+
+### Bug Fixes
+
+#### SLO Now Caps Pattern-Assigned Critical Severity to High When SLO Status is Warning
+
+Fixed a bug where pattern-assigned `critical` severity was not being capped by SLO evaluation when the SLO status was `warning`.
+
+**Previous Behavior (Bug):**
+```
+Pattern Detection: CRITICAL (e.g., error_rate_critical pattern)
+SLO Evaluation: WARNING (latency in warning zone, error rate below warning threshold)
+Final Severity: CRITICAL ← Pattern severity passed through unchanged
+```
+
+**New Behavior (Fixed):**
+```
+Pattern Detection: CRITICAL
+SLO Evaluation: WARNING
+Final Severity: HIGH ← SLO caps severity at high
+```
+
+**Rationale:** SLO thresholds represent actual operational impact. If SLO says "warning" (no critical thresholds breached), the alert should not be `critical` regardless of what the pattern detection assigns. The SLO evaluation is now authoritative for operational severity.
+
+**Severity Adjustment Logic (Updated):**
+
+| Pattern Severity | SLO Status | Final Severity |
+|------------------|------------|----------------|
+| any | breached | critical |
+| critical | **warning** | **high** ← Fixed (was critical) |
+| high | warning | high |
+| any | ok | low |
+
+**Impact:** Alerts that previously showed `critical` severity when SLO status was `warning` will now show `high` severity. This reduces alert fatigue by ensuring severity accurately reflects operational impact.
+
+**Bug Report Reference:** `BUG_REPORT_SLO_SEVERITY_OVERRIDE.md`
+
+---
+
 ## Version 2.0.0
 
 **Release Date**: 2026-01-15
@@ -63,6 +104,107 @@ client_latency_ratio → dependency_latency_ratio
 - All API consumers must update field references
 - Dashboards and alerts referencing `client_latency` must be updated
 - Historical data stored with old field names will need migration or dual-read logic
+
+---
+
+## Version 1.5.0
+
+**Release Date**: 2026-01-15
+
+### New Features
+
+#### Envoy Edge/Ingress Metrics Enrichment
+
+Added `envoy_context` field to anomaly detection payloads. This field provides edge-level metrics from Envoy proxy to correlate with OpenTelemetry application metrics, giving operators a complete view of service health from both edge and application perspectives.
+
+**Problem Solved:**
+- Anomaly alerts only contained OTel application metrics
+- No visibility into how the service appears from the edge/ingress layer
+- Difficult to correlate application anomalies with edge-level symptoms (5xx rates, connection issues)
+- Had to manually query Mimir for edge metrics during incident investigation
+
+**New Behavior:**
+- When anomalies are detected for services with Envoy cluster mappings, the `envoy_context` field is populated
+- Queries Mimir for Envoy metrics aligned with the anomaly detection window
+- Provides request rates by response class (2xx, 4xx, 5xx), latency percentiles, and active connections
+
+**Schema (Envoy Context):**
+
+```json
+{
+  "envoy_context": {
+    "service_name": "booking",
+    "cluster_name": "booking",
+    "timestamp": "2025-01-15T10:30:00",
+    "request_rates": {
+      "total": 150.5,
+      "rate_2xx": 147.2,
+      "rate_4xx": 2.1,
+      "rate_5xx": 1.2,
+      "success_rate": 0.978,
+      "error_rate_4xx": 0.014,
+      "error_rate_5xx": 0.008
+    },
+    "latency_percentiles": {
+      "p50_ms": 45.2,
+      "p90_ms": 120.5,
+      "p99_ms": 250.0
+    },
+    "connections": {
+      "active": 42
+    },
+    "query_successful": true,
+    "has_data": true
+  }
+}
+```
+
+**When Envoy Context is Populated:**
+- Service has a configured cluster mapping in `envoy_enrichment.cluster_mapping`
+- Envoy enrichment is enabled (`envoy_enrichment.enabled: true`)
+- Mimir query succeeds and returns data
+
+**Use Cases:**
+1. Correlate OTel error rate spikes with Envoy 5xx rates
+2. Identify edge-level issues (connection limits, circuit breakers)
+3. Compare application latency with edge-observed latency
+4. Detect discrepancies between edge and application views
+
+**Configuration:**
+
+New `envoy_enrichment` section in `config.json`:
+
+```json
+{
+  "envoy_enrichment": {
+    "enabled": true,
+    "mimir_endpoint": "https://mimir.sbxtest.net/prometheus",
+    "lookback_minutes": 5,
+    "timeout_seconds": 10,
+    "cluster_mapping": {
+      "booking": "booking",
+      "search": "search_k8s",
+      "mobile-api": "mobile-api",
+      "shire-api": "shireapi_cluster"
+    }
+  }
+}
+```
+
+**Files Added/Modified:**
+- `smartbox_anomaly/enrichment/envoy.py` - New EnvoyEnrichmentService class
+- `smartbox_anomaly/enrichment/__init__.py` - Export Envoy enrichment classes
+- `smartbox_anomaly/inference/enrichment_runner.py` - Added `apply_envoy_enrichment()` method
+- `smartbox_anomaly/inference/pipeline.py` - Initialize EnvoyEnrichmentService
+- `smartbox_anomaly/core/config.py` - Added EnvoyEnrichmentConfig dataclass
+- `config.json` - Added envoy_enrichment configuration section
+
+**Backward Compatibility:**
+This is a **backward-compatible** change:
+- The `envoy_context` field is optional (`null` for unsupported services)
+- Existing API consumers can ignore the field
+- Services without cluster mappings continue to work normally
+- No changes required to existing integrations
 
 ---
 

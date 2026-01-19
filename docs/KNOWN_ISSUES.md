@@ -434,6 +434,71 @@ if confirmed_anomalies:
 
 ---
 
+### 22. Low Application Latency False Positives
+
+**Status**: Fixed (v1.3.3)
+**Severity**: Medium
+**Location**: `smartbox_anomaly/detection/detector.py:715-725`
+
+**Problem**: The anomaly detector was generating `application_latency_low` alerts for services with fast response times, even when errors were 0%. This is a false positive - fast responses with no errors are good, not anomalous.
+
+**Root Cause**: `application_latency` was intentionally NOT in `lower_is_better_metrics()` because low latency + high errors = fast-fail (bad). However, the detection logic didn't differentiate between:
+- Low latency + high errors = fast-fail (should alert)
+- Low latency + low errors = fast responses (should NOT alert)
+
+**Evidence from Production**:
+- Multiple services showing `application_latency_low` with 0% error rate
+- Examples: m2-it (28ms vs 52ms mean), m2-bn (57ms vs 133ms mean), all with error_rate=0.0
+
+**Resolution**: Added conditional filtering in `_interpret_anomaly_signals()`:
+
+```python
+# Low application_latency is only concerning when combined with errors
+error_rate = metrics.get(MetricName.ERROR_RATE, 0.0)
+error_threshold = 0.01  # 1% - below this, low latency is not concerning
+if error_rate < error_threshold:
+    actionable_signals = [
+        s for s in actionable_signals
+        if not (s.metric_name == MetricName.APPLICATION_LATENCY and s.direction == "low")
+    ]
+```
+
+**Result**: Fast responses with low errors are now correctly filtered out. Fast-fail patterns still match when errors are elevated.
+
+---
+
+### 23. Database Latency Sub-millisecond Noise
+
+**Status**: Fixed (v1.3.3)
+**Severity**: Medium
+**Location**: `smartbox_anomaly/detection/detector.py:727-742`
+
+**Problem**: The `database_latency_degraded` pattern was firing for sub-millisecond database latency changes, such as 0.29ms → 0.37ms. While statistically significant, these changes are operationally meaningless.
+
+**Root Cause**: Pattern matching used percentile-based levels (e.g., >90th percentile = "high"). Sub-millisecond values could still be at high percentiles statistically, but the absolute values are too small to matter.
+
+**Evidence from Production**:
+- m2-se: 0.37ms flagged as "high" (1.93σ above 0.29ms mean)
+- m2-df-adm: 0.83ms flagged (7σ above 0.53ms mean)
+- All values were sub-millisecond and operationally insignificant
+
+**Resolution**: Added absolute floor check in `_interpret_anomaly_signals()`:
+
+```python
+# Sub-millisecond database_latency is operationally insignificant
+db_latency_floor_ms = 1.0
+db_latency_value = metrics.get(MetricName.DATABASE_LATENCY, 0.0)
+if db_latency_value < db_latency_floor_ms:
+    actionable_signals = [
+        s for s in actionable_signals
+        if s.metric_name != MetricName.DATABASE_LATENCY
+    ]
+```
+
+**Result**: Database latency signals below 1ms are now filtered out entirely, preventing noise alerts from statistically valid but operationally meaningless changes.
+
+---
+
 ## Recommended Improvements by Priority
 
 ### Immediate (Before Next Release)
@@ -487,6 +552,7 @@ When discovering new issues:
 
 ## References
 
+- [SRE_IMPROVEMENT_PLAN.md](./SRE_IMPROVEMENT_PLAN.md) - SRE-recommended improvements for alert quality
 - [SEMANTIC_ANALYSIS_EXPERT_REVIEW.md](./SEMANTIC_ANALYSIS_EXPERT_REVIEW.md) - Full semantic analysis
 - [TRAINING_CODE_EXPERT_REVIEW.md](./TRAINING_CODE_EXPERT_REVIEW.md) - Full training pipeline review
 - [MACHINE_LEARNING.md](./MACHINE_LEARNING.md) - ML concepts and limitations

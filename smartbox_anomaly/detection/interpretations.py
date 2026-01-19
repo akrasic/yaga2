@@ -349,32 +349,32 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ],
     ),
     "latency_spike_recent": PatternDefinition(
+        # NOTE: Name kept for backward compatibility. This pattern matches HIGH LATENCY
+        # with normal traffic and errors - it does NOT specifically detect "recent" spikes.
+        # Trend detection for true "recent increase" detection is not implemented.
+        # See KNOWN_ISSUES.md for details.
         name="latency_spike_recent",
         conditions={
             "request_rate": "normal",
             "application_latency": "high",
             "error_rate": "normal",
-            # NOTE: "latency_change": "recent_increase" was removed - not implemented
-            # This pattern now matches any high latency with normal traffic/errors
-            # Consider implementing trend detection in the future to distinguish
-            # recent spikes from sustained high latency (see KNOWN_ISSUES.md)
         },
         message_template=(
-            "Latency spike detected: {application_latency:.0f}ms "
+            "Latency elevated: {application_latency:.0f}ms "
             "at normal traffic ({request_rate:.1f} req/s), errors stable"
         ),
         severity="high",
         interpretation=(
-            "Latency recently increased without traffic change - something changed. "
-            "Not a capacity issue; likely recent deployment, config change, or dependency degradation. "
-            "Focus investigation on what changed in the last 1-2 hours."
+            "Latency elevated while traffic and errors remain normal - this rules out capacity issues. "
+            "Something changed in the application or its dependencies. "
+            "Start with recent deployments, then check dependency response times and resource utilization."
         ),
         recommended_actions=[
-            "IMMEDIATE: Check deployments in last 2 hours",
-            "CHECK: Configuration changes (feature flags, settings)",
+            "CHECK: Recent deployments or config changes (last 2 hours)",
             "CHECK: External dependency response times",
             "CHECK: Database query performance",
-            "CHECK: GC behavior and memory pressure",
+            "CHECK: CPU/memory utilization and GC behavior",
+            "PROFILE: Enable request tracing if not active",
         ],
     ),
     "error_rate_elevated": PatternDefinition(
@@ -390,9 +390,9 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="high",
         interpretation=(
-            "Error rate above typical baseline while other metrics remain stable. "
-            "This could indicate validation failures, specific endpoint issues, "
-            "rate limiting, or dependency problems affecting a subset of requests."
+            "Errors elevated without capacity pressure - the service is processing requests "
+            "normally but some are failing. This is NOT a load or infrastructure issue. "
+            "Focus on error logs to identify the specific failure mode and affected endpoints."
         ),
         recommended_actions=[
             "CHECK: Error logs for specific exception types and affected endpoints",
@@ -426,29 +426,9 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
             "REVIEW: Recent deployments affecting specific features",
         ],
     ),
-    "fast_failure_mode": PatternDefinition(
-        name="fast_failure_mode",
-        conditions={
-            "request_rate": "any",
-            "application_latency": "very_low",
-            "error_rate": "high",
-        },
-        message_template=(
-            "Fast-fail mode: {error_rate:.2%} errors with unusually low latency "
-            "({application_latency:.0f}ms) - requests rejected without processing"
-        ),
-        severity="critical",
-        interpretation=(
-            "Service failing quickly without full processing - likely upstream rejection, "
-            "circuit breaker activation, or authentication/authorization failures."
-        ),
-        recommended_actions=[
-            "CHECK: Circuit breaker states in dashboard",
-            "CHECK: Upstream service health",
-            "CHECK: Authentication/authorization service",
-            "REVIEW: Response status codes (look for 401, 403, 429, 503)",
-        ],
-    ),
+    # NOTE: "fast_failure_mode" was removed (SRE Review 2026-01-16) - it overlapped with
+    # "error_rate_fast_rejection" (very_low latency) and "error_rate_fast_failure" (low latency)
+    # in FAST_FAIL_PATTERNS. Those patterns provide better coverage for fast-fail scenarios.
     "dependency_latency_cascade": PatternDefinition(
         name="dependency_latency_cascade",
         conditions={
@@ -485,9 +465,9 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="medium",
         interpretation=(
-            "Database is responding slowly but the application is compensating - "
-            "possibly through caching, connection pooling, or the slow queries are on non-critical paths. "
-            "This is an early warning; if database latency increases further, application impact is likely."
+            "Database is slow but application latency is normal - the slow queries "
+            "are not on the critical path, or caching/pooling is absorbing the impact. "
+            "This is an early warning; continued DB degradation will eventually affect application performance."
         ),
         recommended_actions=[
             "INVESTIGATE: Slow query logs to identify problematic queries",
@@ -511,8 +491,8 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="high",
         interpretation=(
-            "Database is the dominant constraint on performance - {db_latency_ratio:.0%} of request time "
-            "is spent waiting for database responses. This is significantly higher than typical."
+            "Database is the dominant constraint - {db_latency_ratio:.0%} of request time is spent waiting for database responses. "
+            "Application-level optimization will have minimal impact until database queries are addressed."
         ),
         recommended_actions=[
             "CHECK: Slow query logs for problematic queries (>100ms)",
@@ -526,17 +506,19 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         name="request_rate_cliff",
         conditions={
             "request_rate": "very_low",
-            "request_rate_change": "sudden_drop",  # Distinguishes from normal low-traffic periods
+            # NOTE: "request_rate_change": "sudden_drop" was removed - trend detection not implemented.
+            # This pattern now matches any very_low traffic. The time-aware models help distinguish
+            # expected low-traffic periods (night, weekend) from unexpected drops.
         },
         message_template=(
-            "Traffic significantly below expected: {request_rate:.1f} req/s "
-            "(expected ~{expected_rate:.1f} req/s for this time, {drop_percent:.0f}% below)"
+            "Traffic cliff detected: {request_rate:.1f} req/s "
+            "(significantly below normal for this time period)"
         ),
         severity="critical",
         interpretation=(
-            "Traffic significantly lower than expected for this time period. "
-            "If this is outside normal low-traffic hours, investigate immediately. "
-            "Could indicate upstream issues, routing problems, DNS failure, or clients unable to connect."
+            "Traffic has dropped significantly below expected levels for this time period. "
+            "If this is unexpected, clients may be unable to reach the service. "
+            "Verify external reachability first, then check load balancer, DNS, and upstream routing."
         ),
         recommended_actions=[
             "VERIFY: Is this expected low-traffic period? (Check time of day/week)",
@@ -562,9 +544,9 @@ MULTIVARIATE_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="high",
         interpretation=(
-            "High latency not caused by external dependencies or database. "
-            "The application itself is the bottleneck. Likely causes: "
-            "CPU saturation, memory pressure, GC pauses, thread pool exhaustion, or lock contention."
+            "High latency with all dependencies responding normally - the bottleneck is inside this service. "
+            "This rules out database and external API issues. "
+            "Focus on application resources: CPU, memory, GC, thread pools, and internal processing."
         ),
         recommended_actions=[
             "CHECK: CPU utilization and throttling (Kubernetes limits?)",
@@ -595,9 +577,9 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="critical",
         interpretation=(
-            "Requests failing very quickly without full processing. "
-            "Could be circuit breaker, rate limiting, auth failure, or application errors. "
-            "Check HTTP status codes to determine specific cause."
+            "Requests are being rejected immediately without processing - the fast response time "
+            "confirms requests aren't reaching application logic. "
+            "Check HTTP status codes: 429 = rate limiting, 401/403 = auth, 503 = circuit breaker."
         ),
         recommended_actions=[
             "IMMEDIATE: Check HTTP status codes (429=rate limit, 401/403=auth, 503=circuit breaker, 500=app error)",
@@ -620,9 +602,9 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="critical",
         interpretation=(
-            "Traffic below expected AND requests failing quickly. "
-            "Requests may be rejected before reaching this service, "
-            "or clients may be unable to connect. Multiple causes possible."
+            "Two problems combined: traffic is low AND requests are failing fast. "
+            "This suggests requests are being blocked or rejected before reaching the service. "
+            "Check the path from clients to this service: load balancer, ingress, DNS, and routing."
         ),
         recommended_actions=[
             "CHECK: Load balancer health and error logs",
@@ -644,9 +626,9 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="high",
         interpretation=(
-            "Some requests failing before full processing. "
-            "Likely validation errors, authentication failures, or specific code path issues. "
-            "Check error response details to identify affected operations."
+            "A subset of requests are failing quickly - fast failures indicate rejection before processing. "
+            "This is typically input validation (400), auth failures (401/403), or a specific broken endpoint. "
+            "Identify which operations are failing by checking error logs and HTTP status codes."
         ),
         recommended_actions=[
             "CHECK: Error logs for specific error types and affected endpoints",
@@ -668,9 +650,9 @@ FAST_FAIL_PATTERNS: Final[dict[str, PatternDefinition]] = {
         ),
         severity="critical",
         interpretation=(
-            "Requests failing quickly without full processing. "
-            "Investigate error logs and HTTP status codes to determine root cause. "
-            "Could indicate dependency issues, configuration problems, or code errors."
+            "Requests are failing fast - the low latency indicates failures occur early in processing. "
+            "This is NOT a slow dependency or resource exhaustion issue. "
+            "Check error logs for the specific exception type and HTTP status code distribution."
         ),
         recommended_actions=[
             "IMMEDIATE: Check error logs for exception types and stack traces",
@@ -872,6 +854,17 @@ RECOMMENDATION_RULES: Final[dict[tuple[str, str], list[str]]] = {
         "MONITOR: System resource utilization",
         "CONSIDER: Scaling if sustained",
         "CHECK: Rate limiting thresholds",
+    ],
+    # Error rate low - verify this is genuine recovery, not broken logging
+    ("error_rate_low", "low"): [
+        "VERIFY: Is this following a recent incident? (expected recovery)",
+        "CHECK: Error logging pipeline is functioning correctly",
+        "REVIEW: Application logs for silent failures or swallowed exceptions",
+        "CONFIRM: Monitoring and alerting systems are working",
+    ],
+    ("error_rate_low", "informational"): [
+        "VERIFY: This appears to be normal recovery",
+        "MONITOR: Watch for error rate staying low (confirming recovery)",
     ],
     # NOTE: ("request_rate_cliff", "critical") is defined above at line 793
     # Removed duplicate entry that was here (SRE Review 2026-01-15)

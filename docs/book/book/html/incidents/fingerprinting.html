@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,193 +181,644 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="fingerprinting"><a class="header" href="#fingerprinting">Fingerprinting</a></h1>
-<p>Fingerprinting assigns stable identifiers to anomaly patterns, enabling tracking across detection cycles.</p>
-<h2 id="id-types"><a class="header" href="#id-types">ID Types</a></h2>
-<h3 id="fingerprint-id"><a class="header" href="#fingerprint-id">Fingerprint ID</a></h3>
-<p>A <strong>deterministic hash</strong> based on anomaly content:</p>
-<pre><code class="language-python">content = f"{service_name}_{model_name}_{anomaly_name}"
+<p>Fingerprinting assigns stable identifiers to anomaly patterns, enabling tracking across detection cycles. This chapter explains the identification system, how it works, and why two different types of IDs are needed.</p>
+<h2 id="what-is-fingerprinting"><a class="header" href="#what-is-fingerprinting">What is Fingerprinting?</a></h2>
+<p><strong>Fingerprinting</strong> is the process of creating stable, reproducible identifiers for anomaly patterns. When the system detects an anomaly, it generates a “fingerprint” - a unique identifier based on what the anomaly is, not when it happened.</p>
+<p>Think of it like identifying a person:</p>
+<ul>
+<li><strong>Fingerprint</strong> = A person’s actual fingerprint (uniquely identifies the person)</li>
+<li><strong>Incident</strong> = A specific encounter with that person (when and where you met them)</li>
+</ul>
+<pre><code>                   Same Person (Fingerprint)
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+   Meeting #1          Meeting #2          Meeting #3
+   (Jan 10, Coffee)    (Jan 15, Office)    (Jan 22, Park)
+
+Each meeting is a unique incident, but it's the same person.
+</code></pre>
+<h2 id="why-two-id-types"><a class="header" href="#why-two-id-types">Why Two ID Types?</a></h2>
+<p>The system uses two different identifiers that serve complementary purposes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>ID Type</th><th>What It Identifies</th><th>Characteristics</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Fingerprint ID</strong></td><td>The anomaly pattern itself</td><td>Stable, deterministic, content-based</td></tr>
+<tr><td><strong>Incident ID</strong></td><td>A specific occurrence of the pattern</td><td>Unique, random, time-bound</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="why-not-just-use-one-id"><a class="header" href="#why-not-just-use-one-id">Why Not Just Use One ID?</a></h3>
+<p>Using only one ID would create problems:</p>
+<p><strong>If only fingerprint_id:</strong></p>
+<pre><code>Problem: Can't distinguish between separate occurrences
+
+Jan 10  latency_spike (fingerprint_abc) - Incident A
+Jan 15  latency_spike (fingerprint_abc) - Is this Incident A continuing?
+                                          Or a new incident?
+                                          We can't tell!
+</code></pre>
+<p><strong>If only incident_id:</strong></p>
+<pre><code>Problem: Can't tell if issues are related
+
+Jan 10  incident_123 (latency spike)
+Jan 15  incident_456 (latency spike) - Are these the same type of issue?
+                                        Different issue types?
+                                        We can't tell!
+</code></pre>
+<p><strong>With both IDs:</strong></p>
+<pre><code>Jan 10  fingerprint_abc / incident_123 (latency spike)
+Jan 15  fingerprint_abc / incident_456 (latency spike)
+
+Now we know:
+- Same TYPE of anomaly (same fingerprint_abc)
+- Different OCCURRENCES (different incident IDs)
+- We can track patterns AND individual events
+</code></pre>
+<h2 id="fingerprint-id-pattern-identity"><a class="header" href="#fingerprint-id-pattern-identity">Fingerprint ID: Pattern Identity</a></h2>
+<h3 id="what-is-it"><a class="header" href="#what-is-it">What Is It?</a></h3>
+<p>A <strong>deterministic hash</strong> based on the anomaly’s content - what it is, not when it happened.</p>
+<h3 id="how-its-generated"><a class="header" href="#how-its-generated">How It’s Generated</a></h3>
+<pre><code class="language-python"># The fingerprint is generated from these components:
+content = f"{service_name}_{model_name}_{anomaly_name}"
 fingerprint_id = f"anomaly_{sha256(content)[:12]}"
 </code></pre>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Property</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td>Deterministic</td><td>Same pattern always gets same ID</td></tr>
-<tr><td>Content-based</td><td>Based on service + model + anomaly type</td></tr>
-<tr><td>Stable</td><td>Doesn’t change across time</td></tr>
-</tbody>
-</table>
-</div>
-<p>Example: <code>anomaly_8d4a011b83ca</code></p>
-<h3 id="incident-id"><a class="header" href="#incident-id">Incident ID</a></h3>
-<p>A <strong>unique occurrence</strong> identifier:</p>
-<pre><code class="language-python">incident_id = f"incident_{uuid4().hex[:16]}"
-</code></pre>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Property</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td>Unique</td><td>Each occurrence gets new ID</td></tr>
-<tr><td>UUID-based</td><td>Random generation</td></tr>
-<tr><td>Transient</td><td>New ID when pattern reappears</td></tr>
-</tbody>
-</table>
-</div>
-<p>Example: <code>incident_1dcbafc91480</code></p>
-<h2 id="relationship"><a class="header" href="#relationship">Relationship</a></h2>
-<pre><code>                 Fingerprint: anomaly_abc123
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-   Incident A         Incident B         Incident C
-   (Jan 10)           (Jan 15)           (Jan 22)
+<p><strong>Example:</strong></p>
+<pre><code>Components:
+  service_name: booking
+  model_name: business_hours
+  anomaly_name: latency_spike_recent
 
-   Same pattern can create multiple incidents over time
+Concatenated: "booking_business_hours_latency_spike_recent"
+SHA256 hash:  d18f6ae2bf62a7c9...
+Fingerprint:  anomaly_d18f6ae2bf62
+
+Same inputs ALWAYS produce the same fingerprint!
 </code></pre>
+<h3 id="properties"><a class="header" href="#properties">Properties</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Property</th><th>Description</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Deterministic</strong></td><td>Same pattern always gets same ID</td><td><code>booking_business_hours_latency_spike_recent</code> → always <code>anomaly_d18f6ae2bf62</code></td></tr>
+<tr><td><strong>Content-based</strong></td><td>Based on what, not when</td><td>Doesn’t include timestamp</td></tr>
+<tr><td><strong>Stable</strong></td><td>Doesn’t change across time</td><td>Same ID today, tomorrow, next year</td></tr>
+<tr><td><strong>Reproducible</strong></td><td>Can be regenerated</td><td>Given the same inputs, always same output</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="what-changes-the-fingerprint"><a class="header" href="#what-changes-the-fingerprint">What Changes the Fingerprint?</a></h3>
+<p>The fingerprint changes when the pattern type changes:</p>
+<pre><code>SAME fingerprint (anomaly_abc):
+─────────────────────────────
+• booking + business_hours + latency_spike_recent (Monday)
+• booking + business_hours + latency_spike_recent (Tuesday)
+• booking + business_hours + latency_spike_recent (Different severity)
+
+DIFFERENT fingerprint (anomaly_xyz):
+───────────────────────────────────
+• booking + business_hours + traffic_surge_failing (different anomaly type)
+• booking + evening_hours + latency_spike_recent (different time period)
+• search + business_hours + latency_spike_recent (different service)
+</code></pre>
+<h2 id="incident-id-occurrence-identity"><a class="header" href="#incident-id-occurrence-identity">Incident ID: Occurrence Identity</a></h2>
+<h3 id="what-is-it-1"><a class="header" href="#what-is-it-1">What Is It?</a></h3>
+<p>A <strong>unique identifier</strong> for each specific occurrence of an anomaly pattern.</p>
+<h3 id="how-its-generated-1"><a class="header" href="#how-its-generated-1">How It’s Generated</a></h3>
+<pre><code class="language-python"># The incident ID is generated randomly when a new incident is created:
+incident_id = f"incident_{uuid4().hex[:16]}"
+</code></pre>
+<p><strong>Example:</strong></p>
+<pre><code>Each new incident gets a new random ID:
+  incident_1dcbafc91480
+  incident_7a23b9f4c8e1
+  incident_95d2e61a8b43
+
+Even for the same pattern type, each occurrence has a unique ID!
+</code></pre>
+<h3 id="properties-1"><a class="header" href="#properties-1">Properties</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Property</th><th>Description</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Unique</strong></td><td>Each occurrence gets its own ID</td><td>No two incidents share an ID</td></tr>
+<tr><td><strong>UUID-based</strong></td><td>Random generation</td><td>Not predictable from inputs</td></tr>
+<tr><td><strong>Transient</strong></td><td>New ID when pattern reappears</td><td>After resolution, next occurrence = new ID</td></tr>
+<tr><td><strong>Time-bound</strong></td><td>Associated with specific time period</td><td>Tracks one continuous occurrence</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="when-is-a-new-incident-id-created"><a class="header" href="#when-is-a-new-incident-id-created">When Is a New Incident ID Created?</a></h3>
+<pre><code>New incident_id created when:
+────────────────────────────
+• Anomaly detected for first time (no active incident)
+• Anomaly reappears after being resolved
+• Anomaly reappears after staleness threshold (&gt;30 min gap)
+
+Same incident_id continues when:
+─────────────────────────────────
+• Anomaly detected while incident is OPEN
+• Anomaly detected while incident is RECOVERING
+• Anomaly detected within staleness threshold
+</code></pre>
+<h2 id="the-relationship-between-ids"><a class="header" href="#the-relationship-between-ids">The Relationship Between IDs</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                 Fingerprint: anomaly_d18f6ae2bf62                   │
+│                 (Pattern: booking latency spike)                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                              │                                      │
+│                              │                                      │
+│    ┌─────────────────────────┼─────────────────────────┐           │
+│    │                         │                         │           │
+│    ▼                         ▼                         ▼           │
+│ ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐    │
+│ │   Incident A    │   │   Incident B    │   │   Incident C    │    │
+│ │ incident_abc123 │   │ incident_def456 │   │ incident_ghi789 │    │
+│ ├─────────────────┤   ├─────────────────┤   ├─────────────────┤    │
+│ │ Jan 10, 10:00   │   │ Jan 15, 14:00   │   │ Jan 22, 09:00   │    │
+│ │ Duration: 45min │   │ Duration: 2hr   │   │ Duration: 30min │    │
+│ │ Status: CLOSED  │   │ Status: CLOSED  │   │ Status: OPEN    │    │
+│ │ Occurrences: 8  │   │ Occurrences: 24 │   │ Occurrences: 5  │    │
+│ └─────────────────┘   └─────────────────┘   └─────────────────┘    │
+│                                                                     │
+│ All three incidents represent the SAME type of anomaly              │
+│ (same fingerprint) but are SEPARATE occurrences (different IDs)     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="what-each-id-enables"><a class="header" href="#what-each-id-enables">What Each ID Enables</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Capability</th><th>Fingerprint ID</th><th>Incident ID</th></tr>
+</thead>
+<tbody>
+<tr><td>Track same issue across time</td><td>✅</td><td>❌</td></tr>
+<tr><td>Identify individual occurrences</td><td>❌</td><td>✅</td></tr>
+<tr><td>Correlate related events</td><td>✅</td><td>❌</td></tr>
+<tr><td>Calculate MTTR per incident</td><td>❌</td><td>✅</td></tr>
+<tr><td>Find recurring patterns</td><td>✅</td><td>❌</td></tr>
+<tr><td>Link alert to specific event</td><td>❌</td><td>✅</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="how-fingerprinting-works"><a class="header" href="#how-fingerprinting-works">How Fingerprinting Works</a></h2>
-<pre><code>┌─────────────────────────────────────────────────────────────────┐
-│                    Fingerprinting Flow                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   Detection Result                                              │
-│   ────────────────                                              │
-│   anomaly: latency_spike_recent                                 │
-│   service: booking                                              │
-│   model: business_hours                                         │
-│                                                                 │
-│          │                                                      │
-│          ▼                                                      │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  Generate Fingerprint ID                                │   │
-│   │  hash("booking_business_hours_latency_spike_recent")    │   │
-│   │  → anomaly_d18f6ae2bf62                                 │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│          │                                                      │
-│          ▼                                                      │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │  Check Database                                         │   │
-│   │  Active incident with this fingerprint?                 │   │
-│   └─────────────────────────────────────────────────────────┘   │
-│          │                                                      │
-│    ┌─────┴─────┐                                                │
-│    │           │                                                │
-│   NO          YES                                               │
-│    │           │                                                │
-│    ▼           ▼                                                │
-│  CREATE      UPDATE                                             │
-│  - New ID    - Same IDs                                         │
-│  - SUSPECTED - Increment count                                  │
-│              - Check staleness                                  │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+<h3 id="the-complete-flow"><a class="header" href="#the-complete-flow">The Complete Flow</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Fingerprinting Process                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Step 1: Detection Result                                          │
+│   ─────────────────────────                                         │
+│   anomaly: latency_spike_recent                                     │
+│   service: booking                                                  │
+│   model: business_hours                                             │
+│                                                                     │
+│                          │                                          │
+│                          ▼                                          │
+│                                                                     │
+│   Step 2: Generate Fingerprint ID                                   │
+│   ──────────────────────────────                                    │
+│   hash("booking_business_hours_latency_spike_recent")               │
+│   → anomaly_d18f6ae2bf62                                            │
+│                                                                     │
+│                          │                                          │
+│                          ▼                                          │
+│                                                                     │
+│   Step 3: Database Lookup                                           │
+│   ───────────────────────                                           │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  SELECT * FROM anomaly_incidents                            │   │
+│   │  WHERE fingerprint_id = 'anomaly_d18f6ae2bf62'              │   │
+│   │    AND status IN ('SUSPECTED', 'OPEN', 'RECOVERING')        │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│                          │                                          │
+│                    ┌─────┴─────┐                                    │
+│                    │           │                                    │
+│               NOT FOUND      FOUND                                  │
+│                    │           │                                    │
+│                    ▼           ▼                                    │
+│                                                                     │
+│   Step 4a: Create New           Step 4b: Update Existing            │
+│   ───────────────────           ───────────────────────             │
+│   • Generate new incident_id    • Keep same incident_id             │
+│   • Set status = SUSPECTED      • Check staleness                   │
+│   • Initialize counters         • Increment occurrence_count        │
+│   • Set first_seen = now        • Update last_updated               │
+│                                 • Handle state transitions          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="decision-tree"><a class="header" href="#decision-tree">Decision Tree</a></h3>
+<pre><code>                    ┌───────────────────────┐
+                    │   Anomaly Detected    │
+                    └───────────┬───────────┘
+                                │
+                    ┌───────────▼───────────┐
+                    │ Generate fingerprint  │
+                    └───────────┬───────────┘
+                                │
+                    ┌───────────▼───────────┐
+                    │ Active incident with  │
+              ┌─────│ this fingerprint?     │─────┐
+              │     └───────────────────────┘     │
+              │NO                                 │YES
+              │                                   │
+              ▼                                   ▼
+    ┌─────────────────────┐           ┌─────────────────────┐
+    │   CREATE incident   │           │  Is it stale?       │
+    │   fingerprint_action│           │  (gap &gt; 30 min)     │
+    │   = CREATE          │           └──────────┬──────────┘
+    │   incident_action   │                      │
+    │   = CREATE          │             ┌────────┴────────┐
+    └─────────────────────┘             │YES              │NO
+                                        │                 │
+                                        ▼                 ▼
+                              ┌─────────────────┐  ┌─────────────────┐
+                              │ Close stale     │  │ UPDATE incident │
+                              │ Create new      │  │ fingerprint_    │
+                              │                 │  │ action = UPDATE │
+                              │ Two actions:    │  │ incident_action │
+                              │ RESOLVE + CREATE│  │ = CONTINUE      │
+                              └─────────────────┘  └─────────────────┘
 </code></pre>
 <h2 id="database-schema"><a class="header" href="#database-schema">Database Schema</a></h2>
+<p>The fingerprinting system uses SQLite for persistence:</p>
 <pre><code class="language-sql">CREATE TABLE anomaly_incidents (
-    fingerprint_id TEXT NOT NULL,
-    incident_id TEXT PRIMARY KEY,
-    service_name TEXT NOT NULL,
-    anomaly_name TEXT NOT NULL,
-    status TEXT NOT NULL,  -- SUSPECTED, OPEN, RECOVERING, CLOSED
-    severity TEXT NOT NULL,
-    first_seen TIMESTAMP NOT NULL,
-    last_updated TIMESTAMP NOT NULL,
-    resolved_at TIMESTAMP NULL,
-    occurrence_count INTEGER NOT NULL,
-    consecutive_detections INTEGER NOT NULL,
-    missed_cycles INTEGER NOT NULL,
-    ...
-);
-</code></pre>
-<h2 id="staleness-check"><a class="header" href="#staleness-check">Staleness Check</a></h2>
-<p>If the time gap between detections exceeds <code>incident_separation_minutes</code>:</p>
-<pre><code>Last detected: 10:00
-Current time:  11:15 (75 min gap)
-Threshold:     30 min
+    -- Identity
+    fingerprint_id TEXT NOT NULL,          -- Pattern identifier
+    incident_id TEXT PRIMARY KEY,          -- Occurrence identifier
 
-Result:
-  → Old incident auto-closed (auto_stale)
-  → New SUSPECTED incident created
+    -- Context
+    service_name TEXT NOT NULL,            -- Service (e.g., "booking")
+    anomaly_name TEXT NOT NULL,            -- Pattern name
+    detected_by_model TEXT,                -- Time period model
+
+    -- State
+    status TEXT NOT NULL,                  -- SUSPECTED, OPEN, RECOVERING, CLOSED
+    severity TEXT NOT NULL,                -- low, medium, high, critical
+
+    -- Timestamps
+    first_seen TIMESTAMP NOT NULL,         -- When incident started
+    last_updated TIMESTAMP NOT NULL,       -- Most recent detection
+    resolved_at TIMESTAMP NULL,            -- When closed (null if active)
+
+    -- Counters
+    occurrence_count INTEGER NOT NULL,     -- Total detections
+    consecutive_detections INTEGER NOT NULL, -- In a row (for confirmation)
+    missed_cycles INTEGER NOT NULL,        -- Not detected (for grace period)
+
+    -- Optional data
+    current_value REAL,                    -- Current metric value
+    threshold_value REAL,                  -- Threshold if applicable
+    confidence_score REAL,                 -- ML confidence
+    detection_method TEXT,                 -- How it was detected
+    description TEXT,                      -- Human-readable description
+    metadata TEXT                          -- JSON for extra data
+);
+
+-- Indexes for fast lookups
+CREATE INDEX idx_fingerprint_status ON anomaly_incidents(fingerprint_id, status);
+CREATE INDEX idx_service_timeline ON anomaly_incidents(service_name, first_seen DESC);
+CREATE INDEX idx_active_incidents ON anomaly_incidents(status, last_updated DESC)
+    WHERE status IN ('SUSPECTED', 'OPEN', 'RECOVERING');
 </code></pre>
-<p>This prevents an incident from continuing indefinitely across unrelated events.</p>
-<h2 id="per-anomaly-fields"><a class="header" href="#per-anomaly-fields">Per-Anomaly Fields</a></h2>
-<p>Each anomaly in the output includes fingerprinting metadata:</p>
+<h3 id="why-sqlite"><a class="header" href="#why-sqlite">Why SQLite?</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Advantage</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Simple</strong></td><td>No external dependencies</td></tr>
+<tr><td><strong>Reliable</strong></td><td>ACID transactions built-in</td></tr>
+<tr><td><strong>Fast</strong></td><td>Excellent for read-heavy workloads</td></tr>
+<tr><td><strong>Portable</strong></td><td>Single file, easy to backup</td></tr>
+<tr><td><strong>Lightweight</strong></td><td>Minimal resource usage</td></tr>
+</tbody>
+</table>
+</div>
+<p>For most deployments, SQLite handles the expected volume easily (&lt; 1000 active incidents).</p>
+<h2 id="staleness-check"><a class="header" href="#staleness-check">Staleness Check</a></h2>
+<h3 id="what-is-staleness"><a class="header" href="#what-is-staleness">What Is Staleness?</a></h3>
+<p>When the time gap between detections exceeds a threshold, the system considers the incident “stale” - meaning it’s probably not the same ongoing issue, even if it’s the same pattern type.</p>
+<h3 id="why-staleness-matters"><a class="header" href="#why-staleness-matters">Why Staleness Matters</a></h3>
+<p>Without staleness check:</p>
+<pre><code>10:00  Latency spike detected → incident_123 created
+10:03  Latency spike detected → incident_123 continues
+10:06  Latency spike resolved
+
+(long gap - different issue)
+
+15:00  Latency spike detected → incident_123 continues??? NO!
+       This is likely a different issue, not the same one from 5 hours ago!
+</code></pre>
+<p>With staleness check:</p>
+<pre><code>10:00  Latency spike detected → incident_123 created
+10:03  Latency spike detected → incident_123 continues
+10:06  Latency spike resolved
+
+(long gap - different issue)
+
+15:00  Latency spike detected
+       Gap check: 15:00 - 10:06 = 4h 54min &gt; 30min threshold
+       Action: Close incident_123 as "auto_stale", create incident_456
+       Now we have two separate incidents (correct!)
+</code></pre>
+<h3 id="staleness-flow"><a class="header" href="#staleness-flow">Staleness Flow</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Staleness Check                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Inputs:                                                           │
+│   • last_updated: 10:00:00 (from database)                          │
+│   • current_time: 11:15:00                                          │
+│   • incident_separation_minutes: 30 (config)                        │
+│                                                                     │
+│   Calculation:                                                      │
+│   ─────────────                                                     │
+│   gap = current_time - last_updated                                 │
+│   gap = 11:15 - 10:00 = 75 minutes                                  │
+│                                                                     │
+│   is_stale = gap &gt; incident_separation_minutes                      │
+│   is_stale = 75 &gt; 30 = TRUE                                         │
+│                                                                     │
+│   Result:                                                           │
+│   ────────                                                          │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  Old incident closed:                                       │   │
+│   │    incident_action: CLOSE                                   │   │
+│   │    resolution_reason: "auto_stale"                          │   │
+│   │                                                             │   │
+│   │  New incident created:                                      │   │
+│   │    incident_id: incident_new456                             │   │
+│   │    incident_action: CREATE                                  │   │
+│   │    status: SUSPECTED                                        │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="resolution-reasons"><a class="header" href="#resolution-reasons">Resolution Reasons</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reason</th><th>Description</th><th>When It Happens</th></tr>
+</thead>
+<tbody>
+<tr><td><code>resolved</code></td><td>Normal resolution</td><td>Anomaly cleared after grace period</td></tr>
+<tr><td><code>auto_stale</code></td><td>Stale incident closed</td><td>Time gap exceeded threshold, pattern reappeared</td></tr>
+<tr><td><code>suspected_expired</code></td><td>Never confirmed</td><td>SUSPECTED state expired without confirmation</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="per-anomaly-fingerprinting-fields"><a class="header" href="#per-anomaly-fingerprinting-fields">Per-Anomaly Fingerprinting Fields</a></h2>
+<p>Each anomaly in the output includes comprehensive fingerprinting metadata:</p>
 <pre><code class="language-json">{
-  "latency_spike_recent": {
-    "fingerprint_id": "anomaly_d18f6ae2bf62",
-    "fingerprint_action": "UPDATE",
-    "incident_id": "incident_31e9e23d4b2b",
-    "incident_action": "CONTINUE",
-    "status": "OPEN",
-    "previous_status": "OPEN",
-    "incident_duration_minutes": 15,
-    "first_seen": "2025-12-17T13:45:00",
-    "last_updated": "2025-12-17T14:00:00",
-    "occurrence_count": 5,
-    "consecutive_detections": 5,
-    "is_confirmed": true
+  "anomalies": {
+    "latency_spike_recent": {
+      "type": "consolidated",
+      "severity": "high",
+      "description": "Latency spike: 450ms (normally 120ms)",
+
+      "fingerprint_id": "anomaly_d18f6ae2bf62",
+      "fingerprint_action": "UPDATE",
+
+      "incident_id": "incident_31e9e23d4b2b",
+      "incident_action": "CONTINUE",
+
+      "status": "OPEN",
+      "previous_status": "OPEN",
+
+      "incident_duration_minutes": 15,
+      "first_seen": "2025-12-17T13:45:00",
+      "last_updated": "2025-12-17T14:00:00",
+
+      "occurrence_count": 5,
+      "consecutive_detections": 5,
+
+      "is_confirmed": true,
+      "newly_confirmed": false
+    }
   }
 }
 </code></pre>
-<h2 id="action-types"><a class="header" href="#action-types">Action Types</a></h2>
-<h3 id="fingerprint-actions"><a class="header" href="#fingerprint-actions">Fingerprint Actions</a></h3>
+<h3 id="field-reference"><a class="header" href="#field-reference">Field Reference</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Action</th><th>Description</th></tr>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>CREATE</code></td><td>New pattern, new fingerprint entry</td></tr>
-<tr><td><code>UPDATE</code></td><td>Existing pattern, updating state</td></tr>
-<tr><td><code>RESOLVE</code></td><td>Pattern resolved, closing entry</td></tr>
+<tr><td><code>fingerprint_id</code></td><td>string</td><td>Pattern identifier (deterministic hash)</td></tr>
+<tr><td><code>fingerprint_action</code></td><td>string</td><td>Pattern action: CREATE, UPDATE, RESOLVE</td></tr>
+<tr><td><code>incident_id</code></td><td>string</td><td>Occurrence identifier (random UUID)</td></tr>
+<tr><td><code>incident_action</code></td><td>string</td><td>Incident action: CREATE, CONTINUE, CLOSE</td></tr>
+<tr><td><code>status</code></td><td>string</td><td>Current status: SUSPECTED, OPEN, RECOVERING, CLOSED</td></tr>
+<tr><td><code>previous_status</code></td><td>string</td><td>Status before this cycle</td></tr>
+<tr><td><code>incident_duration_minutes</code></td><td>integer</td><td>Time since first_seen</td></tr>
+<tr><td><code>first_seen</code></td><td>datetime</td><td>When this incident started</td></tr>
+<tr><td><code>last_updated</code></td><td>datetime</td><td>Most recent detection time</td></tr>
+<tr><td><code>occurrence_count</code></td><td>integer</td><td>Total times detected</td></tr>
+<tr><td><code>consecutive_detections</code></td><td>integer</td><td>Detections in a row</td></tr>
+<tr><td><code>is_confirmed</code></td><td>boolean</td><td>True if status is OPEN</td></tr>
+<tr><td><code>newly_confirmed</code></td><td>boolean</td><td>True if just confirmed this cycle</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="action-types"><a class="header" href="#action-types">Action Types</a></h2>
+<h3 id="fingerprint-actions"><a class="header" href="#fingerprint-actions">Fingerprint Actions</a></h3>
+<p>The fingerprint action describes what happened to the pattern tracking:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Description</th><th>When</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CREATE</code></td><td>New pattern encountered</td><td>First time this exact pattern is seen</td></tr>
+<tr><td><code>UPDATE</code></td><td>Existing pattern updated</td><td>Pattern detected, already being tracked</td></tr>
+<tr><td><code>RESOLVE</code></td><td>Pattern no longer active</td><td>Grace period exceeded, pattern cleared</td></tr>
 </tbody>
 </table>
 </div>
 <h3 id="incident-actions"><a class="header" href="#incident-actions">Incident Actions</a></h3>
+<p>The incident action describes what happened to the specific occurrence:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Action</th><th>Description</th></tr>
+<tr><th>Action</th><th>Description</th><th>When</th></tr>
 </thead>
 <tbody>
-<tr><td><code>CREATE</code></td><td>New incident created</td></tr>
-<tr><td><code>CONTINUE</code></td><td>Incident continuing</td></tr>
-<tr><td><code>CLOSE</code></td><td>Incident closed</td></tr>
+<tr><td><code>CREATE</code></td><td>New incident created</td><td>New occurrence of a pattern (including after stale)</td></tr>
+<tr><td><code>CONTINUE</code></td><td>Incident continues</td><td>Same occurrence still active</td></tr>
+<tr><td><code>CLOSE</code></td><td>Incident closed</td><td>Occurrence resolved (grace period exceeded)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="combined-actions"><a class="header" href="#combined-actions">Combined Actions</a></h3>
+<p>The combination tells the full story:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>fingerprint_action</th><th>incident_action</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>CREATE</td><td>CREATE</td><td>Brand new pattern, new incident</td></tr>
+<tr><td>UPDATE</td><td>CONTINUE</td><td>Ongoing issue, same incident</td></tr>
+<tr><td>UPDATE</td><td>CREATE</td><td>Same pattern reappeared (was stale or resolved)</td></tr>
+<tr><td>RESOLVE</td><td>CLOSE</td><td>Pattern cleared, incident resolved</td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="resolution-payload"><a class="header" href="#resolution-payload">Resolution Payload</a></h2>
-<p>When an incident resolves:</p>
+<p>When an incident is resolved, the system sends detailed resolution information:</p>
 <pre><code class="language-json">{
-  "resolved_incidents": [
-    {
-      "fingerprint_id": "anomaly_d18f6ae2bf62",
-      "incident_id": "incident_31e9e23d4b2b",
-      "anomaly_name": "latency_spike_recent",
-      "fingerprint_action": "RESOLVE",
-      "incident_action": "CLOSE",
-      "final_severity": "high",
-      "resolved_at": "2025-12-17T14:30:00",
-      "total_occurrences": 8,
-      "incident_duration_minutes": 45,
-      "first_seen": "2025-12-17T13:45:00",
-      "resolution_reason": "resolved"
-    }
-  ]
+  "fingerprinting": {
+    "resolved_incidents": [
+      {
+        "fingerprint_id": "anomaly_d18f6ae2bf62",
+        "incident_id": "incident_31e9e23d4b2b",
+        "anomaly_name": "latency_spike_recent",
+
+        "fingerprint_action": "RESOLVE",
+        "incident_action": "CLOSE",
+
+        "final_severity": "high",
+        "resolved_at": "2025-12-17T14:30:00",
+        "total_occurrences": 8,
+        "incident_duration_minutes": 45,
+        "first_seen": "2025-12-17T13:45:00",
+        "service_name": "booking",
+        "last_detected_by_model": "business_hours",
+        "resolution_reason": "resolved"
+      }
+    ]
+  }
 }
 </code></pre>
+<h3 id="resolution-fields"><a class="header" href="#resolution-fields">Resolution Fields</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fingerprint_id</code></td><td>string</td><td>Pattern that was resolved</td></tr>
+<tr><td><code>incident_id</code></td><td>string</td><td>Specific occurrence that closed</td></tr>
+<tr><td><code>anomaly_name</code></td><td>string</td><td>Human-readable pattern name</td></tr>
+<tr><td><code>final_severity</code></td><td>string</td><td>Severity at time of resolution</td></tr>
+<tr><td><code>resolved_at</code></td><td>datetime</td><td>When the incident was closed</td></tr>
+<tr><td><code>total_occurrences</code></td><td>integer</td><td>How many times detected during incident</td></tr>
+<tr><td><code>incident_duration_minutes</code></td><td>integer</td><td>Total duration</td></tr>
+<tr><td><code>first_seen</code></td><td>datetime</td><td>When it started</td></tr>
+<tr><td><code>service_name</code></td><td>string</td><td>Affected service</td></tr>
+<tr><td><code>resolution_reason</code></td><td>string</td><td>Why it was closed</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="database-cleanup"><a class="header" href="#database-cleanup">Database Cleanup</a></h2>
-<p>Closed incidents are cleaned up after a configurable period:</p>
+<p>To prevent unbounded database growth, closed incidents are automatically cleaned up:</p>
 <pre><code class="language-json">{
   "fingerprinting": {
     "cleanup_max_age_hours": 72
   }
 }
 </code></pre>
-<p>Incidents older than 72 hours (closed status) are removed to prevent unbounded database growth.</p>
+<h3 id="cleanup-process"><a class="header" href="#cleanup-process">Cleanup Process</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                     Cleanup Process                                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Every cleanup run:                                                │
+│   ──────────────────                                                │
+│                                                                     │
+│   1. Find CLOSED incidents older than cleanup_max_age_hours         │
+│                                                                     │
+│   DELETE FROM anomaly_incidents                                     │
+│   WHERE status = 'CLOSED'                                           │
+│     AND resolved_at &lt; (NOW - cleanup_max_age_hours)                 │
+│                                                                     │
+│   2. Leave active incidents untouched                               │
+│                                                                     │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  SUSPECTED incidents: KEPT (may still confirm)             │   │
+│   │  OPEN incidents:      KEPT (active issue)                  │   │
+│   │  RECOVERING incidents: KEPT (may resume or close)          │   │
+│   │  CLOSED incidents:    DELETED if older than 72h            │   │
+│   └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│   Result: Database stays bounded while preserving active state      │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="why-72-hours"><a class="header" href="#why-72-hours">Why 72 Hours?</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Shorter (24h)</th><th>Longer (168h/1 week)</th></tr>
+</thead>
+<tbody>
+<tr><td>Less storage</td><td>More history</td></tr>
+<tr><td>Faster queries</td><td>Slower queries</td></tr>
+<tr><td>Less post-incident analysis</td><td>Better trend analysis</td></tr>
+<tr><td>Risk of losing relevant history</td><td>More database bloat</td></tr>
+</tbody>
+</table>
+</div>
+<p>72 hours (3 days) is a balance that:</p>
+<ul>
+<li>Covers most incident review periods</li>
+<li>Allows weekend incident analysis on Monday</li>
+<li>Keeps database size manageable</li>
+</ul>
+<h2 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration Reference</a></h2>
+<p>All fingerprinting settings in <code>config.json</code>:</p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "db_path": "./anomaly_state.db",
+    "confirmation_cycles": 2,
+    "resolution_grace_cycles": 3,
+    "incident_separation_minutes": 30,
+    "cleanup_max_age_hours": 72
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>db_path</code></td><td><code>./anomaly_state.db</code></td><td>Path to SQLite database</td></tr>
+<tr><td><code>confirmation_cycles</code></td><td>2</td><td>Detections required before alerting</td></tr>
+<tr><td><code>resolution_grace_cycles</code></td><td>3</td><td>Non-detections before resolving</td></tr>
+<tr><td><code>incident_separation_minutes</code></td><td>30</td><td>Gap threshold for staleness</td></tr>
+<tr><td><code>cleanup_max_age_hours</code></td><td>72</td><td>Age threshold for cleanup</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>Fingerprinting provides the foundation for intelligent incident tracking:</p>
+<ol>
+<li><strong>Fingerprint ID</strong> enables pattern recognition across time</li>
+<li><strong>Incident ID</strong> enables precise occurrence tracking</li>
+<li><strong>Staleness check</strong> prevents confusion between separate issues</li>
+<li><strong>Database persistence</strong> maintains state across restarts</li>
+<li><strong>Automatic cleanup</strong> keeps the system healthy</li>
+</ol>
+<p>Together, these mechanisms enable Yaga2 to:</p>
+<ul>
+<li>Track recurring issues</li>
+<li>Calculate accurate metrics (MTTR, frequency)</li>
+<li>Prevent duplicate alerts</li>
+<li>Provide complete incident lifecycle visibility</li>
+</ul>
 
                     </main>
 

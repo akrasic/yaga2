@@ -1,25 +1,70 @@
 """
 Enhanced time-aware detector with efficient lazy loading.
+
+Supports dual-model architecture (baseline + holiday variants) when excluded
+periods are configured. Holiday variant models are used when the detection
+timestamp falls within an excluded period.
 """
 
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from smartbox_anomaly.core import DependencyContext, ModelLoadError
+from smartbox_anomaly.core.config import ExcludedPeriod
 
 logger = logging.getLogger(__name__)
 
 
 class EnhancedTimeAwareDetector:
-    """Enhanced time-aware detector with efficient lazy loading - FIXED for performance"""
+    """Enhanced time-aware detector with efficient lazy loading.
 
-    def __init__(self, models_directory: str):
+    Supports dual-model architecture for handling seasonal/holiday traffic patterns:
+    - Baseline models: Trained on normal operating periods
+    - Holiday variant models: Trained on excluded periods (e.g., Christmas)
+
+    The appropriate model variant is selected based on the detection timestamp
+    and the configured excluded periods.
+    """
+
+    def __init__(
+        self,
+        models_directory: str,
+        excluded_periods: Sequence[ExcludedPeriod] | None = None,
+    ):
+        """Initialize the enhanced time-aware detector.
+
+        Args:
+            models_directory: Directory containing trained models.
+            excluded_periods: Optional sequence of excluded periods for holiday
+                variant selection. When detection timestamp falls within an
+                excluded period, holiday variant models will be used if available.
+        """
         self.models_directory = models_directory
+        self._excluded_periods: tuple[ExcludedPeriod, ...] = (
+            tuple(excluded_periods) if excluded_periods else ()
+        )
         self._detector_cache: Dict[str, Any] = {}
         self._load_times: Dict[str, float] = {}
+
+    def set_excluded_periods(
+        self,
+        excluded_periods: Sequence[ExcludedPeriod],
+    ) -> None:
+        """Set excluded periods for holiday variant selection.
+
+        This also updates any cached detectors with the new periods.
+
+        Args:
+            excluded_periods: Sequence of excluded periods.
+        """
+        self._excluded_periods = tuple(excluded_periods)
+        # Update cached detectors with new excluded periods
+        for detector in self._detector_cache.values():
+            if hasattr(detector, "set_excluded_periods"):
+                detector.set_excluded_periods(self._excluded_periods)
 
     def _calculate_drift_penalty(self, drift_score: float) -> float:
         """Calculate confidence penalty based on drift severity.
@@ -102,7 +147,21 @@ class EnhancedTimeAwareDetector:
     def load_time_aware_detector(
         self, service_name: str, verbose: bool = False
     ) -> Optional[Any]:
-        """Load time-aware detector with lazy loading discovery - no models loaded yet"""
+        """Load time-aware detector with lazy loading discovery - no models loaded yet.
+
+        This method creates or retrieves a cached TimeAwareAnomalyDetector for the
+        given service. The detector is initialized with:
+        - Lazy loading (models loaded on-demand)
+        - Holiday variant discovery (if _holiday_variant subdirectory exists)
+        - Excluded periods for holiday model selection
+
+        Args:
+            service_name: Name of the service to load detector for.
+            verbose: Whether to log detailed loading information.
+
+        Returns:
+            TimeAwareAnomalyDetector instance or None if no models found.
+        """
         cache_key = service_name
 
         # Check if we need to reload the detector (not the models)
@@ -122,6 +181,14 @@ class EnhancedTimeAwareDetector:
             period_service_dir = models_path / f"{service_name}{suffix}"
             if period_service_dir.exists():
                 service_model_dirs.append(period_service_dir)
+
+        # Also check holiday variant directory
+        holiday_variant_dir = models_path / "_holiday_variant"
+        if holiday_variant_dir.exists():
+            for suffix in period_suffixes:
+                holiday_period_dir = holiday_variant_dir / f"{service_name}{suffix}"
+                if holiday_period_dir.exists():
+                    service_model_dirs.append(holiday_period_dir)
 
         if not service_model_dirs:
             if verbose:
@@ -143,22 +210,32 @@ class EnhancedTimeAwareDetector:
                 # Import the efficient TimeAwareAnomalyDetector class
                 from smartbox_anomaly.detection.time_aware import TimeAwareAnomalyDetector
 
-                # Create detector with lazy loading (NO models loaded yet)
-                detector = TimeAwareAnomalyDetector(service_name)
-                detector._models_directory = self.models_directory
-                detector._available_periods = detector._discover_available_periods(
-                    self.models_directory
+                # Create detector with lazy loading and excluded periods
+                detector = TimeAwareAnomalyDetector(
+                    service_name,
+                    excluded_periods=self._excluded_periods,
                 )
 
-                if detector._available_periods:
+                # Use load_from_directory for proper discovery of baseline and holiday variants
+                detector.load_from_directory(self.models_directory)
+
+                if detector._available_periods or detector._available_holiday_periods:
                     self._detector_cache[cache_key] = detector
                     self._load_times[cache_key] = most_recent_mod_time
 
                     if verbose:
                         logger.info(f"Detector ready for {service_name}")
                         logger.info(
-                            f"Available periods: {sorted(list(detector._available_periods))}"
+                            f"Available baseline periods: {sorted(list(detector._available_periods))}"
                         )
+                        if detector.has_holiday_variants:
+                            logger.info(
+                                f"Available holiday periods: {sorted(list(detector._available_holiday_periods))}"
+                            )
+                        if self._excluded_periods:
+                            logger.info(
+                                f"Excluded periods configured: {len(self._excluded_periods)}"
+                            )
                         logger.info("Models will load on-demand")
                 else:
                     if verbose:

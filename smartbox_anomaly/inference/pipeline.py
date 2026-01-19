@@ -20,7 +20,11 @@ from smartbox_anomaly.core import (
     MetricsCollectionError,
     get_config,
 )
-from smartbox_anomaly.enrichment import ExceptionEnrichmentService, ServiceGraphEnrichmentService
+from smartbox_anomaly.enrichment import (
+    EnvoyEnrichmentService,
+    ExceptionEnrichmentService,
+    ServiceGraphEnrichmentService,
+)
 from smartbox_anomaly.slo import SLOEvaluator
 from vmclient import InferenceMetrics, VictoriaMetricsClient
 
@@ -67,7 +71,13 @@ class SmartboxMLInferencePipeline:
         self.model_manager = EnhancedModelManager(models_directory)
         self.detection_engine = EnhancedAnomalyDetectionEngine(self.model_manager)
         self.results_processor = EnhancedResultsProcessor(alerts_directory, verbose)
-        self.time_aware_detector = EnhancedTimeAwareDetector(models_directory)
+
+        # Get excluded periods from training config for holiday variant model selection
+        excluded_periods = config.training.excluded_periods if config.training else []
+        self.time_aware_detector = EnhancedTimeAwareDetector(
+            models_directory,
+            excluded_periods=excluded_periods,
+        )
         self.max_workers = max_workers
         self.verbose = verbose
 
@@ -93,6 +103,20 @@ class SmartboxMLInferencePipeline:
             enabled=enrichment_enabled,
         )
 
+        # Initialize Envoy enrichment service (queries Mimir for edge metrics)
+        envoy_config = getattr(config, 'envoy_enrichment', None)
+        if envoy_config and getattr(envoy_config, 'enabled', False):
+            self.envoy_enrichment = EnvoyEnrichmentService(
+                mimir_endpoint=getattr(envoy_config, 'mimir_endpoint', 'https://mimir.sbxtest.net/prometheus'),
+                lookback_minutes=getattr(envoy_config, 'lookback_minutes', 5),
+                timeout_seconds=getattr(envoy_config, 'timeout_seconds', 10),
+                cluster_mapping=getattr(envoy_config, 'cluster_mapping', None),
+                enabled=True,
+            )
+            logger.info("Envoy enrichment enabled for edge/ingress context")
+        else:
+            self.envoy_enrichment = None
+
         if enrichment_enabled:
             logger.info("Exception enrichment enabled for error-related anomalies")
             logger.info("Service graph enrichment enabled for client latency anomalies")
@@ -105,12 +129,14 @@ class SmartboxMLInferencePipeline:
             dependency_graph=self.dependency_graph,
             check_drift=self.check_drift,
             verbose=verbose,
+            max_workers=max_workers,
         )
 
         self._enrichment_runner = EnrichmentRunner(
             slo_evaluator=self.slo_evaluator,
             exception_enrichment=self.exception_enrichment,
             service_graph_enrichment=self.service_graph_enrichment,
+            envoy_enrichment=self.envoy_enrichment,
             verbose=verbose,
         )
 
@@ -123,6 +149,8 @@ class SmartboxMLInferencePipeline:
                 logger.info(f"  Dependency graph loaded: {len(self.dependency_graph)} services")
             if self.slo_evaluator:
                 logger.info(f"  SLO evaluation: enabled")
+            if excluded_periods:
+                logger.info(f"  Holiday variant selection: {len(excluded_periods)} excluded periods configured")
 
     def _load_dependency_graph(self) -> Dict[str, List[str]]:
         """Load dependency graph from config.json."""
@@ -220,6 +248,12 @@ class SmartboxMLInferencePipeline:
         if self.verbose:
             logger.info("Applying service graph enrichment...")
         results = self._enrichment_runner.apply_service_graph_enrichment(results)
+
+        # Phase 7: Apply Envoy edge metrics enrichment
+        if self.envoy_enrichment:
+            if self.verbose:
+                logger.info("Applying Envoy edge metrics enrichment...")
+            results = self._enrichment_runner.apply_envoy_enrichment(results)
 
         # Log summary
         self._enrichment_runner.process_and_log_results(results)

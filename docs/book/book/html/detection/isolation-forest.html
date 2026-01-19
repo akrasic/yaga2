@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,119 +181,420 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="isolation-forest-ml-detection"><a class="header" href="#isolation-forest-ml-detection">Isolation Forest (ML Detection)</a></h1>
-<p>Isolation Forest is an unsupervised machine learning algorithm that detects anomalies by measuring how easy it is to “isolate” a data point.</p>
-<h2 id="core-insight"><a class="header" href="#core-insight">Core Insight</a></h2>
+<p>Isolation Forest is an unsupervised machine learning algorithm that detects anomalies by measuring how easy it is to “isolate” a data point. This chapter explains how it works, why it’s effective for service metrics, and how Yaga2 uses it.</p>
+<h2 id="what-is-unsupervised-learning"><a class="header" href="#what-is-unsupervised-learning">What is Unsupervised Learning?</a></h2>
+<p>Machine learning algorithms fall into two main categories:</p>
+<ul>
+<li><strong>Supervised learning</strong>: Requires labeled training data. For anomaly detection, you’d need examples labeled “normal” and “anomaly.”</li>
+<li><strong>Unsupervised learning</strong>: Learns patterns from unlabeled data. No need to manually identify anomalies in advance.</li>
+</ul>
+<p><strong>Why unsupervised matters for anomaly detection:</strong></p>
+<p>Labeling anomalies is impractical:</p>
+<ul>
+<li>You can’t predict all future failure modes</li>
+<li>What’s “anomalous” changes as services evolve</li>
+<li>Manual labeling is expensive and error-prone</li>
+</ul>
+<p>Isolation Forest learns what’s “normal” from your historical data and flags anything that deviates—no labels required.</p>
+<h2 id="the-core-insight"><a class="header" href="#the-core-insight">The Core Insight</a></h2>
 <p><strong>Anomalies are easier to isolate than normal points.</strong></p>
-<pre><code>Normal data (hard to isolate):     Anomaly (easy to isolate):
-        ┌─────┐                          ┌─────┐
-        │  ●  │ ← buried deep            │     │
-        │ ●●● │   in cluster             │  ●  │ ← isolated
-        │●●●●●│                          │     │   in 1-2 splits
-        │ ●●● │                          └─────┘
-        └─────┘
+<p>Think about it visually:</p>
+<pre><code>Normal data (clustered):           Anomaly (isolated):
+
+        ●  ●  ●
+      ● ● ●● ● ●                              ●
+     ● ● ●●●● ● ●                     (far from cluster)
+      ● ● ●● ● ●
+        ●  ●  ●
+
+   Many similar points               Alone in feature space
+   Hard to distinguish               Easy to identify
 </code></pre>
-<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<p>If you were to randomly draw dividing lines to separate data points:</p>
+<ul>
+<li><strong>Normal points</strong>: Buried in a cluster, need many cuts to isolate</li>
+<li><strong>Anomalies</strong>: Sitting alone, isolated in just 1-2 cuts</li>
+</ul>
+<h2 id="how-isolation-forest-works"><a class="header" href="#how-isolation-forest-works">How Isolation Forest Works</a></h2>
+<h3 id="step-1-build-random-trees-training"><a class="header" href="#step-1-build-random-trees-training">Step 1: Build Random Trees (Training)</a></h3>
+<p>Isolation Forest builds many random decision trees (called “isolation trees”):</p>
+<pre><code>                    All Data Points
+                          │
+                ┌─────────┴─────────┐
+                │ Split on latency  │
+                │ at random value   │
+                │ (e.g., 234ms)     │
+                └─────────┬─────────┘
+                          │
+            ┌─────────────┴─────────────┐
+            │                           │
+     latency &lt; 234ms              latency &gt;= 234ms
+            │                           │
+            ▼                           ▼
+     ┌──────────────┐            ┌──────────────┐
+     │ Split on     │            │ Split on     │
+     │ request_rate │            │ error_rate   │
+     │ at 150 req/s │            │ at 0.05      │
+     └──────────────┘            └──────────────┘
+            │                           │
+           ...                         ...
+     (continue until each             (continue)
+      point is isolated)
+</code></pre>
+<p>Each tree:</p>
 <ol>
-<li>
-<p><strong>Random Partitioning</strong>: Build random decision trees by:</p>
-<ul>
-<li>Randomly selecting a feature (metric)</li>
-<li>Randomly selecting a split value</li>
-<li>Recursively partitioning data</li>
-</ul>
-</li>
-<li>
-<p><strong>Path Length</strong>: Count splits needed to isolate each point:</p>
-<ul>
-<li><strong>Short path</strong> = Easy to isolate = <strong>Anomaly</strong></li>
-<li><strong>Long path</strong> = Hard to isolate = <strong>Normal</strong></li>
-</ul>
-</li>
-<li>
-<p><strong>Anomaly Score</strong>: Average path length produces a score:</p>
-<ul>
-<li>Score &lt; 0 = Anomalous (more negative = more anomalous)</li>
-<li>Score &gt; 0 = Normal</li>
-</ul>
-</li>
+<li><strong>Randomly picks a feature</strong> (e.g., latency, error_rate)</li>
+<li><strong>Randomly picks a split value</strong> between the min and max of that feature</li>
+<li><strong>Recursively partitions</strong> until each point is isolated</li>
 </ol>
-<h2 id="model-types"><a class="header" href="#model-types">Model Types</a></h2>
-<h3 id="univariate-models"><a class="header" href="#univariate-models">Univariate Models</a></h3>
-<p>Separate model for each metric:</p>
+<h3 id="step-2-measure-path-length"><a class="header" href="#step-2-measure-path-length">Step 2: Measure Path Length</a></h3>
+<p>For each data point, count how many splits were needed to isolate it:</p>
+<pre><code>Anomaly path:                    Normal point path:
+
+Root ──▶ Left ──▶ ISOLATED       Root ──▶ Right ──▶ Left ──▶ Right ──▶ Left ──▶ ISOLATED
+
+Path length: 2                   Path length: 5
+(suspicious!)                    (normal)
+</code></pre>
+<p><strong>Key principle</strong>:</p>
+<ul>
+<li>Short paths → Anomalous (easy to isolate)</li>
+<li>Long paths → Normal (hard to isolate)</li>
+</ul>
+<h3 id="step-3-compute-anomaly-score"><a class="header" href="#step-3-compute-anomaly-score">Step 3: Compute Anomaly Score</a></h3>
+<p>Average the path lengths across all trees and normalize:</p>
+<pre><code>                        2^(-average_path_length / c(n))
+Anomaly Score = ─────────────────────────────────────────
+                              (normalized)
+</code></pre>
+<p>Where <code>c(n)</code> is the average path length of an unsuccessful search in a binary search tree of n samples.</p>
+<p><strong>Score interpretation:</strong></p>
+<ul>
+<li><strong>Score ≈ 1</strong>: Highly anomalous (very short paths)</li>
+<li><strong>Score ≈ 0.5</strong>: On the boundary</li>
+<li><strong>Score ≈ 0</strong>: Normal (long paths)</li>
+</ul>
+<p>Yaga2 uses the scikit-learn <code>decision_function()</code> which returns scores in [-1, 1]:</p>
+<ul>
+<li><strong>Negative scores</strong>: Anomalous (more negative = more anomalous)</li>
+<li><strong>Positive scores</strong>: Normal</li>
+</ul>
+<h2 id="visual-example"><a class="header" href="#visual-example">Visual Example</a></h2>
+<p>Consider 2D data with latency and request_rate:</p>
+<pre><code>request_rate
+     │
+ 500 │                    ★ Anomaly A
+     │                      (high rate,
+     │                       isolated quickly)
+ 300 │    ●●●●●
+     │   ●●●●●●●
+ 200 │  ●●●●●●●●●   Normal cluster
+     │   ●●●●●●●    (many splits needed)
+ 100 │    ●●●●●
+     │
+  50 │  ★ Anomaly B
+     │  (low rate, isolated quickly)
+     │
+     └────────────────────────────────── latency
+          100    200    300    400    500
+
+Random split 1: latency &lt; 350ms
+Random split 2: request_rate &lt; 400
+
+Result:
+- Anomaly A: Isolated in 2 splits (score ≈ -0.5)
+- Anomaly B: Isolated in 2 splits (score ≈ -0.5)
+- Normal points: Need 5-8 splits (score ≈ 0.1)
+</code></pre>
+<h2 id="why-isolation-forest-is-ideal-for-service-metrics"><a class="header" href="#why-isolation-forest-is-ideal-for-service-metrics">Why Isolation Forest is Ideal for Service Metrics</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Model</th><th>Detects</th></tr>
+<tr><th>Property</th><th>Why It Matters for Metrics</th></tr>
 </thead>
 <tbody>
-<tr><td><code>request_rate_isolation</code></td><td>Traffic anomalies</td></tr>
-<tr><td><code>application_latency_isolation</code></td><td>Response time issues</td></tr>
-<tr><td><code>error_rate_isolation</code></td><td>Error spikes</td></tr>
-<tr><td><code>client_latency_isolation</code></td><td>Dependency slowness</td></tr>
-<tr><td><code>database_latency_isolation</code></td><td>Database issues</td></tr>
+<tr><td><strong>Unsupervised</strong></td><td>No need to label historical incidents</td></tr>
+<tr><td><strong>Fast</strong></td><td>O(n log n) - handles high-volume metrics</td></tr>
+<tr><td><strong>Handles skew</strong></td><td>Latency distributions are typically long-tailed</td></tr>
+<tr><td><strong>No distribution assumptions</strong></td><td>Unlike z-score, doesn’t assume Gaussian</td></tr>
+<tr><td><strong>Works with multiple features</strong></td><td>Can detect unusual metric <em>combinations</em></td></tr>
 </tbody>
 </table>
 </div>
-<h3 id="multivariate-model"><a class="header" href="#multivariate-model">Multivariate Model</a></h3>
-<p>One model considering all metrics together. Detects unusual <strong>combinations</strong>:</p>
-<pre><code>Example: Normal individually, anomalous together
-{
-  "request_rate": 500,        // Normal
-  "application_latency": 50,  // Normal (fast!)
-  "error_rate": 0.30          // High
-}
-// Fast responses + high errors = fast-fail pattern
+<h3 id="comparison-with-other-methods"><a class="header" href="#comparison-with-other-methods">Comparison with Other Methods</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Limitation for Metrics</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Z-score / Standard Deviation</strong></td><td>Assumes normal distribution - latency is skewed</td></tr>
+<tr><td><strong>Static thresholds</strong></td><td>Brittle, need constant tuning</td></tr>
+<tr><td><strong>LSTM / Deep Learning</strong></td><td>Requires labeled data, computationally expensive</td></tr>
+<tr><td><strong>Local Outlier Factor</strong></td><td>Slow at inference time</td></tr>
+<tr><td><strong>One-Class SVM</strong></td><td>Sensitive to hyperparameters</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="model-types-in-yaga2"><a class="header" href="#model-types-in-yaga2">Model Types in Yaga2</a></h2>
+<h3 id="univariate-models-per-metric"><a class="header" href="#univariate-models-per-metric">Univariate Models (Per-Metric)</a></h3>
+<p>Separate model for each metric, detecting single-metric anomalies:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Model</th><th>What It Detects</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><code>request_rate_isolation</code></td><td>Traffic anomalies</td><td>Sudden drop to 10% of normal</td></tr>
+<tr><td><code>application_latency_isolation</code></td><td>Response time issues</td><td>Latency spike to 500ms (normally 100ms)</td></tr>
+<tr><td><code>error_rate_isolation</code></td><td>Error spikes</td><td>Error rate jumps to 5% (normally 0.1%)</td></tr>
+<tr><td><code>dependency_latency_isolation</code></td><td>Dependency slowness</td><td>External calls taking 2s (normally 200ms)</td></tr>
+<tr><td><code>database_latency_isolation</code></td><td>Database issues</td><td>Query time spikes</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="multivariate-model-combined"><a class="header" href="#multivariate-model-combined">Multivariate Model (Combined)</a></h3>
+<p>One model considering all metrics together. This detects unusual <strong>combinations</strong> that look normal individually:</p>
+<pre><code>Example: Fast-Fail Pattern
+
+Individual metrics:
+  request_rate: 100 req/s     ← Normal
+  application_latency: 5ms    ← Very fast (good?)
+  error_rate: 40%             ← High
+
+Analysis:
+  - Each metric might not trigger univariate detection
+  - But the COMBINATION is suspicious:
+    "Very fast responses + high errors = requests failing before processing"
+
+  Multivariate model catches this pattern!
+</code></pre>
+<h2 id="contamination-rate"><a class="header" href="#contamination-rate">Contamination Rate</a></h2>
+<p><strong>Contamination</strong> is a key hyperparameter—the expected proportion of anomalies in training data.</p>
+<pre><code class="language-python">IsolationForest(contamination=0.05)  # Expect 5% anomalies
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Contamination</th><th>Effect</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>0.01-0.03</strong></td><td>Very strict, few anomalies flagged</td><td>Critical services where false positives are costly</td></tr>
+<tr><td><strong>0.05</strong></td><td>Balanced (default)</td><td>Most services</td></tr>
+<tr><td><strong>0.08-0.10</strong></td><td>More sensitive, more anomalies flagged</td><td>Noisy services, development environments</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="how-yaga2-sets-contamination"><a class="header" href="#how-yaga2-sets-contamination">How Yaga2 Sets Contamination</a></h3>
+<p>Yaga2 estimates contamination automatically using <strong>knee detection</strong>:</p>
+<ol>
+<li>Train a preliminary model with <code>contamination="auto"</code></li>
+<li>Get anomaly scores for all training data</li>
+<li>Sort scores and find the “knee” (bend in the curve)</li>
+<li>Points beyond the knee are considered anomalies</li>
+<li>Their proportion becomes the estimated contamination</li>
+</ol>
+<pre><code>Anomaly Scores (sorted)
+
+     │
+  0  │────────────────────●●●●●●●●●●●●●●●
+     │                   ●
+     │                  ●
+-0.2 │                 ●  ← Knee point
+     │               ●
+     │             ●
+-0.5 │          ●
+     │       ●
+     │    ●
+-0.8 │ ●
+     └─────────────────────────────────────
+       1   20   40   60   80  100 (samples)
+
+Knee at sample 95 → contamination ≈ 5%
 </code></pre>
 <h2 id="severity-thresholds"><a class="header" href="#severity-thresholds">Severity Thresholds</a></h2>
-<p>Scores map to severity levels (calibrated per model):</p>
+<p>Anomaly scores are mapped to severity levels:</p>
+<h3 id="calibrated-thresholds-preferred"><a class="header" href="#calibrated-thresholds-preferred">Calibrated Thresholds (Preferred)</a></h3>
+<p>During training, thresholds are calibrated from validation data:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Severity</th><th>Percentile</th><th>Fallback Score</th></tr>
+<tr><th>Severity</th><th>Percentile</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Critical</strong></td><td>Bottom 0.1%</td><td>&lt; -0.6</td></tr>
-<tr><td><strong>High</strong></td><td>Bottom 1%</td><td>-0.6 to -0.3</td></tr>
-<tr><td><strong>Medium</strong></td><td>Bottom 5%</td><td>-0.3 to -0.1</td></tr>
-<tr><td><strong>Low</strong></td><td>Bottom 10%</td><td>&gt;= -0.1</td></tr>
+<tr><td><strong>Critical</strong></td><td>Bottom 0.1%</td><td>1 in 1000 - extremely rare</td></tr>
+<tr><td><strong>High</strong></td><td>Bottom 1%</td><td>1 in 100 - significant</td></tr>
+<tr><td><strong>Medium</strong></td><td>Bottom 5%</td><td>1 in 20 - moderate</td></tr>
+<tr><td><strong>Low</strong></td><td>Bottom 10%</td><td>1 in 10 - minor</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="training"><a class="header" href="#training">Training</a></h2>
-<p>Models are trained on 30 days of historical data with:</p>
+<h3 id="fallback-thresholds"><a class="header" href="#fallback-thresholds">Fallback Thresholds</a></h3>
+<p>If calibration data unavailable:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Severity</th><th>Score Range</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Critical</strong></td><td>&lt; -0.6</td></tr>
+<tr><td><strong>High</strong></td><td>-0.6 to -0.3</td></tr>
+<tr><td><strong>Medium</strong></td><td>-0.3 to -0.1</td></tr>
+<tr><td><strong>Low</strong></td><td>&gt;= -0.1</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="training-process"><a class="header" href="#training-process">Training Process</a></h2>
+<h3 id="data-requirements"><a class="header" href="#data-requirements">Data Requirements</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Requirement</th><th>Value</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td>Training period</td><td>30 days</td><td>Capture weekly patterns</td></tr>
+<tr><td>Min univariate samples</td><td>500</td><td>Statistical significance</td></tr>
+<tr><td>Min multivariate samples</td><td>1000</td><td>Need more for cross-metric patterns</td></tr>
+<tr><td>Data granularity</td><td>5 minutes</td><td>Balance detail vs noise</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="training-steps"><a class="header" href="#training-steps">Training Steps</a></h3>
+<ol>
+<li><strong>Fetch 30 days of metrics</strong> from VictoriaMetrics</li>
+<li><strong>Segment by time period</strong> (business hours, night, weekend)</li>
+<li><strong>Temporal split</strong>: 80% training, 20% validation (chronological)</li>
+<li><strong>Estimate contamination</strong> from data distribution</li>
+<li><strong>Train univariate models</strong> for each metric</li>
+<li><strong>Train multivariate model</strong> on all metrics</li>
+<li><strong>Calibrate severity thresholds</strong> on validation data</li>
+<li><strong>Save models and metadata</strong></li>
+</ol>
+<h3 id="why-temporal-split"><a class="header" href="#why-temporal-split">Why Temporal Split?</a></h3>
+<pre><code>WRONG: Random split
+─────────────────────
+Training:   ●  ●  ●  ●  ●  ●  ●  ●  (random samples)
+Validation:    ●     ●     ●     ●  (random samples)
+
+Problem: Training might include future data → data leakage
+
+
+CORRECT: Temporal split
+───────────────────────
+Training:   ●──●──●──●──●──●──●──●──●──│  (first 80%)
+Validation:                            │──●──●──●──●  (last 20%)
+                                       │
+                                    Split point
+
+Model learns only from past, tested on "future" data
+</code></pre>
+<h2 id="time-aware-models"><a class="header" href="#time-aware-models">Time-Aware Models</a></h2>
+<p>Service behavior varies by time of day:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Time Period</th><th>Characteristics</th></tr>
+</thead>
+<tbody>
+<tr><td>business_hours (08-18 weekdays)</td><td>High traffic, tight latency</td></tr>
+<tr><td>evening_hours (18-22 weekdays)</td><td>Moderate traffic</td></tr>
+<tr><td>night_hours (22-06 weekdays)</td><td>Low traffic, batch jobs</td></tr>
+<tr><td>weekend_day (08-22 Sat-Sun)</td><td>Variable patterns</td></tr>
+<tr><td>weekend_night (22-08 Sat-Sun)</td><td>Very low traffic</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Why separate models?</strong></p>
+<p>Without time awareness:</p>
+<pre><code>3 AM: 10 requests/second
+  → Model: "This is way below the 500 req/s average - ANOMALY!"
+  → Reality: This is normal at 3 AM
+  → Result: False positive
+</code></pre>
+<p>With time-aware models:</p>
+<pre><code>3 AM: 10 requests/second
+  → Night model average: 15 req/s
+  → Model: "This is close to the night baseline - NORMAL"
+  → Result: Correct!
+</code></pre>
+<h2 id="strengths-and-limitations"><a class="header" href="#strengths-and-limitations">Strengths and Limitations</a></h2>
+<h3 id="strengths"><a class="header" href="#strengths">Strengths</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Strength</th><th>Explanation</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>No labeled data needed</strong></td><td>Learns from normal patterns, no need to tag anomalies</td></tr>
+<tr><td><strong>Fast training and inference</strong></td><td>O(n log n) complexity, scales to millions of points</td></tr>
+<tr><td><strong>Works with skewed data</strong></td><td>Latency distributions are naturally long-tailed</td></tr>
+<tr><td><strong>Detects novel anomalies</strong></td><td>Can find patterns never seen before</td></tr>
+<tr><td><strong>Handles multiple dimensions</strong></td><td>Multivariate model catches unusual combinations</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="limitations"><a class="header" href="#limitations">Limitations</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Limitation</th><th>How Yaga2 Mitigates</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>No semantic understanding</strong></td><td>Pattern matching interprets what anomalies mean</td></tr>
+<tr><td><strong>Context-blind</strong></td><td>Time-aware models reduce false positives</td></tr>
+<tr><td><strong>Can produce false positives</strong></td><td>SLO evaluation filters operationally insignificant anomalies</td></tr>
+<tr><td><strong>Training data quality matters</strong></td><td>Data quality checks and minimum sample requirements</td></tr>
+<tr><td><strong>Gradual drift may be missed</strong></td><td>Daily retraining, drift detection</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="how-detection-works-at-inference-time"><a class="header" href="#how-detection-works-at-inference-time">How Detection Works at Inference Time</a></h2>
+<pre><code>1. Current Metrics Arrive
+   {request_rate: 450, latency: 280, errors: 0.02, ...}
+                    │
+                    ▼
+2. Determine Time Period
+   Current time: 10:30 AM Wednesday → "business_hours"
+                    │
+                    ▼
+3. Load Appropriate Models
+   booking/business_hours/model.joblib
+                    │
+                    ▼
+4. Scale Metrics
+   RobustScaler normalizes to training distribution
+                    │
+                    ▼
+5. Score Each Model
+   Univariate: latency_score = -0.35 (high!)
+               request_score = 0.1 (normal)
+               error_score = 0.05 (normal)
+   Multivariate: combined_score = -0.28 (elevated)
+                    │
+                    ▼
+6. Map to Severity
+   latency_score -0.35 → severity: "high"
+                    │
+                    ▼
+7. Pattern Matching
+   High latency + normal traffic + normal errors
+   → Pattern: "latency_spike_recent"
+                    │
+                    ▼
+8. Output Anomaly
+   {
+     "pattern_name": "latency_spike_recent",
+     "severity": "high",
+     "score": -0.35,
+     "description": "Latency spike: 280ms (normally 120ms)"
+   }
+</code></pre>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further Reading</a></h2>
 <ul>
-<li><strong>Temporal split</strong>: 80% train, 20% validation (chronological)</li>
-<li><strong>Minimum samples</strong>: 500 univariate, 1000 multivariate</li>
-<li><strong>Contamination</strong>: Estimated from data distribution</li>
+<li><a href="./pattern-matching.html">Pattern Matching</a> - How anomalies are interpreted</li>
+<li><a href="./pipeline.html">Detection Pipeline</a> - End-to-end detection flow</li>
+<li><a href="../slo/README.html">SLO Evaluation</a> - How severity is adjusted</li>
 </ul>
-<h2 id="strengths"><a class="header" href="#strengths">Strengths</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Strength</th><th>Why It Matters</th></tr>
-</thead>
-<tbody>
-<tr><td>Unsupervised</td><td>No labeled “anomaly” data required</td></tr>
-<tr><td>Fast</td><td>Linear time complexity</td></tr>
-<tr><td>Robust</td><td>Works with skewed distributions</td></tr>
-<tr><td>Multivariate</td><td>Detects unusual combinations</td></tr>
-</tbody>
-</table>
-</div>
-<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Limitation</th><th>Mitigation</th></tr>
-</thead>
-<tbody>
-<tr><td>No semantic understanding</td><td>Pattern matching adds context</td></tr>
-<tr><td>Context-blind</td><td>Time-aware models help</td></tr>
-<tr><td>False positives</td><td>SLO evaluation filters noise</td></tr>
-<tr><td>Training data quality</td><td>Data quality checks</td></tr>
-</tbody>
-</table>
-</div>
 
                     </main>
 

@@ -24,36 +24,36 @@ This document tracks the implementation of SRE-recommended improvements to the S
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 1.1 | Add severity threshold configuration | ✅ Done | `alerting.severity_threshold` in config |
-| 1.2 | Implement alert suppression by severity | ✅ Done | Filtering in `inference.py` |
-| 2.1 | Design alert correlation system | ✅ Done | `CorrelationConfig` dataclass |
-| 2.2 | Implement correlation in fingerprinter | ⏳ Pending | Config ready, implementation TBD |
+| 1.1 | Add severity threshold configuration | ✅ Done | `AlertingConfig` in `config.py` with `severity_threshold` |
+| 1.2 | Implement alert suppression by severity | ✅ Done | `should_alert()` method filters in `inference.py` |
+| 2.1 | Design alert correlation system | ✅ Done | `CorrelationConfig` with primary selection strategies |
+| 2.2 | Implement correlation in inference | ✅ Done | `_correlate_service_anomalies()` in `inference.py` |
 
 ### P1 - High (Target: 1 month)
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 3.1 | Remove `traffic_surge_healthy` from alerting | ✅ Done | Added to `non_alerting_patterns` |
-| 3.2 | Audit other "healthy" patterns | ✅ Done | `request_rate_surge_healthy` added |
-| 4.1 | Define naming convention standard | ✅ Done | `{metric}_{state}_{modifier}` implemented |
-| 4.2 | Rename inconsistent patterns | ✅ Done | All patterns renamed with aliases for backward compat |
-| 5.1 | Add root cause service to cascade names | ✅ Done | `_build_cascade_name()` in detector.py |
+| 3.1 | Remove `traffic_surge_healthy` from alerting | ✅ Done | Default in `non_alerting_patterns` |
+| 3.2 | Audit other "healthy" patterns | ⏳ Pending | Check for similar patterns to exclude |
+| 4.1 | Define naming convention standard | ⏳ Pending | Document `{metric}_{state}_{modifier}` formally |
+| 4.2 | Rename inconsistent patterns | ⏳ Pending | Update remaining old-style names |
+| 5.1 | Add root cause service to cascade names | ⏳ Pending | Modify `_build_cascade_name()` |
 
 ### P2 - Medium (Target: Quarter)
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 6.1 | Clean orphaned RECOMMENDATION_RULES | ✅ Done | Updated with new pattern names |
-| 6.2 | Clean orphaned pattern references | ✅ Done | PATTERN_ALIASES added for backward compat |
-| 7.1 | Add service name to fallback naming | ✅ Done | Fallback description includes `[service]` prefix |
-| 8.1 | Document naming convention in CLAUDE.md | ✅ Done | Full naming convention documented |
+| 6.1 | Clean orphaned RECOMMENDATION_RULES | ⏳ Pending | Remove rules for non-existent patterns |
+| 6.2 | Clean orphaned pattern references | ⏳ Pending | Audit all pattern name usage |
+| 7.1 | Add service name to fallback naming | ⏳ Pending | Format: `{service}:{metric}_anomaly` |
+| 8.1 | Document naming convention in CLAUDE.md | ⏳ Pending | Add pattern reference table |
 
 ### P3 - Low (Backlog)
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 9.1 | Optional time context prefix | ⏳ Backlog | |
-| 10.1 | Cross-model deduplication | ⏳ Backlog | |
+| 9.1 | Optional time context prefix | ⏳ Backlog | e.g., `night:latency_spike` |
+| 10.1 | Cross-model deduplication | ⏳ Backlog | If night_hours and business_hours both detect |
 
 ---
 

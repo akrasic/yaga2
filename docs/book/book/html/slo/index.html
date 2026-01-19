@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,102 +181,457 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="slo-evaluation-layer"><a class="header" href="#slo-evaluation-layer">SLO Evaluation Layer</a></h1>
-<p>The SLO (Service Level Objective) evaluation layer adjusts anomaly severity based on operational thresholds, answering: <strong>“Does this anomaly matter operationally?”</strong></p>
-<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
-<p>ML detection answers: <em>“Is this behavior unusual?”</em>
-SLO evaluation answers: <em>“Does it impact users or breach operational limits?”</em></p>
-<pre><code>┌─────────────────────────────────────────────────────────────────┐
-│                    SLO Evaluation Flow                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ML Detection Result                                           │
-│   (severity: critical)                                          │
-│          │                                                      │
-│          ▼                                                      │
-│   ┌─────────────────────────────────────────────────────────┐   │
-│   │              Evaluate Each SLO Component                │   │
-│   ├──────────────┬──────────────┬─────────────┬────────────┤   │
-│   │   Latency    │  Error Rate  │  DB Latency │   Traffic  │   │
-│   │   vs SLO     │   vs SLO     │  vs Baseline│  Surge/Cliff│   │
-│   └──────┬───────┴──────┬───────┴──────┬──────┴──────┬─────┘   │
-│          │              │              │             │          │
-│          └──────────────┴──────────────┴─────────────┘          │
-│                         │                                        │
-│                         ▼                                        │
-│              ┌─────────────────────┐                            │
-│              │  Combined SLO       │                            │
-│              │  Status: ok/warning │                            │
-│              │  /breached          │                            │
-│              └──────────┬──────────┘                            │
-│                         │                                        │
-│                         ▼                                        │
-│              ┌─────────────────────┐                            │
-│              │  Adjust Severity    │                            │
-│              │  critical → low     │  (if SLO ok)               │
-│              │  high → high        │  (if SLO warning)          │
-│              │  any → critical     │  (if SLO breached)         │
-│              └─────────────────────┘                            │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+<p>The SLO (Service Level Objective) evaluation layer adjusts anomaly severity based on operational thresholds. This chapter explains what SLOs are, why they matter for anomaly detection, and how Yaga2 uses them.</p>
+<h2 id="what-is-an-slo"><a class="header" href="#what-is-an-slo">What is an SLO?</a></h2>
+<p><strong>SLO (Service Level Objective)</strong> is a target level of service reliability that you promise to maintain. It’s the answer to: <em>“What does ‘good enough’ look like for this service?”</em></p>
+<h3 id="the-sli--slo--sla-hierarchy"><a class="header" href="#the-sli--slo--sla-hierarchy">The SLI → SLO → SLA Hierarchy</a></h3>
+<p>Understanding SLOs requires understanding the full hierarchy:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    Service Level Hierarchy                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   ┌───────────────────────────────────────────────────────────┐     │
+│   │                        SLA                                │     │
+│   │              Service Level Agreement                      │     │
+│   │                                                           │     │
+│   │   "If we breach this, there are consequences"             │     │
+│   │   Example: 99.9% uptime or customer gets credit           │     │
+│   │                                                           │     │
+│   │   ┌───────────────────────────────────────────────────┐   │     │
+│   │   │                      SLO                          │   │     │
+│   │   │            Service Level Objective                │   │     │
+│   │   │                                                   │   │     │
+│   │   │   "This is our internal target"                   │   │     │
+│   │   │   Example: 99.95% uptime (stricter than SLA)      │   │     │
+│   │   │                                                   │   │     │
+│   │   │   ┌───────────────────────────────────────────┐   │   │     │
+│   │   │   │                  SLI                      │   │   │     │
+│   │   │   │        Service Level Indicator            │   │   │     │
+│   │   │   │                                           │   │   │     │
+│   │   │   │   "This is what we measure"               │   │   │     │
+│   │   │   │   Example: Request success rate           │   │   │     │
+│   │   │   │                                           │   │   │     │
+│   │   │   └───────────────────────────────────────────┘   │   │     │
+│   │   └───────────────────────────────────────────────────┘   │     │
+│   └───────────────────────────────────────────────────────────┘     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 </code></pre>
-<h2 id="slo-components"><a class="header" href="#slo-components">SLO Components</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Component</th><th>Threshold Type</th><th>What It Measures</th></tr>
+<tr><th>Term</th><th>Definition</th><th>Example</th></tr>
 </thead>
 <tbody>
-<tr><td><a href="./latency.html">Latency</a></td><td>Absolute (ms)</td><td>Response time vs SLO targets</td></tr>
-<tr><td><a href="./error-rate.html">Error Rate</a></td><td>Absolute (%)</td><td>Error percentage vs SLO targets</td></tr>
-<tr><td><a href="./database-latency.html">Database Latency</a></td><td>Ratio-based</td><td>DB latency vs training baseline</td></tr>
-<tr><td><a href="./request-rate.html">Request Rate</a></td><td>Ratio-based</td><td>Traffic surge or cliff detection</td></tr>
+<tr><td><strong>SLI</strong> (Indicator)</td><td>The metric you measure</td><td>Request latency in milliseconds</td></tr>
+<tr><td><strong>SLO</strong> (Objective)</td><td>The target value for that metric</td><td>99% of requests &lt; 500ms</td></tr>
+<tr><td><strong>SLA</strong> (Agreement)</td><td>Legal/business commitment with consequences</td><td>99.9% uptime or refund</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="slo-status"><a class="header" href="#slo-status">SLO Status</a></h2>
+<h3 id="common-slo-types"><a class="header" href="#common-slo-types">Common SLO Types</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Status</th><th>Meaning</th><th>Severity Impact</th></tr>
+<tr><th>SLO Type</th><th>What It Measures</th><th>Example Target</th></tr>
 </thead>
 <tbody>
-<tr><td><code>ok</code></td><td>All metrics within acceptable limits</td><td>→ <code>low</code></td></tr>
-<tr><td><code>warning</code></td><td>Approaching SLO breach</td><td>stays <code>high</code></td></tr>
-<tr><td><code>breached</code></td><td>SLO threshold exceeded</td><td>→ <code>critical</code></td></tr>
+<tr><td><strong>Availability</strong></td><td>Is the service responding?</td><td>99.9% of requests succeed</td></tr>
+<tr><td><strong>Latency</strong></td><td>How fast does it respond?</td><td>95% of requests &lt; 300ms</td></tr>
+<tr><td><strong>Error Rate</strong></td><td>How many requests fail?</td><td>&lt; 0.1% error rate</td></tr>
+<tr><td><strong>Throughput</strong></td><td>How much can it handle?</td><td>1000 req/s capacity</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="key-insight"><a class="header" href="#key-insight">Key Insight</a></h2>
-<p>An anomaly can be <strong>statistically significant</strong> (detected by ML) but <strong>operationally acceptable</strong> (within SLO). The SLO layer filters noise by only escalating anomalies that actually impact service quality.</p>
-<p><strong>Example:</strong></p>
+<h3 id="why-slos-matter"><a class="header" href="#why-slos-matter">Why SLOs Matter</a></h3>
+<p>Without SLOs, you have two problems:</p>
+<p><strong>Problem 1: Over-alerting</strong></p>
+<pre><code>❌ Static threshold: Alert if latency &gt; 200ms
+   ↓
+   You get 50 alerts per day for "normal" spikes
+   ↓
+   Alert fatigue → Team ignores alerts
+   ↓
+   Real incidents get missed
+</code></pre>
+<p><strong>Problem 2: Under-alerting</strong></p>
+<pre><code>❌ ML-only detection: Alert when "unusual"
+   ↓
+   Latency at 400ms is unusual (normally 100ms)
+   ↓
+   But users don't notice 400ms latency
+   ↓
+   Alert noise for non-issues
+</code></pre>
+<p><strong>The SLO Solution:</strong></p>
+<pre><code>✅ SLO-aware detection:
+   ↓
+   ML detects 400ms latency as unusual
+   ↓
+   SLO evaluation: 400ms &lt; 500ms acceptable threshold
+   ↓
+   Severity adjusted to "low" (no page, just log)
+   ↓
+   Team focuses on real problems
+</code></pre>
+<h2 id="why-slos-matter-for-anomaly-detection"><a class="header" href="#why-slos-matter-for-anomaly-detection">Why SLOs Matter for Anomaly Detection</a></h2>
+<p>ML-based anomaly detection answers: <strong>“Is this unusual?”</strong></p>
+<p>But unusual doesn’t mean bad:</p>
 <ul>
-<li>ML detects latency at 280ms (unusual, p95 deviation)</li>
-<li>SLO threshold is 300ms (acceptable limit)</li>
-<li>Result: Severity adjusted to <code>low</code> (anomaly noted but no action needed)</li>
+<li>A traffic spike during a sale is unusual but good</li>
+<li>Latency at 300ms when it’s usually 100ms is unusual but might be acceptable</li>
+<li>Error rate dropping to 0% is unusual but definitely not a problem</li>
 </ul>
+<p>SLO evaluation answers a different question: <strong>“Does this impact users?”</strong></p>
+<h3 id="the-two-question-model"><a class="header" href="#the-two-question-model">The Two-Question Model</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    Anomaly Evaluation                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Question 1: Is this unusual?                                      │
+│   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━                                      │
+│   Answered by: Machine Learning (Isolation Forest)                  │
+│   Method: Compare against historical baseline                       │
+│   Output: "Yes, this is 2σ above normal"                           │
+│                                                                     │
+│                         │                                           │
+│                         ▼                                           │
+│                                                                     │
+│   Question 2: Does it matter operationally?                         │
+│   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━                          │
+│   Answered by: SLO Evaluation                                       │
+│   Method: Compare against operational thresholds                    │
+│   Output: "No, still within acceptable SLO"                        │
+│                                                                     │
+│                         │                                           │
+│                         ▼                                           │
+│                                                                     │
+│   Final Decision                                                    │
+│   ━━━━━━━━━━━━━━━                                                   │
+│   Unusual: ✓ Yes                                                    │
+│   Impactful: ✗ No                                                   │
+│   Action: Log for awareness, don't page                            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="example-the-280ms-latency-case"><a class="header" href="#example-the-280ms-latency-case">Example: The 280ms Latency Case</a></h3>
+<p>Consider a booking service:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>Current latency</td><td>280ms</td></tr>
+<tr><td>Historical baseline</td><td>150ms</td></tr>
+<tr><td>Statistical deviation</td><td>+2.3σ (p91 percentile)</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>ML-only approach:</strong></p>
+<pre><code>ML says: "280ms is unusual! That's 2.3σ above normal!"
+Result: HIGH severity alert
+Problem: Engineer pages at 3 AM for non-issue
+</code></pre>
+<p><strong>SLO-aware approach:</strong></p>
+<pre><code>ML says: "280ms is unusual"
+SLO says: "280ms &lt; 300ms acceptable threshold"
+SLO says: "280ms is 93% toward the limit (proximity = 0.93)"
+Result: LOW severity (logged but no page)
+Benefit: Engineer sleeps, system still tracks the deviation
+</code></pre>
+<h2 id="how-yaga2s-slo-layer-works"><a class="header" href="#how-yaga2s-slo-layer-works">How Yaga2’s SLO Layer Works</a></h2>
+<h3 id="evaluation-flow"><a class="header" href="#evaluation-flow">Evaluation Flow</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    SLO Evaluation Pipeline                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Input: ML Detection Result                                        │
+│   ┌────────────────────────────────────┐                           │
+│   │ pattern: latency_spike_recent      │                           │
+│   │ severity: high                     │                           │
+│   │ score: -0.35                       │                           │
+│   │ metrics:                           │                           │
+│   │   latency: 280ms                   │                           │
+│   │   error_rate: 0.1%                 │                           │
+│   │   request_rate: 150/s              │                           │
+│   └─────────────────┬──────────────────┘                           │
+│                     │                                               │
+│                     ▼                                               │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │              Evaluate Each SLO Component                    │   │
+│   ├──────────────┬──────────────┬─────────────┬────────────────┤   │
+│   │   Latency    │  Error Rate  │  DB Latency │   Traffic      │   │
+│   │   280ms      │   0.1%       │  2.5ms      │   150/s        │   │
+│   │   vs 300ms   │   vs 0.5%    │  vs 5ms     │   vs 50/s      │   │
+│   │   ↓          │   ↓          │   ↓         │   ↓            │   │
+│   │   ok (93%)   │   ok (20%)   │  ok (below  │   ok (3x but   │   │
+│   │              │              │     floor)  │   no impact)   │   │
+│   └──────┬───────┴──────┬───────┴──────┬──────┴───────┬────────┘   │
+│          │              │              │              │             │
+│          └──────────────┴──────────────┴──────────────┘             │
+│                         │                                           │
+│                         ▼                                           │
+│              ┌─────────────────────┐                               │
+│              │  Combined Status    │                               │
+│              │  ─────────────────  │                               │
+│              │  Status: ok         │                               │
+│              │  Proximity: 0.93    │  (closest to breach)          │
+│              │  Impact: none       │                               │
+│              └──────────┬──────────┘                               │
+│                         │                                           │
+│                         ▼                                           │
+│              ┌─────────────────────┐                               │
+│              │  Severity Adjust    │                               │
+│              │  ─────────────────  │                               │
+│              │  Original: high     │                               │
+│              │  Adjusted: low      │  (SLO ok → low)               │
+│              │  Changed: true      │                               │
+│              └─────────────────────┘                               │
+│                                                                     │
+│   Output: Adjusted Detection Result                                 │
+│   ┌────────────────────────────────────┐                           │
+│   │ pattern: latency_spike_recent      │                           │
+│   │ severity: low                      │  ← adjusted               │
+│   │ original_severity: high            │  ← preserved              │
+│   │ slo_status: ok                     │                           │
+│   │ slo_proximity: 0.93                │                           │
+│   │ explanation: "Within acceptable    │                           │
+│   │   SLO thresholds"                  │                           │
+│   └────────────────────────────────────┘                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="slo-components-in-yaga2"><a class="header" href="#slo-components-in-yaga2">SLO Components in Yaga2</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Component</th><th>Threshold Type</th><th>Evaluation Method</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="./latency.html">Latency</a></td><td>Absolute (ms)</td><td>Compare against acceptable/warning/critical thresholds</td></tr>
+<tr><td><a href="./error-rate.html">Error Rate</a></td><td>Absolute (%)</td><td>Compare against acceptable/warning/critical with floor suppression</td></tr>
+<tr><td><a href="./database-latency.html">Database Latency</a></td><td>Ratio-based</td><td>Compare ratio against training baseline (1.5x, 2x, 3x, 5x)</td></tr>
+<tr><td><a href="./request-rate.html">Request Rate</a></td><td>Ratio-based</td><td>Detect surge (≥200%) or cliff (≤50%) with correlation</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="slo-status"><a class="header" href="#slo-status">SLO Status</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th>What It Means</th><th>Severity Impact</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ok</code></td><td>All metrics within acceptable limits</td><td>Severity → <code>low</code></td></tr>
+<tr><td><code>elevated</code></td><td>Above acceptable, below warning</td><td>Severity stays as-is</td></tr>
+<tr><td><code>warning</code></td><td>Approaching SLO breach</td><td>Severity → <code>high</code></td></tr>
+<tr><td><code>breached</code></td><td>SLO threshold exceeded</td><td>Severity → <code>critical</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="severity-adjustment-rules"><a class="header" href="#severity-adjustment-rules">Severity Adjustment Rules</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    Severity Adjustment Matrix                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   Original Severity    SLO Status      Final Severity               │
+│   ─────────────────    ──────────      ──────────────               │
+│                                                                     │
+│   critical             ok              → low                        │
+│   critical             elevated        → high                       │
+│   critical             warning         → critical                   │
+│   critical             breached        → critical                   │
+│                                                                     │
+│   high                 ok              → low                        │
+│   high                 elevated        → high                       │
+│   high                 warning         → high                       │
+│   high                 breached        → critical                   │
+│                                                                     │
+│   medium               ok              → low                        │
+│   medium               warning         → high                       │
+│                                                                     │
+│   low                  any             → low                        │
+│                                                                     │
+│   (any)                breached        → critical (always)          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Key Insight:</strong> When SLO status is <code>ok</code>, severity is <strong>always</strong> adjusted to <code>low</code>, regardless of the original ML-assigned severity. This ensures alerts reflect operational impact, not just statistical deviation.</p>
+<h2 id="practical-examples"><a class="header" href="#practical-examples">Practical Examples</a></h2>
+<h3 id="example-1-acceptable-anomaly"><a class="header" href="#example-1-acceptable-anomaly">Example 1: Acceptable Anomaly</a></h3>
+<pre><code>Service: booking
+─────────────────────────────────────────────────────────────
+
+Current Metrics:
+  latency: 420ms (usually 200ms)
+  error_rate: 0.2%
+
+ML Detection:
+  Pattern: latency_spike_recent
+  Severity: high
+  Reason: Latency is 3σ above baseline
+
+SLO Evaluation:
+  Latency: 420ms &lt; 500ms acceptable ✓
+  Errors: 0.2% &lt; 0.5% acceptable ✓
+  Status: ok
+
+Final Decision:
+  Severity: low
+  Action: Log for awareness, no page
+  Message: "Anomaly detected but within SLO"
+</code></pre>
+<h3 id="example-2-warning-zone"><a class="header" href="#example-2-warning-zone">Example 2: Warning Zone</a></h3>
+<pre><code>Service: search
+─────────────────────────────────────────────────────────────
+
+Current Metrics:
+  latency: 750ms (acceptable: 500ms, warning: 800ms)
+  error_rate: 0.8% (acceptable: 0.5%, warning: 1%)
+
+ML Detection:
+  Pattern: latency_spike_recent
+  Severity: high
+
+SLO Evaluation:
+  Latency: 750ms &gt; 500ms acceptable, &lt; 800ms warning
+  Errors: 0.8% &gt; 0.5% acceptable, &lt; 1% warning
+  Status: warning
+  Proximity: 0.94 (close to warning threshold)
+
+Final Decision:
+  Severity: high (maintained)
+  Action: Alert on-call for investigation
+  Message: "Approaching SLO limits"
+</code></pre>
+<h3 id="example-3-slo-breach"><a class="header" href="#example-3-slo-breach">Example 3: SLO Breach</a></h3>
+<pre><code>Service: checkout
+─────────────────────────────────────────────────────────────
+
+Current Metrics:
+  latency: 2500ms (critical: 1000ms)
+  error_rate: 5%
+
+ML Detection:
+  Pattern: traffic_surge_failing
+  Severity: critical
+
+SLO Evaluation:
+  Latency: 2500ms &gt; 1000ms critical ✗
+  Errors: 5% &gt; 2% critical ✗
+  Status: breached
+
+Final Decision:
+  Severity: critical (confirmed)
+  Action: Immediate page, potential incident
+  Message: "SLO breached - users impacted"
+</code></pre>
 <h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
-<p>SLOs are configured per-service in <code>config.json</code>:</p>
+<h3 id="default-slo-thresholds"><a class="header" href="#default-slo-thresholds">Default SLO Thresholds</a></h3>
 <pre><code class="language-json">{
   "slos": {
     "enabled": true,
+    "allow_downgrade_to_informational": true,
+    "require_slo_breach_for_critical": true,
     "defaults": {
       "latency_acceptable_ms": 500,
       "latency_warning_ms": 800,
       "latency_critical_ms": 1000,
       "error_rate_acceptable": 0.005,
       "error_rate_warning": 0.01,
-      "error_rate_critical": 0.02
-    },
-    "services": {
-      "booking": {
-        "latency_acceptable_ms": 300,
-        "latency_critical_ms": 500
+      "error_rate_critical": 0.02,
+      "error_rate_floor": 0.001,
+      "database_latency_floor_ms": 5.0,
+      "database_latency_ratios": {
+        "info": 1.5,
+        "warning": 2.0,
+        "high": 3.0,
+        "critical": 5.0
       }
     }
   }
 }
 </code></pre>
-<h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
+<h3 id="per-service-overrides"><a class="header" href="#per-service-overrides">Per-Service Overrides</a></h3>
+<p>Different services have different requirements:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "checkout": {
+        "latency_acceptable_ms": 300,
+        "latency_critical_ms": 500,
+        "error_rate_acceptable": 0.001
+      },
+      "search": {
+        "latency_acceptable_ms": 200,
+        "latency_critical_ms": 400
+      },
+      "admin-panel": {
+        "latency_acceptable_ms": 2000,
+        "error_rate_acceptable": 0.01
+      }
+    }
+  }
+}
+</code></pre>
+<h3 id="busy-period-configuration"><a class="header" href="#busy-period-configuration">Busy Period Configuration</a></h3>
+<p>During high-traffic periods (holidays, sales), thresholds can be automatically relaxed:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "defaults": {
+      "busy_period_factor": 1.5
+    },
+    "busy_periods": [
+      {
+        "start": "2024-12-20T00:00:00",
+        "end": "2025-01-05T23:59:59"
+      }
+    ]
+  }
+}
+</code></pre>
+<p>During busy periods:</p>
+<ul>
+<li>500ms acceptable → 750ms acceptable</li>
+<li>0.5% error acceptable → 0.75% error acceptable</li>
+</ul>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<h3 id="1-set-slos-based-on-user-experience"><a class="header" href="#1-set-slos-based-on-user-experience">1. Set SLOs Based on User Experience</a></h3>
+<pre><code>❌ Bad: "Let's set latency SLO at 100ms because it sounds good"
+   Problem: Your P50 latency is already 150ms
+
+✓ Good: "Users report issues above 500ms, let's set acceptable at 400ms"
+   Benefit: SLO reflects actual user impact
+</code></pre>
+<h3 id="2-use-the-error-budget-concept"><a class="header" href="#2-use-the-error-budget-concept">2. Use the Error Budget Concept</a></h3>
+<p>If your SLO is 99.9% availability:</p>
+<ul>
+<li>Error budget = 0.1% of requests can fail</li>
+<li>Monthly budget ≈ 43 minutes of downtime</li>
+<li>Use this to decide when to deploy vs stabilize</li>
+</ul>
+<h3 id="3-have-different-slos-for-different-services"><a class="header" href="#3-have-different-slos-for-different-services">3. Have Different SLOs for Different Services</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Service</th><th>Latency SLO</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td>Checkout</td><td>300ms</td><td>Revenue-critical, users waiting</td></tr>
+<tr><td>Search</td><td>200ms</td><td>User experience, interactive</td></tr>
+<tr><td>Admin Panel</td><td>2000ms</td><td>Internal tool, less critical</td></tr>
+<tr><td>Batch Jobs</td><td>30000ms</td><td>Background, no users waiting</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="4-review-and-adjust-slos-quarterly"><a class="header" href="#4-review-and-adjust-slos-quarterly">4. Review and Adjust SLOs Quarterly</a></h3>
+<ul>
+<li>Analyze false positive rate</li>
+<li>Check if SLOs match user complaints</li>
+<li>Tighten SLOs as systems improve</li>
+</ul>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further Reading</a></h2>
 <ul>
 <li><a href="./latency.html">Latency Evaluation</a> - Response time SLO checking</li>
 <li><a href="./error-rate.html">Error Rate Evaluation</a> - Error percentage SLO checking</li>

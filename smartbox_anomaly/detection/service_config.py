@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from smartbox_anomaly.core.config import DEFAULT_PERIOD_CONTAMINATION_MULTIPLIERS
 from smartbox_anomaly.core.logging import get_logger
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ class ServiceParameters:
 # Known service configurations
 KNOWN_SERVICE_PARAMS: dict[str, dict[str, Any]] = {
     # High-traffic, critical services
-    "booking": {"base_contamination": 0.02, "complexity": "high", "category": "critical"},
+    "booking": {"base_contamination": 0.04, "complexity": "high", "category": "critical"},
     "search": {"base_contamination": 0.04, "complexity": "high", "category": "critical"},
     "mobile-api": {"base_contamination": 0.03, "complexity": "high", "category": "critical"},
     "shire-api": {"base_contamination": 0.03, "complexity": "high", "category": "critical"},
@@ -116,6 +117,7 @@ def get_service_parameters(
     data: pd.DataFrame | None = None,
     auto_tune: bool = True,
     estimated_contamination: float | None = None,
+    period: str | None = None,
 ) -> ServiceParameters:
     """Get optimal parameters for a service.
 
@@ -126,6 +128,9 @@ def get_service_parameters(
         estimated_contamination: Optional data-driven contamination estimate from
                                 knee/gap detection. If provided, this takes precedence
                                 over variability-based adjustments.
+        period: Optional time period name (e.g., "business_hours", "night_hours").
+               When provided, contamination is multiplied by period-specific factor
+               to account for higher variance during low-traffic periods.
 
     Returns:
         ServiceParameters with optimal configuration.
@@ -197,6 +202,19 @@ def get_service_parameters(
         max_samples = "auto"
         bootstrap = False
 
+    # Apply period-specific contamination multiplier for low-traffic periods
+    # This reduces false positives during night/weekend when variance is naturally higher
+    if period is not None:
+        period_multiplier = DEFAULT_PERIOD_CONTAMINATION_MULTIPLIERS.get(period, 1.0)
+        if period_multiplier != 1.0:
+            original_contamination = contamination
+            contamination = min(0.25, contamination * period_multiplier)  # Cap at 25%
+            adjustment_reason = f"{adjustment_reason}, period={period} (x{period_multiplier:.1f})"
+            logger.debug(
+                f"{service_name}: Period {period} multiplier {period_multiplier:.1f}x "
+                f"adjusted contamination {original_contamination:.3f} → {contamination:.3f}"
+            )
+
     return ServiceParameters(
         base_contamination=round(contamination, 3),
         complexity=complexity,
@@ -232,6 +250,10 @@ def _calculate_n_estimators(complexity: Complexity, data_size: int) -> int:
 def get_validation_thresholds(service_name: str) -> dict[str, float]:
     """Get service-specific validation thresholds for time periods.
 
+    Uses 3 time-of-day buckets (all 7 days combined). This provides more
+    training data per period, leading to more stable models and more
+    meaningful validation thresholds.
+
     Args:
         service_name: Name of the service.
 
@@ -240,36 +262,50 @@ def get_validation_thresholds(service_name: str) -> dict[str, float]:
     """
     service_lower = service_name.lower()
 
+    # With 3-period model (all 7 days combined), we can use stricter thresholds
+    # since we have more training data per period
     if any(p in service_lower for p in ["booking", "search", "mobile-api", "shire-api"]):
+        # Critical services: strictest thresholds
         return {
-            "business_hours": 0.12, "night_hours": 0.08, "evening_hours": 0.15,
-            "weekend_day": 0.20, "weekend_night": 0.25
+            "business_hours": 0.20,
+            "evening_hours": 0.25,
+            "night_hours": 0.35,
         }
     elif any(p in service_lower for p in ["adm", "admin", "management"]):
+        # Admin services: moderate thresholds
         return {
-            "business_hours": 0.20, "night_hours": 0.15, "evening_hours": 0.22,
-            "weekend_day": 0.30, "weekend_night": 0.35
+            "business_hours": 0.25,
+            "evening_hours": 0.30,
+            "night_hours": 0.40,
         }
     elif any(p in service_lower for p in ["fa5", "micro", "internal", "util", "worker", "job", "task"]):
+        # Micro/worker services: most lenient due to naturally high variance
         return {
-            "business_hours": 0.25, "night_hours": 0.30, "evening_hours": 0.28,
-            "weekend_day": 0.35, "weekend_night": 0.40
+            "business_hours": 0.30,
+            "evening_hours": 0.40,
+            "night_hours": 0.50,
         }
     elif any(p in service_lower for p in ["m2-", "core", "platform"]):
+        # Core platform services: balanced thresholds
         return {
-            "business_hours": 0.15, "night_hours": 0.10, "evening_hours": 0.18,
-            "weekend_day": 0.25, "weekend_night": 0.28
+            "business_hours": 0.22,
+            "evening_hours": 0.28,
+            "night_hours": 0.38,
         }
     else:
         # Default thresholds
         return {
-            "business_hours": 0.18, "night_hours": 0.12, "evening_hours": 0.20,
-            "weekend_day": 0.28, "weekend_night": 0.32
+            "business_hours": 0.22,
+            "evening_hours": 0.28,
+            "night_hours": 0.40,
         }
 
 
 def get_min_samples_for_period(service_name: str, period: str) -> int:
     """Get minimum training samples required for a time period.
+
+    With 3-period model (all 7 days combined), we have more data per period,
+    so we can use consistent minimum requirements across all periods.
 
     Args:
         service_name: Name of the service.
@@ -290,8 +326,6 @@ def get_min_samples_for_period(service_name: str, period: str) -> int:
     else:
         service_type = "standard"
 
-    # Weekend periods need fewer samples
-    if period.startswith("weekend_"):
-        return {"micro": 50, "admin": 75, "critical": 100, "standard": 100}.get(service_type, 100)
-    else:
-        return {"micro": 100, "admin": 150, "critical": 200, "standard": 200}.get(service_type, 200)
+    # With 3-period model, all periods have similar data volume
+    # Night hours may have slightly less data but still sufficient
+    return {"micro": 100, "admin": 150, "critical": 200, "standard": 200}.get(service_type, 200)

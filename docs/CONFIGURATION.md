@@ -158,7 +158,7 @@ Settings for the model training pipeline.
 ```json
 {
   "training": {
-    "lookback_days": 30,
+    "lookback_days": 60,
     "min_data_points": 2000,
     "validation_fraction": 0.2,
     "contamination_estimation": {
@@ -179,6 +179,20 @@ Settings for the model training pipeline.
       "enabled": false,
       "z_score_warning": 3,
       "z_score_critical": 5
+    },
+    "excluded_periods": [
+      {
+        "start": "2025-12-20",
+        "end": "2026-01-05",
+        "reason": "christmas_new_year_holiday",
+        "model_variant": "holiday"
+      }
+    ],
+    "model_variants": {
+      "train_baseline": true,
+      "train_holiday": true,
+      "min_excluded_days_for_variant": 7,
+      "holiday_data_weight": 0.3
     }
   }
 }
@@ -186,7 +200,7 @@ Settings for the model training pipeline.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `lookback_days` | int | 30 | Days of historical data for training |
+| `lookback_days` | int | 60 | Days of historical data for training |
 | `min_data_points` | int | 2000 | Minimum data points required |
 | `validation_fraction` | float | 0.2 | Fraction of data for validation (temporal split) |
 | `contamination_estimation.method` | string | `knee` | Method for estimating contamination (`knee` or `gap`) |
@@ -197,10 +211,60 @@ Settings for the model training pipeline.
 | `drift_detection.enabled` | bool | false | Enable drift baseline computation at training |
 | `drift_detection.z_score_warning` | float | 3 | Z-score threshold for drift warning |
 | `drift_detection.z_score_critical` | float | 5 | Z-score threshold for critical drift |
+| `excluded_periods` | array | `[]` | Periods to exclude from baseline training (holidays, special events) |
+| `model_variants.train_baseline` | bool | true | Train baseline models (excludes excluded_periods data) |
+| `model_variants.train_holiday` | bool | true | Train holiday variant models (uses excluded_periods data only) |
+| `model_variants.min_excluded_days_for_variant` | int | 7 | Minimum days of excluded period data needed to train variant |
+| `model_variants.holiday_data_weight` | float | 0.3 | Weight for holiday data if combined training is used |
 
 **Validation Fraction**: The temporal train/validation split ensures no future data leakage. The last 20% of data (chronologically) is used for threshold calibration.
 
 **Contamination Estimation**: When enabled, the system automatically estimates optimal contamination from the data distribution using the knee detection method.
+
+#### Dual-Model Architecture (Excluded Periods)
+
+The training pipeline supports a dual-model architecture for handling seasonal/holiday traffic patterns that differ significantly from normal operations.
+
+**How it works:**
+1. **Baseline models**: Trained on data from normal operating periods (excluding `excluded_periods`)
+2. **Holiday variant models**: Trained on data from excluded periods only (e.g., Christmas)
+3. **Model selection at inference**: The appropriate model variant is selected based on the current timestamp
+
+**Excluded Period Configuration:**
+
+```json
+{
+  "excluded_periods": [
+    {
+      "start": "2025-12-20",
+      "end": "2026-01-05",
+      "reason": "christmas_new_year_holiday",
+      "model_variant": "holiday"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `start` | string | Start date in YYYY-MM-DD format |
+| `end` | string | End date in YYYY-MM-DD format (inclusive) |
+| `reason` | string | Human-readable reason for exclusion |
+| `model_variant` | string | Variant name (currently only `"holiday"` supported) |
+
+**Model Storage:**
+- Baseline models: `./smartbox_models/<service>/<period>/`
+- Holiday variants: `./smartbox_models/_holiday_variant/<service>/<period>/`
+
+**When to use dual-model architecture:**
+- Holiday periods with atypical traffic patterns (Christmas, Black Friday)
+- Planned maintenance windows
+- Known seasonal events affecting traffic
+
+**Benefits:**
+- Prevents false positives during holiday periods from models trained on normal data
+- Enables proper anomaly detection during holidays using holiday-specific baselines
+- Automatic model variant selection based on current date
 
 ### Inference Configuration (`inference`)
 
@@ -225,6 +289,93 @@ Settings for the inference pipeline execution.
 | `check_drift` | bool | false | Enable drift detection at inference time |
 
 **Drift Detection**: When `check_drift` is enabled, each inference run compares current metrics against training baselines. If significant drift is detected, confidence scores are reduced and a `drift_warning` is included in the output.
+
+### Alerting Configuration (`alerting`)
+
+Controls which anomalies are sent to the web API and how multiple anomalies are correlated.
+
+```json
+{
+  "alerting": {
+    "severity_threshold": "medium",
+    "log_below_threshold": true,
+    "below_threshold_log_level": "INFO",
+    "non_alerting_patterns": ["request_rate_surge_healthy"],
+    "correlation": {
+      "enabled": false,
+      "window_seconds": 300,
+      "primary_selection": "highest_confidence",
+      "min_anomalies_to_correlate": 2
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `severity_threshold` | string | `low` | Minimum severity for API alerts: `low`, `medium`, `high`, `critical` |
+| `log_below_threshold` | bool | true | Log anomalies below threshold (for analytics) |
+| `below_threshold_log_level` | string | `INFO` | Log level for below-threshold anomalies |
+| `non_alerting_patterns` | array | `["request_rate_surge_healthy"]` | Pattern names that are never sent to API |
+
+**Severity Threshold Behavior:**
+
+| `severity_threshold` | Alerts Sent to API |
+|----------------------|-------------------|
+| `low` | All anomalies (current default behavior) |
+| `medium` | medium, high, critical only |
+| `high` | high, critical only |
+| `critical` | critical only |
+
+Anomalies below the threshold are still logged (if `log_below_threshold` is true) for analytics and debugging, but don't create incidents in the web API.
+
+**Non-Alerting Patterns:**
+
+Some patterns represent healthy behavior that shouldn't generate alerts. For example, `request_rate_surge_healthy` indicates the service is successfully handling increased traffic - this should be logged for visibility but not create an alert.
+
+#### Alert Correlation (`alerting.correlation`)
+
+When enabled, multiple anomalies for the same service are grouped into a single correlated alert. This reduces alert noise when a single root cause manifests as multiple anomaly types.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | false | Enable alert correlation |
+| `window_seconds` | int | 300 | Time window for correlation (seconds) |
+| `primary_selection` | string | `highest_confidence` | Strategy for selecting primary anomaly |
+| `min_anomalies_to_correlate` | int | 2 | Minimum anomalies required to trigger correlation |
+
+**Primary Selection Strategies:**
+
+| Strategy | Description |
+|----------|-------------|
+| `highest_confidence` | Select anomaly with highest confidence score (default) |
+| `highest_severity` | Select anomaly with highest severity level |
+| `named_pattern_first` | Prefer named patterns over generic ML detections |
+
+**Example - Before Correlation:**
+```
+booking service:
+  → latency_spike_recent (high, confidence: 0.85)
+  → database_degradation (medium, confidence: 0.72)
+  → application_latency_high (medium, confidence: 0.65)
+Result: 3 separate alerts
+```
+
+**Example - After Correlation:**
+```
+booking service:
+  → latency_spike_recent (primary)
+    - correlation_id: corr_abc123def456
+    - contributing: [database_degradation, application_latency_high]
+    - anomaly_count: 3
+Result: 1 correlated alert with context
+```
+
+**When to Enable Correlation:**
+
+- **Enable** when you see multiple related alerts for the same incident
+- **Disable** (default) when you want full visibility into all detected anomalies
+- Start with correlation disabled, then enable after observing alert patterns
 
 ### Fingerprinting Configuration (`fingerprinting`)
 

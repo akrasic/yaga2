@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "ayu";
-            window.path_to_searchindex_js = "../searchindex-25c2ddb6.js";
+            window.path_to_searchindex_js = "../searchindex-5019ba8d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e4c30426.js"></script>
@@ -181,40 +181,188 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
-<p>Common issues and solutions for the anomaly detection system.</p>
+<p>This guide helps you diagnose and resolve common issues with the anomaly detection system. Each section follows a systematic approach: identify symptoms, understand root causes, and apply targeted solutions.</p>
+<h2 id="how-to-use-this-guide"><a class="header" href="#how-to-use-this-guide">How to Use This Guide</a></h2>
+<p>When troubleshooting:</p>
+<ol>
+<li><strong>Identify the symptom</strong> - What behavior are you observing?</li>
+<li><strong>Gather evidence</strong> - Collect relevant logs and configuration</li>
+<li><strong>Understand the cause</strong> - Why is this happening?</li>
+<li><strong>Apply the fix</strong> - Make targeted changes</li>
+<li><strong>Verify the solution</strong> - Confirm the issue is resolved</li>
+</ol>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                   TROUBLESHOOTING WORKFLOW                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│    Symptom                                                      │
+│       │                                                         │
+│       ▼                                                         │
+│    Which category?                                              │
+│       │                                                         │
+│       ├──▶ Detection Issues (no alerts, false positives)        │
+│       ├──▶ Incident Lifecycle (confirmation, resolution)        │
+│       ├──▶ Metrics Issues (unavailable, validation)             │
+│       ├──▶ SLO Issues (evaluation, thresholds)                  │
+│       ├──▶ Training Issues (failures, drift)                    │
+│       └──▶ Container Issues (restarts, resources)               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<hr>
 <h2 id="detection-issues"><a class="header" href="#detection-issues">Detection Issues</a></h2>
 <h3 id="no-anomalies-detected-when-expected"><a class="header" href="#no-anomalies-detected-when-expected">No Anomalies Detected (When Expected)</a></h3>
-<p><strong>Symptoms</strong>: Real incidents but no alerts.</p>
-<p><strong>Checks</strong>:</p>
-<pre><code class="language-bash"># Verify models exist
+<p><strong>Symptoms</strong>:</p>
+<ul>
+<li>Real incidents are occurring but the system generates no alerts</li>
+<li>Dashboards show problems but Yaga2 reports <code>alert_type: "no_anomaly"</code></li>
+<li>Users report issues but your alerting is silent</li>
+</ul>
+<p><strong>Why This Happens</strong>:</p>
+<p>The detection pipeline has multiple stages where anomalies can be “filtered out”:</p>
+<pre><code>Metrics Collection → ML Detection → Pattern Matching → SLO Evaluation → Alerting
+        │                 │                │                 │
+        │                 │                │                 │
+     No data?         No model?      No pattern?      SLO suppressed?
+     (fail here)      (fail here)    (no match)       (low severity)
+</code></pre>
+<p><strong>Diagnostic Decision Tree</strong>:</p>
+<pre><code>No alerts generated?
+        │
+        ├─▶ Are metrics being collected?
+        │       │
+        │       ├─ NO ──▶ Check VictoriaMetrics connectivity
+        │       │         (See: metrics_unavailable section)
+        │       │
+        │       └─ YES ─▶ Do models exist for this service?
+        │                       │
+        │                       ├─ NO ──▶ Train models
+        │                       │
+        │                       └─ YES ─▶ Is the service in config?
+        │                                       │
+        │                                       ├─ NO ──▶ Add to config
+        │                                       │
+        │                                       └─ YES ─▶ Check contamination
+        │                                                 and SLO settings
+</code></pre>
+<p><strong>Step 1: Verify models exist</strong>:</p>
+<pre><code class="language-bash"># Check if models directory exists for your service
 ls -la smartbox_models/&lt;service-name&gt;/
 
-# Check inference logs
-docker compose exec yaga tail -20 /app/logs/inference.log
+# Expected output shows time period subdirectories:
+# drwxr-xr-x  business_hours/
+# drwxr-xr-x  evening_hours/
+# drwxr-xr-x  night_hours/
+# drwxr-xr-x  weekend_day/
+# drwxr-xr-x  weekend_night/
+</code></pre>
+<p>If no models exist, train them:</p>
+<pre><code class="language-bash">docker compose run --rm yaga train
+</code></pre>
+<p><strong>Step 2: Check inference logs</strong>:</p>
+<pre><code class="language-bash"># View recent inference activity
+docker compose exec yaga tail -50 /app/logs/inference.log
 
-# Run verbose inference
+# Look for your service
+docker compose exec yaga grep "&lt;service-name&gt;" /app/logs/inference.log | tail -20
+</code></pre>
+<p><strong>Step 3: Run verbose inference</strong>:</p>
+<pre><code class="language-bash"># This shows detailed detection output
 docker compose run --rm yaga inference --verbose
 </code></pre>
-<p><strong>Common Causes</strong>:</p>
+<p>Look for output like:</p>
+<pre><code>Service: booking
+  Time period: business_hours
+  Metrics collected: ✓
+  ML detection: No anomalies (all scores normal)
+  Pattern matching: No patterns matched
+  Result: alert_type = no_anomaly
+</code></pre>
+<p><strong>Common Causes and Solutions</strong>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Cause</th><th>Solution</th></tr>
+<tr><th>Cause</th><th>How to Identify</th><th>Solution</th></tr>
 </thead>
 <tbody>
-<tr><td>No trained model</td><td>Run <code>docker compose run --rm yaga train</code></td></tr>
-<tr><td>Service not in config</td><td>Add to <code>services</code> section</td></tr>
-<tr><td>Contamination too high</td><td>Lower contamination for service</td></tr>
-<tr><td>Model stale</td><td>Retrain with fresh data</td></tr>
+<tr><td>No trained model</td><td><code>ls smartbox_models/&lt;service&gt;/</code> is empty</td><td>Run <code>docker compose run --rm yaga train</code></td></tr>
+<tr><td>Service not in config</td><td>Service not listed in <code>config.json</code></td><td>Add to appropriate <code>services</code> category</td></tr>
+<tr><td>Contamination too high</td><td>Model trained with high contamination (e.g., 0.10)</td><td>Lower to 0.03-0.05 and retrain</td></tr>
+<tr><td>Model stale</td><td>Model trained on old data; current behavior differs</td><td>Retrain with recent data</td></tr>
+<tr><td>Wrong time period</td><td>Checking business_hours during night</td><td>Verify timezone configuration</td></tr>
+<tr><td>SLO suppression</td><td>Anomaly detected but SLO says “ok”</td><td>Check SLO thresholds (may be too lenient)</td></tr>
 </tbody>
 </table>
 </div>
+<p><strong>Example Investigation</strong>:</p>
+<pre><code>Scenario: booking service had a 5-minute outage but no alert was generated
+
+Step 1: Check models
+$ ls smartbox_models/booking/
+business_hours/  evening_hours/  night_hours/  weekend_day/  weekend_night/
+✓ Models exist
+
+Step 2: Check if service is in config
+$ grep -A5 '"services"' config.json
+"services": {
+  "critical": ["booking", "search"],
+  ...
+}
+✓ Service is configured
+
+Step 3: Run verbose inference during the issue
+$ docker compose run --rm yaga inference --verbose
+...
+booking: ML detected anomaly (score: -0.45, severity: high)
+booking: SLO evaluation: latency 250ms &lt; 500ms acceptable → status: ok
+booking: Severity adjusted: high → low (SLO status ok)
+...
+
+Diagnosis: SLO threshold too lenient (500ms acceptable)
+Fix: Lower latency_acceptable_ms to 200ms
+</code></pre>
+<hr>
 <h3 id="too-many-false-positives"><a class="header" href="#too-many-false-positives">Too Many False Positives</a></h3>
-<p><strong>Symptoms</strong>: Alerts for normal behavior.</p>
-<p><strong>Solutions</strong>:</p>
-<ol>
-<li><strong>Increase contamination</strong>:</li>
-</ol>
+<p><strong>Symptoms</strong>:</p>
+<ul>
+<li>Alerts fire during normal operation</li>
+<li>Team ignores alerts due to noise (alert fatigue)</li>
+<li>Anomalies detected don’t correlate with real problems</li>
+</ul>
+<p><strong>Understanding False Positives</strong>:</p>
+<p>False positives occur when the ML model flags behavior as “anomalous” when it’s actually normal. This happens because:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    WHY FALSE POSITIVES HAPPEN                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Contamination Too Low                                       │
+│     ┌──────────────────────────────────┐                       │
+│     │ Training data distribution       │                       │
+│     │                                  │                       │
+│     │         ●●●●●●                   │                       │
+│     │        ●●●●●●●●                  │                       │
+│     │       ●●●●●●●●●●   ← Model       │                       │
+│     │        ●●●●●●●●      learns      │                       │
+│     │         ●●●●●●       "normal"    │                       │
+│     │           ▲                      │                       │
+│     │     If contamination=0.02,      │                       │
+│     │     only top 2% flagged         │                       │
+│     └──────────────────────────────────┘                       │
+│     → Normal variance at edges gets flagged                    │
+│                                                                 │
+│  2. Seasonality Not Captured                                    │
+│     Model trained during quiet period, now in busy season       │
+│                                                                 │
+│  3. Recent Behavior Change                                      │
+│     Deployment changed baseline, model is stale                 │
+│                                                                 │
+│  4. Time Period Mismatch                                        │
+│     Night traffic patterns flagged by business_hours model      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Solution 1: Increase contamination rate</strong></p>
+<p>The contamination rate tells the model what percentage of training data to consider “anomalous”. Higher values = less sensitive detection.</p>
 <pre><code class="language-json">{
   "model": {
     "contamination_by_service": {
@@ -223,9 +371,20 @@ docker compose run --rm yaga inference --verbose
   }
 }
 </code></pre>
-<ol start="2">
-<li><strong>Adjust SLO thresholds</strong>:</li>
-</ol>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Contamination</th><th>Sensitivity</th><th>Best For</th></tr>
+</thead>
+<tbody>
+<tr><td>0.02-0.03</td><td>Very high</td><td>Critical services where every alert matters</td></tr>
+<tr><td>0.05</td><td>Balanced</td><td>Most production services</td></tr>
+<tr><td>0.08-0.10</td><td>Lower</td><td>Noisy services, variable traffic</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Solution 2: Adjust SLO thresholds</strong></p>
+<p>SLO evaluation can suppress anomalies that don’t have operational impact:</p>
 <pre><code class="language-json">{
   "slos": {
     "services": {
@@ -237,117 +396,482 @@ docker compose run --rm yaga inference --verbose
   }
 }
 </code></pre>
-<ol start="3">
-<li><strong>Retrain models</strong> after configuration change.</li>
-</ol>
+<p>This tells the system: “Even if ML detects an anomaly, don’t alert unless latency exceeds 600ms or error rate exceeds 0.5%.”</p>
+<p><strong>Solution 3: Retrain models</strong></p>
+<p>After changing configuration, always retrain:</p>
+<pre><code class="language-bash">docker compose run --rm yaga train
+</code></pre>
+<p><strong>Measuring Improvement</strong>:</p>
+<p>Track your false positive rate before and after changes:</p>
+<pre><code>Before tuning:
+  Total alerts (7 days): 145
+  Actionable: 12 (8%)
+  False positives: 133 (92%)
+
+After increasing contamination 0.03 → 0.06:
+  Total alerts (7 days): 34
+  Actionable: 11 (32%)
+  False positives: 23 (68%)
+
+After adjusting SLO thresholds:
+  Total alerts (7 days): 18
+  Actionable: 10 (56%)
+  False positives: 8 (44%)
+</code></pre>
+<hr>
 <h3 id="alerts-always-low-severity"><a class="header" href="#alerts-always-low-severity">Alerts Always Low Severity</a></h3>
-<p><strong>Symptom</strong>: All alerts show <code>severity: low</code>.</p>
-<p><strong>Cause</strong>: SLO status is <code>ok</code> for all anomalies.</p>
-<p><strong>Check</strong>: Review SLO thresholds - they may be too lenient.</p>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li>All alerts show <code>severity: low</code></li>
+<li>Never see <code>high</code> or <code>critical</code> alerts</li>
+<li>Real incidents don’t escalate properly</li>
+</ul>
+<p><strong>Understanding Severity Flow</strong>:</p>
+<pre><code>ML Detection (original severity)
+        │
+        ▼
+SLO Evaluation
+        │
+        ├─ SLO breached ──▶ Keep/Escalate to CRITICAL
+        │
+        ├─ SLO warning ───▶ Keep HIGH
+        │
+        └─ SLO ok ────────▶ Downgrade to LOW
+</code></pre>
+<p>When SLO status is <code>ok</code> (all metrics within acceptable thresholds), severity is <strong>always</strong> downgraded to <code>low</code>. This is intentional—if metrics are operationally acceptable, the alert shouldn’t be high priority.</p>
+<p><strong>The Problem</strong>:</p>
+<p>If your SLO thresholds are too lenient, anomalies will never breach them:</p>
+<pre><code>Example: Latency threshold too high
+
+Current latency: 450ms (genuinely slow for this service)
+SLO acceptable: 500ms (too lenient)
+SLO status: "ok" (450 &lt; 500)
+Result: severity = low (even though users are impacted)
+</code></pre>
+<p><strong>Solution: Tighten SLO thresholds</strong></p>
+<p>Review and lower your acceptable thresholds:</p>
 <pre><code class="language-json">{
   "slos": {
     "services": {
       "booking": {
-        "latency_acceptable_ms": 200,  // Was 500
-        "latency_critical_ms": 400     // Was 1000
+        "latency_acceptable_ms": 200,
+        "latency_warning_ms": 300,
+        "latency_critical_ms": 400,
+        "error_rate_acceptable": 0.002,
+        "error_rate_warning": 0.005,
+        "error_rate_critical": 0.01
       }
     }
   }
 }
 </code></pre>
-<h2 id="incident-lifecycle-issues"><a class="header" href="#incident-lifecycle-issues">Incident Lifecycle Issues</a></h2>
-<h3 id="alerts-not-being-sent"><a class="header" href="#alerts-not-being-sent">Alerts Not Being Sent</a></h3>
-<p><strong>Symptom</strong>: Anomalies detected but no alerts reach web API.</p>
-<p><strong>Possible Causes</strong>:</p>
+<p><strong>Before vs After</strong>:</p>
+<pre><code>BEFORE (lenient thresholds):
+  Latency acceptable: 500ms
+  Current latency: 350ms
+  SLO status: ok (350 &lt; 500)
+  ML severity: high → Adjusted: low
+
+AFTER (tightened thresholds):
+  Latency acceptable: 200ms
+  Current latency: 350ms
+  SLO status: warning (350 &gt; 200, &lt; 400)
+  ML severity: high → Adjusted: high (kept)
+</code></pre>
+<p><strong>Finding the Right Thresholds</strong>:</p>
 <ol>
 <li>
-<p><strong>Still in SUSPECTED state</strong> (not confirmed):</p>
+<p>Look at your historical latency distribution:</p>
+<pre><code class="language-bash"># In VictoriaMetrics, query p50, p90, p99 for your service
+</code></pre>
+</li>
+<li>
+<p>Set thresholds based on percentiles:</p>
 <ul>
-<li>Wait for 2 consecutive detections</li>
-<li>Check <code>is_confirmed: false</code> in output</li>
+<li><code>acceptable</code>: Around p75 (allows normal variance)</li>
+<li><code>warning</code>: Around p90 (getting concerning)</li>
+<li><code>critical</code>: Around p99 (definitely a problem)</li>
 </ul>
-</li>
-<li>
-<p><strong>Web API unreachable</strong>:</p>
-<pre><code class="language-bash">docker compose exec yaga curl http://observability-api:8000/health
-</code></pre>
-</li>
-<li>
-<p><strong>API disabled in config</strong>:</p>
-<pre><code class="language-json">{
-  "observability_api": {
-    "enabled": true  // Check this
-  }
-}
-</code></pre>
 </li>
 </ol>
-<h3 id="orphaned-incidents-in-web-api"><a class="header" href="#orphaned-incidents-in-web-api">Orphaned Incidents in Web API</a></h3>
-<p><strong>Symptom</strong>: OPEN incidents that never resolve.</p>
-<p><strong>Cause</strong>: SUSPECTED alerts were sent before v1.3.2.</p>
-<p><strong>Solution</strong>: Clean up orphaned incidents manually or wait for next detection cycle.</p>
-<h3 id="incidents-restarting-unexpectedly"><a class="header" href="#incidents-restarting-unexpectedly">Incidents Restarting Unexpectedly</a></h3>
-<p><strong>Symptom</strong>: Same anomaly creates new incident ID.</p>
-<p><strong>Cause</strong>: Time gap exceeded <code>incident_separation_minutes</code>.</p>
-<p><strong>Check</strong>: Look for <code>resolution_reason: "auto_stale"</code> in logs.</p>
-<p><strong>Adjust</strong>:</p>
+<hr>
+<h2 id="incident-lifecycle-issues"><a class="header" href="#incident-lifecycle-issues">Incident Lifecycle Issues</a></h2>
+<h3 id="alerts-not-being-sent"><a class="header" href="#alerts-not-being-sent">Alerts Not Being Sent</a></h3>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li>Verbose output shows anomaly detected</li>
+<li>Web API never receives the alert</li>
+<li>Dashboard shows no incidents</li>
+</ul>
+<p><strong>Understanding Alert Flow</strong>:</p>
+<pre><code>Anomaly Detected
+        │
+        ▼
+Is incident confirmed?
+        │
+        ├─ NO (SUSPECTED) ──▶ NOT sent to web API
+        │                      └─ Wait for next cycle
+        │
+        └─ YES (OPEN) ───────▶ Sent to web API
+                                └─ Dashboard shows alert
+</code></pre>
+<p><strong>Diagnostic Steps</strong>:</p>
+<p><strong>Step 1: Check if anomaly is in SUSPECTED state</strong></p>
+<pre><code class="language-bash">docker compose run --rm yaga inference --verbose
+</code></pre>
+<p>Look for:</p>
+<pre><code>fingerprint_action: CREATE
+status: SUSPECTED
+is_confirmed: false
+cycles_to_confirm: 1
+</code></pre>
+<p>If <code>status: SUSPECTED</code>, the anomaly hasn’t been confirmed yet. Wait for the next detection cycle.</p>
+<p><strong>Step 2: Check web API connectivity</strong></p>
+<pre><code class="language-bash"># Test if web API is reachable
+docker compose exec yaga curl http://observability-api:8000/health
+
+# Expected: {"status": "healthy"}
+</code></pre>
+<p>If this fails, check:</p>
+<ul>
+<li>Is the observability API running?</li>
+<li>Is the network configured correctly?</li>
+<li>Are there firewall rules blocking traffic?</li>
+</ul>
+<p><strong>Step 3: Check if API is enabled</strong></p>
 <pre><code class="language-json">{
-  "fingerprinting": {
-    "incident_separation_minutes": 60  // Was 30
+  "observability_api": {
+    "enabled": true,
+    "base_url": "http://observability-api:8000"
   }
 }
 </code></pre>
-<h2 id="metrics-issues"><a class="header" href="#metrics-issues">Metrics Issues</a></h2>
-<h3 id="metrics_unavailable-alerts"><a class="header" href="#metrics_unavailable-alerts">metrics_unavailable Alerts</a></h3>
-<p><strong>Symptom</strong>: <code>alert_type: "metrics_unavailable"</code> instead of detection.</p>
-<p><strong>Cause</strong>: VictoriaMetrics unreachable.</p>
-<p><strong>Checks</strong>:</p>
-<pre><code class="language-bash"># Test connectivity
-docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
+<p>If <code>enabled: false</code>, alerts won’t be sent.</p>
+<p><strong>Step 4: Check for API errors in logs</strong></p>
+<pre><code class="language-bash">docker compose exec yaga grep -i "api" /app/logs/inference.log | tail -20
 
-# Check circuit breaker
-docker compose exec yaga tail -50 /app/logs/inference.log | grep -i "circuit"
+# Look for:
+# - "API call failed"
+# - "Connection refused"
+# - "Timeout"
+</code></pre>
+<hr>
+<h3 id="orphaned-incidents-in-web-api"><a class="header" href="#orphaned-incidents-in-web-api">Orphaned Incidents in Web API</a></h3>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li>Web API shows OPEN incidents that never resolve</li>
+<li>Incidents stuck in dashboard for days/weeks</li>
+<li><code>consecutive_detections = 1</code> on stuck incidents</li>
+</ul>
+<p><strong>Why This Happens</strong>:</p>
+<p>Before v1.3.2, SUSPECTED incidents were sent to the web API. If they expired without confirmation, no resolution was sent:</p>
+<pre><code>OLD BEHAVIOR (pre-v1.3.2):
+─────────────────────────
+10:00  Anomaly detected → SUSPECTED incident created
+10:00  Alert sent to web API → Web API creates OPEN incident
+10:03  Anomaly not detected → SUSPECTED expires
+10:03  No resolution sent → Web API incident stays OPEN forever!
+
+NEW BEHAVIOR (v1.3.2+):
+───────────────────────
+10:00  Anomaly detected → SUSPECTED incident created
+       (NOT sent to web API - waiting for confirmation)
+10:03  Anomaly not detected → SUSPECTED expires silently
+       Web API never knew about it → No orphan created
+</code></pre>
+<p><strong>Identifying Orphaned Incidents</strong>:</p>
+<p>Query your web API database:</p>
+<pre><code class="language-sql">-- Find orphaned incidents (never confirmed but sent)
+SELECT incident_id, service_name, created_at, consecutive_detections
+FROM incidents
+WHERE status = 'OPEN'
+  AND consecutive_detections = 1
+  AND created_at &lt; NOW() - INTERVAL '24 hours';
 </code></pre>
 <p><strong>Solutions</strong>:</p>
+<ol>
+<li><strong>Manual cleanup</strong>: Close orphaned incidents in the web API</li>
+<li><strong>Wait for upgrade</strong>: v1.3.2+ won’t create new orphans</li>
+<li><strong>Automated cleanup</strong>: Add a job to close incidents older than X days with <code>consecutive_detections = 1</code></li>
+</ol>
+<hr>
+<h3 id="incidents-restarting-unexpectedly"><a class="header" href="#incidents-restarting-unexpectedly">Incidents Restarting Unexpectedly</a></h3>
+<p><strong>Symptom</strong>:</p>
 <ul>
-<li>Fix VM connectivity</li>
-<li>Wait for circuit breaker timeout (5 min default)</li>
-<li>Increase timeout in config</li>
+<li>Same anomaly pattern creates multiple incident IDs</li>
+<li>Incident history shows many short incidents instead of one long one</li>
+<li>Resolution reason shows <code>auto_stale</code></li>
 </ul>
+<p><strong>Understanding Staleness</strong>:</p>
+<p>The system considers an incident “stale” if the time gap since last detection exceeds <code>incident_separation_minutes</code> (default: 30):</p>
+<pre><code>Timeline with 45-minute gap:
+──────────────────────────────────────────────────────────────
+10:00  Anomaly detected → incident_abc created (SUSPECTED)
+10:03  Detected again → incident_abc confirmed (OPEN)
+10:06  Detected again → incident_abc continues
+...
+10:30  Last detection
+       (service recovers but then has a second issue)
+11:15  Anomaly detected → 45 min gap &gt; 30 min threshold
+                        → incident_abc auto-closed (stale)
+                        → incident_xyz created (new incident)
+</code></pre>
+<p><strong>When This Is Correct vs. Problematic</strong>:</p>
+<pre><code>CORRECT (two separate issues):
+──────────────────────────────
+10:00-10:30: Database slow due to query
+11:15-12:00: Database slow due to disk I/O
+
+These ARE two different incidents - staleness helps track them separately.
+
+
+PROBLEMATIC (one issue, intermittent symptoms):
+───────────────────────────────────────────────
+10:00-10:30: Network flaky (detected)
+10:30-11:15: Network stable (not detected)
+11:15-11:45: Network flaky again (same issue)
+
+This is ONE issue but creates multiple incidents.
+</code></pre>
+<p><strong>Solution: Increase separation threshold</strong></p>
+<pre><code class="language-json">{
+  "fingerprinting": {
+    "incident_separation_minutes": 60
+  }
+}
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Threshold</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td>15 min</td><td>Fast-resolving issues, want precise tracking</td></tr>
+<tr><td>30 min</td><td>Default, good balance</td></tr>
+<tr><td>60 min</td><td>Intermittent issues, prefer fewer incidents</td></tr>
+<tr><td>120 min</td><td>Very intermittent, consolidate aggressively</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="metrics-issues"><a class="header" href="#metrics-issues">Metrics Issues</a></h2>
+<h3 id="metrics_unavailable-alerts"><a class="header" href="#metrics_unavailable-alerts">metrics_unavailable Alerts</a></h3>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li><code>alert_type: "metrics_unavailable"</code> instead of detection results</li>
+<li>Detection skipped for some/all services</li>
+<li>Circuit breaker messages in logs</li>
+</ul>
+<p><strong>Understanding This Alert</strong>:</p>
+<p>The system returns <code>metrics_unavailable</code> when it cannot collect metrics reliably. This prevents false alerts—if we can’t read metrics, we shouldn’t guess.</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                  METRICS UNAVAILABLE SCENARIOS                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Scenario 1: VictoriaMetrics Down                              │
+│  ─────────────────────────────────                             │
+│  All metrics fail → All services return metrics_unavailable    │
+│                                                                 │
+│  Scenario 2: Critical Metric Failed                            │
+│  ─────────────────────────────────                             │
+│  request_rate failed → Detection skipped (prevents false       │
+│  "traffic cliff" from 0.0 value)                               │
+│                                                                 │
+│  Scenario 3: Partial Failure (Non-Critical)                    │
+│  ──────────────────────────────────────────                    │
+│  database_latency failed, others OK → Detection runs with      │
+│  warning, partial_metrics_failure in output                    │
+│                                                                 │
+│  Scenario 4: Circuit Breaker Open                              │
+│  ────────────────────────────────                              │
+│  Too many failures → Circuit breaker prevents further calls    │
+│  Wait for timeout (5 min) or fix underlying issue              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<p><strong>Diagnostic Steps</strong>:</p>
+<p><strong>Step 1: Test VictoriaMetrics connectivity</strong></p>
+<pre><code class="language-bash"># From inside the container
+docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
+
+# Expected: JSON with version info
+# If this fails, VM is unreachable
+</code></pre>
+<p><strong>Step 2: Check for circuit breaker</strong></p>
+<pre><code class="language-bash">docker compose exec yaga tail -50 /app/logs/inference.log | grep -i "circuit"
+
+# Look for:
+# "Circuit breaker OPEN - too many failures"
+# "Circuit breaker will reset in X seconds"
+</code></pre>
+<p><strong>Step 3: Check which metrics failed</strong></p>
+<p>Look at the output:</p>
+<pre><code class="language-json">{
+  "alert_type": "metrics_unavailable",
+  "failed_metrics": ["request_rate", "application_latency"],
+  "collection_errors": {
+    "request_rate": "Connection timeout after 10s",
+    "application_latency": "Connection timeout after 10s"
+  }
+}
+</code></pre>
+<p><strong>Solutions</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Problem</th><th>Solution</th></tr>
+</thead>
+<tbody>
+<tr><td>VM down</td><td>Restart VictoriaMetrics, check VM health</td></tr>
+<tr><td>Network issue</td><td>Check firewall, DNS, routing</td></tr>
+<tr><td>Circuit breaker open</td><td>Wait 5 minutes or fix underlying issue</td></tr>
+<tr><td>Timeout</td><td>Increase <code>timeout_seconds</code> in config</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Circuit Breaker Behavior</strong>:</p>
+<pre><code>Normal Operation:
+  Requests succeed → Circuit CLOSED
+
+5 consecutive failures:
+  Circuit OPENS → All requests fail fast (no retry)
+
+After 5 minutes (configurable):
+  Circuit HALF-OPEN → One request allowed
+
+  If succeeds → Circuit CLOSES
+  If fails → Circuit stays OPEN for another timeout
+</code></pre>
+<hr>
 <h3 id="validation-warnings"><a class="header" href="#validation-warnings">Validation Warnings</a></h3>
-<p><strong>Symptom</strong>: <code>validation_warnings</code> in output.</p>
-<p><strong>Example</strong>:</p>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li><code>validation_warnings</code> array in output</li>
+<li>Messages like “capping at 1.0” or “using 0.0”</li>
+</ul>
+<p><strong>Understanding Validation</strong>:</p>
+<p>Before metrics are processed, they’re validated at the inference boundary:</p>
+<pre><code>Raw Metric Value
+        │
+        ▼
+   Validation
+        │
+        ├─ NaN/Inf? ──────────▶ Replace with 0.0
+        ├─ Negative rate? ────▶ Cap at 0.0
+        ├─ Error rate &gt; 1.0? ─▶ Cap at 1.0
+        ├─ Latency &gt; 5 min? ──▶ Cap at 300,000ms
+        └─ Request rate &gt; 1M? ▶ Cap at 1,000,000
+        │
+        ▼
+   Sanitized Value (used for detection)
+   + Warning (logged for investigation)
+</code></pre>
+<p><strong>Example Warnings</strong>:</p>
 <pre><code class="language-json">{
   "validation_warnings": [
-    "error_rate: value 1.5 &gt; 1.0, capping at 1.0"
+    "error_rate: value 1.5 &gt; 1.0, capping at 1.0",
+    "application_latency: negative value -50, using 0.0",
+    "request_rate: NaN detected, using 0.0"
   ]
 }
 </code></pre>
-<p><strong>Cause</strong>: Upstream data quality issue.</p>
-<p><strong>Action</strong>: Investigate metric source. Detection still runs with sanitized values.</p>
+<p><strong>Why This Happens</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Warning</th><th>Likely Cause</th><th>Investigation</th></tr>
+</thead>
+<tbody>
+<tr><td>Error rate &gt; 1.0</td><td>Metric miscalculation upstream</td><td>Check error rate query definition</td></tr>
+<tr><td>Negative latency</td><td>Clock skew or calculation bug</td><td>Check latency metric source</td></tr>
+<tr><td>NaN/Inf</td><td>Division by zero, no data</td><td>Check if service was down</td></tr>
+<tr><td>Extreme values</td><td>Metric spike or bug</td><td>Verify in VictoriaMetrics UI</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Action Required</strong>:</p>
+<p>Validation warnings are <strong>informational</strong>. Detection still runs with sanitized values. However, frequent warnings indicate upstream data quality issues that should be investigated.</p>
+<pre><code class="language-bash"># Track warning frequency
+docker compose exec yaga grep "validation_warnings" /app/logs/inference.log | wc -l
+</code></pre>
+<hr>
 <h2 id="slo-issues"><a class="header" href="#slo-issues">SLO Issues</a></h2>
 <h3 id="slo-evaluation-failed"><a class="header" href="#slo-evaluation-failed">SLO Evaluation Failed</a></h3>
-<p><strong>Symptom</strong>: Warning in logs about SLO evaluation.</p>
-<p><strong>Check</strong>: Ensure SLOEvaluator has correct method calls:</p>
-<pre><code class="language-python"># Correct
-slo_evaluator.evaluate_metrics(current_metrics, service_name)
-
-# Incorrect
-slo_evaluator.evaluate(...)  # Method doesn't exist
-</code></pre>
-<h3 id="database-latency-always-ok"><a class="header" href="#database-latency-always-ok">Database Latency Always OK</a></h3>
-<p><strong>Symptom</strong>: DB latency anomalies show <code>status: "ok"</code>.</p>
-<p><strong>Cause</strong>: Values below noise floor.</p>
-<p><strong>Check</strong>: Current value vs floor:</p>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li>Warning in logs about SLO evaluation</li>
+<li>Anomalies not being severity-adjusted</li>
+<li>Missing <code>slo_evaluation</code> in output</li>
+</ul>
+<p><strong>Common Causes</strong>:</p>
+<p><strong>1. SLO not enabled</strong></p>
 <pre><code class="language-json">{
-  "database_latency_evaluation": {
-    "value_ms": 2.0,
-    "floor_ms": 5.0,
-    "below_floor": true  // ← This is why
+  "slos": {
+    "enabled": false
   }
 }
 </code></pre>
-<p><strong>Adjust</strong>: Lower floor if needed:</p>
+<p>Set to <code>true</code> to enable SLO evaluation.</p>
+<p><strong>2. Service not configured</strong></p>
+<p>If a service isn’t in the SLO config, it uses defaults:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "booking": {
+        "latency_acceptable_ms": 300
+      }
+    }
+  }
+}
+</code></pre>
+<p>Services not listed use values from <code>slos.defaults</code>.</p>
+<p><strong>3. Missing training statistics</strong></p>
+<p>SLO evaluation for database latency requires training baseline. If the model doesn’t have statistics, evaluation is skipped.</p>
+<pre><code class="language-bash"># Check if training statistics exist
+docker compose exec yaga cat smartbox_models/&lt;service&gt;/business_hours/metadata.json | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('statistics', {}))"
+</code></pre>
+<hr>
+<h3 id="database-latency-always-ok"><a class="header" href="#database-latency-always-ok">Database Latency Always OK</a></h3>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li>ML detects database latency anomaly</li>
+<li>But <code>database_latency_evaluation.status: "ok"</code></li>
+<li>Even when database is clearly slow</li>
+</ul>
+<p><strong>Understanding the Noise Floor</strong>:</p>
+<p>Database latency uses a hybrid approach:</p>
+<pre><code>Current DB Latency
+        │
+        ▼
+   Below noise floor?
+        │
+        ├─ YES (e.g., 2ms &lt; 5ms floor)
+        │       │
+        │       └─▶ status: "ok" (noise filtered)
+        │
+        └─ NO (above floor)
+                │
+                └─▶ Calculate ratio to baseline
+                        │
+                        └─▶ Ratio-based status
+</code></pre>
+<p><strong>Why This Design</strong>:</p>
+<p>For services with very fast databases (sub-millisecond), small absolute changes are operationally meaningless:</p>
+<pre><code>Without noise floor:
+  Baseline: 0.3ms
+  Current: 0.6ms
+  Ratio: 2.0x → status: "warning"
+
+  But 0.6ms is still FAST! This alert is noise.
+
+With noise floor (5ms):
+  Current: 0.6ms &lt; 5ms floor
+  status: "ok" (filtered)
+
+  Operationally correct - 0.6ms is fine.
+</code></pre>
+<p><strong>Adjusting the Floor</strong>:</p>
+<p>For services with fast databases where you want to detect small changes:</p>
 <pre><code class="language-json">{
   "slos": {
     "services": {
@@ -358,94 +882,470 @@ slo_evaluator.evaluate(...)  # Method doesn't exist
   }
 }
 </code></pre>
+<p>For services with slow databases where 5ms is normal:</p>
+<pre><code class="language-json">{
+  "slos": {
+    "services": {
+      "slow-db-service": {
+        "database_latency_floor_ms": 10.0
+      }
+    }
+  }
+}
+</code></pre>
+<p><strong>Checking Current Configuration</strong>:</p>
+<pre><code class="language-json">{
+  "database_latency_evaluation": {
+    "value_ms": 2.0,
+    "baseline_mean_ms": 1.5,
+    "floor_ms": 5.0,
+    "below_floor": true,
+    "ratio": 0.0,
+    "status": "ok"
+  }
+}
+</code></pre>
+<p>If <code>below_floor: true</code>, the value is being filtered. Lower the floor if needed.</p>
+<hr>
 <h2 id="training-issues"><a class="header" href="#training-issues">Training Issues</a></h2>
 <h3 id="training-fails"><a class="header" href="#training-fails">Training Fails</a></h3>
-<p><strong>Symptoms</strong>: Models not updating.</p>
-<p><strong>Checks</strong>:</p>
-<pre><code class="language-bash"># Check training logs
-docker compose exec yaga cat /app/logs/train.log
-
-# Check VM connectivity
-docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
-
-# Verify disk space
-df -h
+<p><strong>Symptoms</strong>:</p>
+<ul>
+<li>Models not updating (old timestamps)</li>
+<li>Training command exits with error</li>
+<li>No model files created</li>
+</ul>
+<p><strong>Diagnostic Checklist</strong>:</p>
+<pre><code>Training Failed?
+        │
+        ├─▶ 1. Can we reach VictoriaMetrics?
+        │       │
+        │       └─ No → Fix network/VM connectivity
+        │
+        ├─▶ 2. Is there enough historical data?
+        │       │
+        │       └─ &lt; 30 days → Wait for data accumulation
+        │
+        ├─▶ 3. Is there enough disk space?
+        │       │
+        │       └─ Low → Clean old models/logs
+        │
+        ├─▶ 4. Is there enough memory?
+        │       │
+        │       └─ OOM → Increase container memory
+        │
+        └─▶ 5. Is the config valid?
+                │
+                └─ Invalid JSON → Fix syntax
 </code></pre>
-<p><strong>Common Causes</strong>:</p>
+<p><strong>Step 1: Check training logs</strong></p>
+<pre><code class="language-bash">docker compose exec yaga cat /app/logs/train.log
+
+# Look for:
+# - "Training failed for service X"
+# - "Not enough data points"
+# - "Connection refused"
+# - "MemoryError"
+</code></pre>
+<p><strong>Step 2: Check VictoriaMetrics</strong></p>
+<pre><code class="language-bash">docker compose exec yaga curl -s "http://vm:8428/api/v1/status/buildinfo"
+
+# If this fails, VM is unreachable
+</code></pre>
+<p><strong>Step 3: Check disk space</strong></p>
+<pre><code class="language-bash">df -h
+
+# Models typically need 10-50MB per service
+# Ensure at least 1GB free
+</code></pre>
+<p><strong>Step 4: Run training manually</strong></p>
+<pre><code class="language-bash">docker compose run --rm yaga train 2&gt;&amp;1 | tee train_output.log
+
+# This shows real-time output for diagnosis
+</code></pre>
+<p><strong>Common Causes and Solutions</strong>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Cause</th><th>Solution</th></tr>
+<tr><th>Cause</th><th>Symptoms</th><th>Solution</th></tr>
 </thead>
 <tbody>
-<tr><td>VM unreachable</td><td>Check network</td></tr>
-<tr><td>Not enough data</td><td>Need 30 days minimum</td></tr>
-<tr><td>Disk full</td><td>Clean old models/logs</td></tr>
+<tr><td>VM unreachable</td><td>“Connection refused”</td><td>Check network, VM status</td></tr>
+<tr><td>Not enough data</td><td>“Insufficient samples”</td><td>Wait for 30 days of data</td></tr>
+<tr><td>Disk full</td><td>“No space left”</td><td>Clean old models: <code>rm -rf smartbox_models/old-service/</code></td></tr>
+<tr><td>Memory exhausted</td><td>“MemoryError” or OOM killed</td><td>Increase memory limit in docker-compose</td></tr>
+<tr><td>Invalid config</td><td>“JSON decode error”</td><td>Validate config.json syntax</td></tr>
 </tbody>
 </table>
 </div>
+<p><strong>Minimum Data Requirements</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Model Type</th><th>Minimum Samples</th><th>Typical Duration</th></tr>
+</thead>
+<tbody>
+<tr><td>Univariate (per-metric)</td><td>500</td><td>~2 days at 5-min intervals</td></tr>
+<tr><td>Multivariate (combined)</td><td>1000</td><td>~4 days at 5-min intervals</td></tr>
+<tr><td>Full time-period coverage</td><td>8640</td><td>30 days (captures weekly patterns)</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
 <h3 id="model-drift-detected"><a class="header" href="#model-drift-detected">Model Drift Detected</a></h3>
-<p><strong>Symptom</strong>: <code>drift_warning</code> in output.</p>
-<p><strong>Check drift score</strong>:</p>
+<p><strong>Symptom</strong>:</p>
 <ul>
-<li>Score &lt; 3: Normal</li>
-<li>Score 3-5: Monitor, consider retraining</li>
-<li>Score &gt; 5: Retrain soon</li>
+<li><code>drift_warning</code> in inference output</li>
+<li>Confidence scores reduced</li>
+<li>Recommendation to retrain</li>
 </ul>
-<pre><code class="language-bash"># Retrain
-docker compose run --rm yaga train
+<p><strong>Understanding Drift</strong>:</p>
+<p>Model drift occurs when production data differs significantly from training data:</p>
+<pre><code>Training Data (30 days ago)          Current Data
+─────────────────────────            ────────────
+Mean latency: 100ms                  Mean latency: 200ms
+
+Distribution:                        Distribution:
+    ●●●●●                               ●●●●●
+   ●●●●●●●                            ●●●●●●●●●
+  ●●●●●●●●●                            ●●●●●●●●●●●●
+ ●●●●●●●●●●●                              ●●●●●●●●●●●
+    100ms                                    200ms
+
+Model expects ~100ms                 Seeing ~200ms → DRIFT
 </code></pre>
+<p><strong>Drift Score Interpretation</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Score</th><th>Status</th><th>Action</th></tr>
+</thead>
+<tbody>
+<tr><td>&lt; 3</td><td>Normal</td><td>No action needed</td></tr>
+<tr><td>3-5</td><td>Moderate drift</td><td>Monitor, consider retraining</td></tr>
+<tr><td>&gt; 5</td><td>Severe drift</td><td>Retrain soon</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Output Example</strong>:</p>
+<pre><code class="language-json">{
+  "drift_warning": {
+    "type": "model_drift",
+    "overall_drift_score": 4.2,
+    "affected_metrics": ["application_latency", "request_rate"],
+    "recommendation": "WARNING: Moderate drift detected. Consider retraining.",
+    "confidence_penalty_applied": 0.15
+  }
+}
+</code></pre>
+<p><strong>Why Drift Happens</strong>:</p>
+<ol>
+<li><strong>Seasonal changes</strong>: Holiday traffic patterns vs. normal</li>
+<li><strong>Deployments</strong>: New code changed latency characteristics</li>
+<li><strong>Infrastructure</strong>: Migrated to faster/slower hardware</li>
+<li><strong>Business changes</strong>: New features changed usage patterns</li>
+</ol>
+<p><strong>Solution: Retrain</strong></p>
+<pre><code class="language-bash">docker compose run --rm yaga train
+</code></pre>
+<p>This replaces old models with ones trained on recent data.</p>
+<p><strong>Preventing Drift Issues</strong>:</p>
+<ul>
+<li>Schedule regular retraining (daily or weekly)</li>
+<li>Retrain after significant deployments</li>
+<li>Monitor drift scores in dashboards</li>
+</ul>
+<hr>
 <h2 id="container-issues"><a class="header" href="#container-issues">Container Issues</a></h2>
 <h3 id="container-keeps-restarting"><a class="header" href="#container-keeps-restarting">Container Keeps Restarting</a></h3>
-<p><strong>Check exit code</strong>:</p>
+<p><strong>Symptoms</strong>:</p>
+<ul>
+<li><code>docker compose ps</code> shows restart count increasing</li>
+<li>Container never stays “Up” for long</li>
+<li>Application logs show repeated startup/shutdown</li>
+</ul>
+<p><strong>Diagnostic Steps</strong>:</p>
+<p><strong>Step 1: Check exit code</strong></p>
 <pre><code class="language-bash">docker compose ps -a
-docker compose logs --tail 50
+
+# Look for:
+# smartbox-anomaly  Exit 1   (error exit)
+# smartbox-anomaly  Exit 137 (OOM killed)
+# smartbox-anomaly  Exit 0   (clean exit, shouldn't restart)
 </code></pre>
-<p><strong>Common Causes</strong>:</p>
+<p><strong>Step 2: Check recent logs</strong></p>
+<pre><code class="language-bash">docker compose logs --tail 100
+
+# Look for error messages near the end
+</code></pre>
+<p><strong>Step 3: Check container events</strong></p>
+<pre><code class="language-bash">docker events --filter container=smartbox-anomaly --since 1h
+</code></pre>
+<p><strong>Common Exit Codes</strong>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Cause</th><th>Solution</th></tr>
+<tr><th>Exit Code</th><th>Meaning</th><th>Solution</th></tr>
 </thead>
 <tbody>
-<tr><td>Config missing</td><td>Ensure config.json exists</td></tr>
-<tr><td>Invalid JSON</td><td>Validate config syntax</td></tr>
-<tr><td>OOM killed</td><td>Increase memory limit</td></tr>
+<tr><td>0</td><td>Clean exit</td><td>Check restart policy, should be <code>unless-stopped</code></td></tr>
+<tr><td>1</td><td>Application error</td><td>Check logs for error message</td></tr>
+<tr><td>137</td><td>OOM killed</td><td>Increase memory limit</td></tr>
+<tr><td>139</td><td>Segmentation fault</td><td>Report bug, check for corruption</td></tr>
 </tbody>
 </table>
 </div>
+<p><strong>Solution by Cause</strong>:</p>
+<p><strong>Config file missing</strong>:</p>
+<pre><code class="language-bash"># Check if config exists
+ls -la config.json
+
+# If missing, create from template
+cp config.example.json config.json
+</code></pre>
+<p><strong>Invalid JSON in config</strong>:</p>
+<pre><code class="language-bash"># Validate JSON syntax
+python -m json.tool config.json
+
+# If error, fix the syntax issue
+</code></pre>
+<p><strong>OOM killed</strong>:</p>
+<pre><code class="language-yaml"># In docker-compose.yml, increase memory:
+deploy:
+  resources:
+    limits:
+      memory: 4G
+</code></pre>
+<hr>
 <h3 id="database-locked"><a class="header" href="#database-locked">Database Locked</a></h3>
-<p><strong>Symptom</strong>: <code>database is locked</code> error.</p>
-<p><strong>Cause</strong>: Concurrent access to SQLite.</p>
-<p><strong>Solution</strong>: Only run one inference at a time, or use proper locking.</p>
+<p><strong>Symptom</strong>:</p>
+<ul>
+<li><code>database is locked</code> error in logs</li>
+<li>SQLite error messages</li>
+<li>Fingerprinting failures</li>
+</ul>
+<p><strong>Understanding the Issue</strong>:</p>
+<p>SQLite doesn’t handle concurrent writes well. This happens when:</p>
+<pre><code>Process A: Running inference
+                │
+                ├─▶ UPDATE anomaly_incidents SET ...
+                │
+Process B: Also running inference (concurrent)
+                │
+                └─▶ UPDATE anomaly_incidents SET ...
+                         │
+                         └─▶ ERROR: database is locked
+</code></pre>
+<p><strong>How This Can Happen</strong>:</p>
+<ol>
+<li><strong>Manual inference + scheduled inference</strong>: Running <code>docker compose run --rm yaga inference</code> while the scheduled inference is also running</li>
+<li><strong>Multiple containers</strong>: Two containers sharing the same volume</li>
+<li><strong>Long-running queries</strong>: One process holds lock while another waits</li>
+</ol>
+<p><strong>Solutions</strong>:</p>
+<p><strong>1. Only run one inference at a time</strong>:</p>
+<pre><code class="language-bash"># Check if inference is already running
+docker compose ps | grep yaga
+
+# If running, wait for it to finish
+</code></pre>
+<p><strong>2. Use proper container orchestration</strong>:</p>
+<p>Ensure only one inference container runs at a time via scheduling:</p>
+<pre><code class="language-yaml"># In docker-compose.yml
+command: ["scheduler"]  # Uses cron, prevents overlap
+</code></pre>
+<p><strong>3. Check for stuck processes</strong>:</p>
+<pre><code class="language-bash"># Look for zombie inference processes
+docker compose exec yaga ps aux | grep python
+
+# If stuck, restart the container
+docker compose restart
+</code></pre>
+<p><strong>Corrupt Database Recovery</strong>:</p>
+<p>If the database becomes corrupted:</p>
+<pre><code class="language-bash"># Backup current state
+cp data/anomaly_state.db data/anomaly_state.db.backup
+
+# Remove corrupted database
+rm data/anomaly_state.db
+
+# Restart - new database will be created
+docker compose restart
+</code></pre>
+<p>Note: This loses incident history. All incidents will start fresh (new incident IDs).</p>
+<hr>
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
 <h3 id="enable-verbose-logging"><a class="header" href="#enable-verbose-logging">Enable Verbose Logging</a></h3>
-<pre><code class="language-bash"># Run with verbose
-docker compose run --rm yaga inference --verbose
-
-# Or set in config
+<p>For detailed diagnostic output:</p>
+<p><strong>Option 1: Command-line flag</strong></p>
+<pre><code class="language-bash">docker compose run --rm yaga inference --verbose
 </code></pre>
+<p>This shows:</p>
+<ul>
+<li>Metrics being collected</li>
+<li>ML detection results</li>
+<li>Pattern matching output</li>
+<li>SLO evaluation details</li>
+<li>Fingerprinting actions</li>
+</ul>
+<p><strong>Option 2: Config file</strong></p>
 <pre><code class="language-json">{
   "logging": {
     "level": "DEBUG"
   }
 }
 </code></pre>
+<p>Then rebuild and restart:</p>
+<pre><code class="language-bash">docker compose build
+docker compose up -d
+</code></pre>
+<p><strong>Log Level Guide</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Level</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td>INFO</td><td>Normal operation (default)</td></tr>
+<tr><td>DEBUG</td><td>Troubleshooting, detailed output</td></tr>
+<tr><td>WARNING</td><td>Only problems and warnings</td></tr>
+<tr><td>ERROR</td><td>Only errors</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
 <h3 id="inspect-model-details"><a class="header" href="#inspect-model-details">Inspect Model Details</a></h3>
-<pre><code class="language-bash"># Check model metadata
+<p><strong>View model metadata</strong>:</p>
+<pre><code class="language-bash"># Check training info
 docker compose exec yaga cat /app/smartbox_models/&lt;service&gt;/business_hours/metadata.json | python -m json.tool
 </code></pre>
-<h3 id="check-fingerprint-database"><a class="header" href="#check-fingerprint-database">Check Fingerprint Database</a></h3>
-<pre><code class="language-bash"># List active incidents
-docker compose exec yaga sqlite3 /app/data/anomaly_state.db \
-  "SELECT fingerprint_id, status, occurrence_count FROM anomaly_incidents WHERE status != 'CLOSED';"
+<p>Expected output:</p>
+<pre><code class="language-json">{
+  "service_name": "booking",
+  "period": "business_hours",
+  "trained_at": "2024-01-15T02:00:00Z",
+  "training_samples": 8640,
+  "contamination": 0.02,
+  "n_estimators": 250,
+  "statistics": {
+    "application_latency": {
+      "mean": 110.3,
+      "std": 45.2,
+      "p50": 105.0,
+      "p95": 180.0,
+      "p99": 250.0
+    }
+  },
+  "calibrated_thresholds": {
+    "critical": -0.58,
+    "high": -0.32,
+    "medium": -0.15,
+    "low": -0.08
+  }
+}
 </code></pre>
+<p><strong>Check model age</strong>:</p>
+<pre><code class="language-bash"># Find oldest and newest models
+find smartbox_models -name "metadata.json" -exec sh -c 'echo {} &amp;&amp; grep trained_at {}' \; | sort
+</code></pre>
+<hr>
+<h3 id="check-fingerprint-database"><a class="header" href="#check-fingerprint-database">Check Fingerprint Database</a></h3>
+<p><strong>List active incidents</strong>:</p>
+<pre><code class="language-bash">docker compose exec yaga sqlite3 /app/data/anomaly_state.db \
+  "SELECT fingerprint_id, status, severity, occurrence_count,
+          datetime(first_seen), datetime(last_updated)
+   FROM anomaly_incidents
+   WHERE status != 'CLOSED'
+   ORDER BY last_updated DESC;"
+</code></pre>
+<p><strong>Count incidents by status</strong>:</p>
+<pre><code class="language-bash">docker compose exec yaga sqlite3 /app/data/anomaly_state.db \
+  "SELECT status, COUNT(*) FROM anomaly_incidents GROUP BY status;"
+</code></pre>
+<p><strong>Find long-running incidents</strong>:</p>
+<pre><code class="language-bash">docker compose exec yaga sqlite3 /app/data/anomaly_state.db \
+  "SELECT fingerprint_id, service_name,
+          ROUND((julianday('now') - julianday(first_seen)) * 24 * 60) as duration_minutes
+   FROM anomaly_incidents
+   WHERE status = 'OPEN'
+   ORDER BY duration_minutes DESC
+   LIMIT 10;"
+</code></pre>
+<p><strong>Database schema reference</strong>:</p>
+<pre><code class="language-sql">-- Main table: anomaly_incidents
+fingerprint_id TEXT       -- Pattern identifier (hash)
+incident_id TEXT PRIMARY  -- Unique occurrence ID
+service_name TEXT         -- Service name
+anomaly_name TEXT         -- Anomaly type
+status TEXT               -- SUSPECTED, OPEN, RECOVERING, CLOSED
+severity TEXT             -- low, medium, high, critical
+first_seen TIMESTAMP      -- When first detected
+last_updated TIMESTAMP    -- Last detection time
+resolved_at TIMESTAMP     -- When closed (NULL if open)
+occurrence_count INTEGER  -- Times detected
+consecutive_detections INTEGER -- For confirmation
+missed_cycles INTEGER     -- For grace period
+</code></pre>
+<hr>
+<h2 id="quick-reference-common-commands"><a class="header" href="#quick-reference-common-commands">Quick Reference: Common Commands</a></h2>
+<pre><code class="language-bash"># Health check
+docker compose ps
+docker compose exec yaga python -c "import smartbox_anomaly; print('OK')"
+
+# View logs
+docker compose logs --tail 100
+docker compose exec yaga tail -f /app/logs/inference.log
+
+# Manual operations
+docker compose run --rm yaga inference --verbose
+docker compose run --rm yaga train
+
+# Check models
+ls -la smartbox_models/
+docker compose exec yaga cat smartbox_models/&lt;service&gt;/business_hours/metadata.json
+
+# Check database
+docker compose exec yaga sqlite3 /app/data/anomaly_state.db ".tables"
+docker compose exec yaga sqlite3 /app/data/anomaly_state.db "SELECT * FROM anomaly_incidents WHERE status='OPEN';"
+
+# Network connectivity
+docker compose exec yaga curl -s http://vm:8428/api/v1/status/buildinfo
+docker compose exec yaga curl http://observability-api:8000/health
+
+# Container management
+docker compose restart
+docker compose build
+docker compose up -d
+</code></pre>
+<hr>
 <h2 id="getting-help"><a class="header" href="#getting-help">Getting Help</a></h2>
+<p>If you can’t resolve an issue:</p>
 <ol>
-<li>Check logs: <code>docker compose logs --tail 100</code></li>
-<li>Run verbose: <code>docker compose run --rm yaga inference --verbose</code></li>
-<li>Review configuration: Ensure all paths and URLs are correct</li>
-<li>Check documentation: See detailed docs in <code>docs/</code> directory</li>
+<li>
+<p><strong>Collect diagnostic information</strong>:</p>
+<pre><code class="language-bash">docker compose logs --tail 200 &gt; diagnostic.log
+docker compose run --rm yaga inference --verbose &gt;&gt; diagnostic.log 2&gt;&amp;1
+docker compose exec yaga cat config.json &gt;&gt; diagnostic.log
+</code></pre>
+</li>
+<li>
+<p><strong>Check documentation</strong>:</p>
+<ul>
+<li><a href="../slo/README.html">Configuration Guide</a> - SLO and threshold settings</li>
+<li><a href="../detection/pipeline.html">Detection Pipeline</a> - How detection works</li>
+<li><a href="../incidents/README.html">Incident Lifecycle</a> - State machine details</li>
+</ul>
+</li>
+<li>
+<p><strong>File an issue</strong> with:</p>
+<ul>
+<li>Symptom description</li>
+<li>Expected vs. actual behavior</li>
+<li>Diagnostic logs</li>
+<li>Configuration (sanitized)</li>
+<li>Steps to reproduce</li>
+</ul>
+</li>
 </ol>
 
                     </main>
