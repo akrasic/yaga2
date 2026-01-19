@@ -116,22 +116,23 @@ class TestTimePeriod:
         assert get_time_period(dt) == TimePeriod.NIGHT_HOURS
 
     def test_get_time_period_weekend_day(self):
-        """Test weekend day detection."""
-        # Saturday at 2pm
+        """Test weekend day detection (3-period model uses time-of-day)."""
+        # Saturday at 2pm → maps to BUSINESS_HOURS (8-18) in 3-period model
         dt = datetime(2024, 1, 13, 14, 0)
-        assert get_time_period(dt) == TimePeriod.WEEKEND_DAY
+        assert get_time_period(dt) == TimePeriod.BUSINESS_HOURS
 
     def test_get_time_period_weekend_night(self):
-        """Test weekend night detection."""
-        # Saturday at 11pm
+        """Test weekend night detection (3-period model uses time-of-day)."""
+        # Saturday at 11pm → maps to NIGHT_HOURS (22-8) in 3-period model
         dt = datetime(2024, 1, 13, 23, 0)
-        assert get_time_period(dt) == TimePeriod.WEEKEND_NIGHT
+        assert get_time_period(dt) == TimePeriod.NIGHT_HOURS
 
     def test_get_period_type(self):
-        """Test period type classification."""
+        """Test period type classification for 3-period model."""
         assert get_period_type("business_hours") == "peak_activity"
+        assert get_period_type("evening_hours") == "transition_activity"
         assert get_period_type("night_hours") == "minimal_activity"
-        assert get_period_type(TimePeriod.WEEKEND_DAY) == "weekend_moderate_activity"
+        assert get_period_type(TimePeriod.BUSINESS_HOURS) == "peak_activity"
 
 
 class TestDurationCalculations:

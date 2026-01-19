@@ -1024,6 +1024,42 @@ class TestSLOSeverityPropagation:
         assert result.get("overall_severity") == "critical"
         assert result.get("slo_evaluation", {}).get("severity_changed") is False
 
+    def test_critical_capped_to_high_when_slo_warning(self, evaluator: SLOEvaluator):
+        """Test that critical severity is capped to high when SLO status is warning.
+
+        This tests the fix for the bug where pattern-assigned critical severity
+        was not being capped by SLO evaluation. When SLO says warning (no critical
+        thresholds breached), severity should be capped at high.
+
+        Bug report reference: BUG_REPORT_SLO_SEVERITY_OVERRIDE.md
+        """
+        result = evaluator.evaluate_result({
+            "service": "mobile-api",
+            "overall_severity": "critical",
+            "time_period": "night_hours",
+            "metrics": {
+                "server_latency_avg": 734.0,   # In warning zone (600-800ms)
+                "error_rate": 0.0044,          # Below warning threshold (0.8%)
+                "request_rate": 6.0,
+                "request_rate_mean": 2.7,
+            },
+            "anomalies": {
+                "error_rate_critical": {
+                    "severity": "critical",
+                    "pattern_name": "error_rate_critical",
+                    "root_metric": "error_rate",
+                    "value": 0.0044,
+                }
+            },
+        })
+
+        # Pattern says critical, SLO says warning -> should be capped at high
+        assert result.get("overall_severity") == "high"
+        assert result.get("slo_evaluation", {}).get("slo_status") == "warning"
+        assert result.get("slo_evaluation", {}).get("severity_changed") is True
+        assert result.get("slo_evaluation", {}).get("original_severity") == "critical"
+        assert result.get("slo_evaluation", {}).get("adjusted_severity") == "high"
+
     def test_severity_downgrade_from_high_to_low(self, evaluator: SLOEvaluator):
         """Test severity can be downgraded from high to low when SLO is ok."""
         result = evaluator.evaluate_result({

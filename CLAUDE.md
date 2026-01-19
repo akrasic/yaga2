@@ -11,6 +11,7 @@ ML-based anomaly detection for Smartbox services. Detects latency, error rate, a
 - **VictoriaMetrics** for metrics (endpoint: `otel-metrics.production.smartbox.com`)
 - **SQLite** for fingerprinting state persistence
 - **Pydantic** for API payload validation
+- **Polars** for high-performance metrics cache (parquet I/O)
 - **mdBook** for user-facing documentation
 
 ## Commands
@@ -36,6 +37,15 @@ cd docs/book && mdbook build
 
 # Serve mdbook locally
 cd docs/book && mdbook serve
+
+# Prefetch metrics cache (for training data)
+uv run python prefetch_metrics.py --start-date 2025-08-01 --end-date 2025-10-31
+
+# Check metrics cache status
+uv run python prefetch_metrics.py --status
+
+# Clear metrics cache
+uv run python prefetch_metrics.py --clear
 ```
 
 ## Project Structure
@@ -44,6 +54,7 @@ cd docs/book && mdbook serve
 yaga2/
 ├── inference.py              # Main batch inference entry point
 ├── admin_dashboard.py        # FastAPI admin UI (Yaga2 Control Center)
+├── prefetch_metrics.py       # Prefetch metrics into local parquet cache
 ├── config.json               # All configuration (SLOs, services, thresholds)
 ├── smartbox_anomaly/
 │   ├── inference/            # Inference module (see INFERENCE_MODULE_ARCHITECTURE.md)
@@ -58,10 +69,13 @@ yaga2/
 │   ├── slo/                  # SLO-aware severity evaluation
 │   ├── enrichment/           # Exception and service graph enrichment
 │   ├── fingerprinting/       # Incident lifecycle tracking
-│   ├── metrics/              # VictoriaMetrics client
+│   ├── metrics/              # VictoriaMetrics client and cache
+│   │   ├── client.py         # VictoriaMetrics API client
+│   │   └── cache.py          # Polars-based parquet cache for metrics
 │   ├── api/                  # Pydantic models for API payloads
 │   └── core/                 # Config, logging, constants
 ├── smartbox_models/          # Trained ML models per service/time-period
+├── metrics_cache/            # Cached metrics in parquet format (per service)
 ├── tests/                    # Pytest test suite (439 tests)
 ├── docs/                     # Technical documentation
 │   ├── book/                 # mdBook user documentation
@@ -73,14 +87,15 @@ yaga2/
 
 ### Inference Pipeline Flow
 ```
-Detection (ML) → SLO Evaluation → Exception Enrichment → Service Graph Enrichment → Alert
+Detection (ML) → SLO Evaluation → Exception Enrichment → Service Graph Enrichment → Envoy Enrichment → Alert
 ```
 
 1. **Detection**: Time-aware Isolation Forest + named pattern matching
 2. **SLO Evaluation**: Adjusts/suppresses anomalies based on operational thresholds
 3. **Exception Enrichment**: Queries `events_total` by exception_type on error SLO breach
 4. **Service Graph Enrichment**: Queries `traces_service_graph_request_total` on latency SLO breach
-5. **Fingerprinting**: Tracks incident lifecycle (SUSPECTED → OPEN → RECOVERING → CLOSED)
+5. **Envoy Enrichment**: Queries Mimir for edge metrics (request rates, latency percentiles) - see @docs/ENVOY_ENRICHMENT.md
+6. **Fingerprinting**: Tracks incident lifecycle (SUSPECTED → OPEN → RECOVERING → CLOSED)
 
 ### SLO Evaluation
 
@@ -172,8 +187,13 @@ docker compose up -d
 docker cp smartbox-anomaly:/app/anomaly_state.db ./data/anomaly_state.db
 ```
 
-- Volume mount: `./data:/app/data` for persistent state
-- Fingerprint DB path: `/app/data/anomaly_state.db`
+**Volume mounts:**
+- `./smartbox_models:/app/smartbox_models` - Trained ML models
+- `./data:/app/data` - SQLite state database
+- `./logs:/app/logs` - Application logs
+- `./metrics_cache:/app/metrics_cache` - Cached metrics (parquet files)
+
+Fingerprint DB path: `/app/data/anomaly_state.db`
 
 ## Documentation
 
@@ -193,6 +213,7 @@ Reference documentation for developers and operators:
 - @docs/API_SPECIFICATION.md - Full API spec
 - @docs/KNOWN_ISSUES.md - Known issues and workarounds
 - @docs/API_CHANGELOG.md - API version history and breaking changes
+- @docs/ENVOY_ENRICHMENT.md - Envoy edge metrics enrichment setup and cluster mapping
 
 ### User Documentation (docs/book/)
 
@@ -227,6 +248,7 @@ cd docs/book && mdbook serve
 | File | Purpose |
 |------|---------|
 | `inference.py` | Main entry point - orchestrates batch inference |
+| `prefetch_metrics.py` | Prefetch metrics into local parquet cache |
 | `smartbox_anomaly/inference/pipeline.py` | Pipeline orchestrator - composes detection and enrichment |
 | `smartbox_anomaly/inference/detection_runner.py` | Two-pass detection logic with dependency context |
 | `smartbox_anomaly/inference/enrichment_runner.py` | SLO evaluation, exception, and service graph enrichment |
@@ -234,9 +256,19 @@ cd docs/book && mdbook serve
 | `smartbox_anomaly/detection/detector.py` | ML detection and pattern matching |
 | `smartbox_anomaly/detection/interpretations.py` | Pattern definitions and recommendations |
 | `smartbox_anomaly/fingerprinting/fingerprinter.py` | Incident lifecycle state machine |
+| `smartbox_anomaly/metrics/cache.py` | Polars-based metrics cache with parquet storage |
 | `config.json` | All configuration (SLOs, services, thresholds) |
 
 ## Recent Changes
+
+### v2.0.0 - Metrics Cache Module (January 2026)
+
+Added high-performance metrics caching with Polars:
+- `smartbox_anomaly/metrics/cache.py` - Parquet-based cache for VictoriaMetrics data
+- `prefetch_metrics.py` - CLI tool for prefetching metrics into local cache
+- Bidirectional cache extension (fetches missing data before and after existing cache range)
+- 5-minute step resolution for training data
+- Cache stored in `./metrics_cache/{service_name}/{metric_name}.parquet`
 
 ### v1.4.0 - Enhanced Resolution Payload (January 2026)
 

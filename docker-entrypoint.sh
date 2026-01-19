@@ -9,15 +9,21 @@ set -e
 TRAIN_SCHEDULE="${TRAIN_SCHEDULE:-0 2 * * *}"        # Daily at 2 AM
 INFERENCE_SCHEDULE="${INFERENCE_SCHEDULE:-*/10 * * * *}"  # Every 10 minutes
 
+# Model directories (can be overridden via environment variables)
+STAGING_DIR="${STAGING_DIR:-/app/smartbox_models_staging}"
+MODELS_DIR="${MODELS_DIR:-/app/smartbox_models}"
+
 # Log directory
 LOG_DIR="/app/logs"
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$STAGING_DIR"
 
 # Function to set up cron jobs
 setup_cron() {
     echo "Setting up cron schedules..."
     echo "  Training: $TRAIN_SCHEDULE"
     echo "  Inference: $INFERENCE_SCHEDULE"
+    echo "  Staging dir: $STAGING_DIR"
+    echo "  Models dir: $MODELS_DIR"
 
     # Create cron file
     cat > /etc/cron.d/smartbox << EOF
@@ -27,10 +33,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 PYTHONUNBUFFERED=1
 CONFIG_PATH=${CONFIG_PATH:-/app/config.json}
 
-# Training schedule
-$TRAIN_SCHEDULE root cd /app && python main.py >> $LOG_DIR/train.log 2>&1
+# Training schedule (uses staging directory, auto-promotes on validation success)
+$TRAIN_SCHEDULE root cd /app && python main.py --staging-dir $STAGING_DIR --models-dir $MODELS_DIR --parallel 8 --warm-cache >> $LOG_DIR/train.log 2>&1
 
-# Inference schedule
+# Inference schedule (uses production models directory)
 $INFERENCE_SCHEDULE root cd /app && python inference.py >> $LOG_DIR/inference.log 2>&1
 
 EOF
@@ -45,7 +51,10 @@ EOF
 # Function to run training
 run_train() {
     echo "Starting training pipeline..."
-    exec python main.py "$@"
+    echo "  Staging dir: $STAGING_DIR"
+    echo "  Models dir: $MODELS_DIR"
+    echo "  Parallel workers: 8"
+    exec python main.py --staging-dir "$STAGING_DIR" --models-dir "$MODELS_DIR" --parallel 8 --warm-cache "$@"
 }
 
 # Function to run inference
@@ -78,10 +87,19 @@ run_scheduler() {
 # Function to run both once (for testing)
 run_once() {
     echo "Running training once..."
-    python main.py
+    echo "  Staging dir: $STAGING_DIR"
+    echo "  Models dir: $MODELS_DIR"
+    echo "  Parallel workers: 8"
+    python main.py --staging-dir "$STAGING_DIR" --models-dir "$MODELS_DIR" --parallel 8 --warm-cache
 
     echo "Running inference once..."
     python inference.py
+}
+
+# Function to run admin dashboard
+run_dashboard() {
+    echo "Starting admin dashboard on port 8050..."
+    exec python admin_dashboard.py "$@"
 }
 
 # Main entrypoint logic
@@ -99,6 +117,10 @@ case "${1:-scheduler}" in
         ;;
     once)
         run_once
+        ;;
+    dashboard)
+        shift
+        run_dashboard "$@"
         ;;
     shell)
         exec /bin/bash

@@ -22,7 +22,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Install dependencies using uv (faster than pip)
-RUN uv pip install --system --no-cache -r pyproject.toml
+RUN uv pip install --system --no-cache .
 
 # =============================================================================
 # Production image
@@ -52,7 +52,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --chown=smartbox:smartbox pyproject.toml ./
 COPY --chown=smartbox:smartbox config.json ./
 COPY --chown=smartbox:smartbox smartbox_anomaly/ ./smartbox_anomaly/
-COPY --chown=smartbox:smartbox main.py inference.py admin_dashboard.py ./
+COPY --chown=smartbox:smartbox main.py inference.py admin_dashboard.py prefetch_metrics.py ./
 COPY --chown=smartbox:smartbox anomaly_models.py anomaly_fingerprinter.py time_aware_anomaly_detection.py vmclient.py ./
 
 # Copy entrypoint script
@@ -60,7 +60,7 @@ COPY --chown=smartbox:smartbox docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Create directories for persistent data
-RUN mkdir -p /app/smartbox_models /app/data /app/logs \
+RUN mkdir -p /app/smartbox_models /app/smartbox_models_staging /app/data /app/logs /app/metrics_cache \
     && chown -R smartbox:smartbox /app
 
 # Install the package

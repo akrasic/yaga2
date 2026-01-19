@@ -57,27 +57,26 @@ class TestTimePeriod:
     """Tests for TimePeriod enum."""
 
     def test_all_periods(self):
-        """Test that all_periods returns all values."""
+        """Test that all_periods returns all values for 3-period model."""
         periods = TimePeriod.all_periods()
-        assert len(periods) == 5
+        assert len(periods) == 3
         assert TimePeriod.BUSINESS_HOURS in periods
-        assert TimePeriod.WEEKEND_NIGHT in periods
+        assert TimePeriod.EVENING_HOURS in periods
+        assert TimePeriod.NIGHT_HOURS in periods
 
     def test_is_weekend(self):
-        """Test weekend detection."""
+        """Test that 3-period model has no weekend-specific periods."""
+        # With 3-period model, all periods are time-of-day based
+        # Weekend data is combined with weekday data, so is_weekend always returns False
         assert not TimePeriod.BUSINESS_HOURS.is_weekend
         assert not TimePeriod.EVENING_HOURS.is_weekend
         assert not TimePeriod.NIGHT_HOURS.is_weekend
-        assert TimePeriod.WEEKEND_DAY.is_weekend
-        assert TimePeriod.WEEKEND_NIGHT.is_weekend
 
     def test_is_night(self):
         """Test night period detection."""
         assert not TimePeriod.BUSINESS_HOURS.is_night
         assert not TimePeriod.EVENING_HOURS.is_night
         assert TimePeriod.NIGHT_HOURS.is_night
-        assert not TimePeriod.WEEKEND_DAY.is_night
-        assert TimePeriod.WEEKEND_NIGHT.is_night
 
 
 class TestMetricName:

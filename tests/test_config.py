@@ -83,10 +83,12 @@ class TestTimePeriodConfig:
         assert config.night_hours == (22, 6)
 
     def test_default_thresholds(self):
-        """Test default validation thresholds."""
+        """Test default validation thresholds for 3-period model."""
         config = TimePeriodConfig()
         assert "business_hours" in config.default_thresholds
-        assert "weekend_night" in config.default_thresholds
+        assert "evening_hours" in config.default_thresholds
+        assert "night_hours" in config.default_thresholds
+        # Note: 3-period model no longer has weekend-specific thresholds
 
 
 class TestPipelineConfig:

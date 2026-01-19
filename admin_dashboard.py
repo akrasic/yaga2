@@ -20,6 +20,7 @@ Access at: http://localhost:8050
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,12 +28,67 @@ import hashlib
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
 # Configuration
 CONFIG_PATH = Path(__file__).parent / "config.json"
 AUDIT_LOG_PATH = Path(__file__).parent / ".config_audit.log"
+
 app = FastAPI(title="Yaga2 Control Center", version="2.1.0")
+
+
+# ============================================================================
+# Request Logging Middleware (nginx combined log format)
+# ============================================================================
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Request logging middleware using nginx combined log format."""
+
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.perf_counter()
+
+        # Process the request
+        response = await call_next(request)
+
+        # Calculate duration
+        duration_secs = time.perf_counter() - start_time
+
+        # Get request info
+        client_host = request.client.host if request.client else "-"
+        method = request.method
+        path = request.url.path
+        if request.url.query:
+            path = f"{path}?{request.url.query}"
+        http_version = request.scope.get("http_version", "1.1")
+        status_code = response.status_code
+        content_length = response.headers.get("content-length", "-")
+        referer = request.headers.get("referer", "-")
+        user_agent = request.headers.get("user-agent", "-")
+
+        # Format timestamp like nginx: [16/Jan/2026:14:30:15 +0000]
+        timestamp = datetime.now().strftime("[%d/%b/%Y:%H:%M:%S %z]").strip()
+        if not timestamp.endswith("]"):
+            # If no timezone info, add +0000
+            timestamp = datetime.now().strftime("[%d/%b/%Y:%H:%M:%S +0000]")
+
+        # nginx combined log format with response time extension
+        # Format: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time
+        log_line = (
+            f'{client_host} - - {timestamp} '
+            f'"{method} {path} HTTP/{http_version}" '
+            f'{status_code} {content_length} '
+            f'"{referer}" "{user_agent}" '
+            f'{duration_secs:.3f}'
+        )
+        print(log_line)
+
+        return response
+
+
+# Register middleware if enabled (works with uvicorn reload)
+if os.environ.get("YAGA_ACCESS_LOG", "0") == "1":
+    app.add_middleware(RequestLoggingMiddleware)
 
 
 def load_config() -> dict[str, Any]:
@@ -303,6 +359,82 @@ async def health_check():
     }
 
 
+# Training Report API endpoints
+try:
+    from smartbox_anomaly.training import TrainingRunStorage
+    _training_storage = TrainingRunStorage()
+except ImportError:
+    _training_storage = None
+
+
+@app.get("/api/training/runs")
+async def get_training_runs(service: str = None, limit: int = 50):
+    """Get recent training runs, optionally filtered by service."""
+    if _training_storage is None:
+        raise HTTPException(status_code=500, detail="Training storage not available")
+
+    if service:
+        runs = _training_storage.get_runs_for_service(service, limit=limit)
+    else:
+        runs = _training_storage.get_recent_runs(limit=limit)
+
+    return {
+        "runs": [r.to_dict() for r in runs],
+        "count": len(runs),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/training/runs/{run_id}")
+async def get_training_run(run_id: str):
+    """Get details of a specific training run."""
+    if _training_storage is None:
+        raise HTTPException(status_code=500, detail="Training storage not available")
+
+    run = _training_storage.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    return run.to_dict()
+
+
+@app.get("/api/training/latest")
+async def get_latest_training_runs():
+    """Get latest training run for each service."""
+    if _training_storage is None:
+        raise HTTPException(status_code=500, detail="Training storage not available")
+
+    runs = _training_storage.get_latest_run_per_service()
+    # Return as array sorted by service name for the UI
+    runs_list = [r.to_dict() for r in runs.values()]
+    runs_list.sort(key=lambda x: x.get("service_name", ""))
+    return {
+        "runs": runs_list,
+        "count": len(runs_list),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/api/training/summary")
+async def get_training_summary():
+    """Get summary statistics of training runs."""
+    if _training_storage is None:
+        raise HTTPException(status_code=500, detail="Training storage not available")
+
+    stats = _training_storage.get_summary_stats()
+    # Extract validation counts for the UI (expects passed, warnings, failed)
+    by_validation = stats.get("by_validation", {})
+    return {
+        "total_runs": stats.get("total_runs", 0),
+        "passed": by_validation.get("PASSED", 0),
+        "warnings": by_validation.get("WARNING", 0),
+        "failed": by_validation.get("FAILED", 0),
+        "by_status": stats.get("by_status", {}),
+        "recent_failures": stats.get("recent_failures", []),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 # Dashboard HTML
 DASHBOARD_HTML = """
 <!DOCTYPE html>
@@ -505,12 +637,25 @@ DASHBOARD_HTML = """
         .category-badge {
             display: inline-block; padding: 3px 8px; border-radius: 4px;
             font-size: 11px; font-weight: 500; text-transform: uppercase;
+            background: rgba(139, 148, 158, 0.15); color: #8b949e; /* Default for custom categories */
         }
         .category-critical { background: var(--status-critical-bg); color: var(--status-critical); }
         .category-standard { background: var(--status-info-bg); color: var(--status-info); }
         .category-micro { background: var(--status-success-bg); color: var(--status-success); }
         .category-admin { background: var(--status-warning-bg); color: var(--status-warning); }
         .category-core { background: rgba(163, 113, 247, 0.15); color: #a371f7; }
+        .category-background { background: rgba(110, 118, 129, 0.15); color: #6e7681; }
+        .category-warning { background: var(--status-warning-bg); color: var(--status-warning); }
+
+        .status-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 4px 10px; border-radius: 4px;
+            font-size: 12px; font-weight: 500;
+        }
+        .status-passed { background: var(--status-success-bg); color: var(--status-success); }
+        .status-warning { background: var(--status-warning-bg); color: var(--status-warning); }
+        .status-failed { background: var(--status-critical-bg); color: var(--status-critical); }
+        .status-unknown { background: var(--bg-tertiary); color: var(--text-muted); }
 
         .form-group { margin-bottom: var(--space-md); }
         .form-label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: var(--space-xs); }
@@ -636,6 +781,7 @@ DASHBOARD_HTML = """
 
         .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-md); }
         .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-md); }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-md); }
         .section-divider { height: 1px; background: var(--border-default); margin: var(--space-lg) 0; }
 
         .code-block {
@@ -801,11 +947,11 @@ DASHBOARD_HTML = """
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        @media (max-width: 1200px) { .grid-3 { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 1200px) { .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); } }
         @media (max-width: 900px) {
             .app-container { grid-template-columns: 1fr; }
             .sidebar { display: none; }
-            .grid-2, .grid-3 { grid-template-columns: 1fr; }
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
             .header { padding: 0 var(--space-md); }
             .page-header { flex-direction: column; gap: var(--space-md); }
         }
@@ -860,7 +1006,7 @@ DASHBOARD_HTML = """
         <nav class="sidebar">
             <div class="nav-section">
                 <div class="nav-section-title">Dashboard</div>
-                <div class="nav-item active" data-page="overview">
+                <div class="nav-item" data-page="overview">
                     <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="3" y="3" width="7" height="7"></rect>
                         <rect x="14" y="3" width="7" height="7"></rect>
@@ -869,9 +1015,25 @@ DASHBOARD_HTML = """
                     </svg>
                     Overview
                 </div>
+                <div class="nav-item" data-page="training">
+                    <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                        <line x1="12" y1="6" x2="12" y2="12"></line>
+                        <line x1="9" y1="9" x2="15" y2="9"></line>
+                    </svg>
+                    Training Report
+                </div>
             </div>
             <div class="nav-section">
                 <div class="nav-section-title">Configuration</div>
+                <div class="nav-item" data-page="categories">
+                    <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    Categories
+                    <span class="nav-badge" id="categories-count">-</span>
+                </div>
                 <div class="nav-item" data-page="services">
                     <svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
@@ -928,7 +1090,7 @@ DASHBOARD_HTML = """
 
         <main class="main-content">
             <!-- Overview Page -->
-            <div class="page active" id="page-overview">
+            <div class="page" id="page-overview">
                 <div class="page-header">
                     <div class="page-header-text">
                         <h1 class="page-title">System Overview</h1>
@@ -1066,6 +1228,145 @@ DASHBOARD_HTML = """
                 </div>
             </div>
 
+            <!-- Training Report Page -->
+            <div class="page" id="page-training">
+                <div class="page-header">
+                    <div class="page-header-text">
+                        <h1 class="page-title">Training Report</h1>
+                        <p class="page-description">Model training history and validation status</p>
+                    </div>
+                    <button class="btn btn-secondary" onclick="loadTrainingData()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 4 23 10 17 10"></polyline>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+
+                <!-- Training Summary Cards -->
+                <div class="stats-grid" id="training-stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Total Runs</div>
+                        <div class="stat-value" id="training-total-runs">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Passed</div>
+                        <div class="stat-value stat-success" id="training-passed">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Warnings</div>
+                        <div class="stat-value stat-warning" id="training-warnings">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Failed</div>
+                        <div class="stat-value stat-error" id="training-failed">-</div>
+                    </div>
+                </div>
+
+                <!-- Latest Training Per Service -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                                <path d="M2 17l10 5 10-5"></path>
+                                <path d="M2 12l10 5 10-5"></path>
+                            </svg>
+                            Latest Training Per Service
+                        </div>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="services-table" id="training-latest-table">
+                            <thead>
+                                <tr>
+                                    <th>Service</th>
+                                    <th>Status</th>
+                                    <th>Validation</th>
+                                    <th>Data Points</th>
+                                    <th>Time Periods</th>
+                                    <th>Duration</th>
+                                    <th>Completed</th>
+                                </tr>
+                            </thead>
+                            <tbody id="training-latest-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recent Training Runs -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <polyline points="12 6 12 12 16 14"></polyline>
+                            </svg>
+                            Recent Training Runs
+                        </div>
+                        <select class="form-select" id="training-filter-service" onchange="loadTrainingRuns()" style="width: 200px;">
+                            <option value="">All Services</option>
+                        </select>
+                    </div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="services-table" id="training-runs-table">
+                            <thead>
+                                <tr>
+                                    <th>Run ID</th>
+                                    <th>Service</th>
+                                    <th>Status</th>
+                                    <th>Validation</th>
+                                    <th>Passed/Warned/Failed</th>
+                                    <th>Duration</th>
+                                    <th>Started</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="training-runs-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Categories Page -->
+            <div class="page" id="page-categories">
+                <div class="page-header">
+                    <div class="page-header-text">
+                        <h1 class="page-title">Service Categories</h1>
+                        <p class="page-description">Manage categories and their default contamination rates</p>
+                    </div>
+                    <div class="page-actions">
+                        <button class="btn btn-primary" onclick="openAddCategoryModal()">+ Add Category</button>
+                    </div>
+                </div>
+
+                <div class="help-panel">
+                    <div class="help-panel-title">ℹ️ About Categories</div>
+                    <div class="help-panel-text">
+                        Categories group services with similar characteristics. Each category has a default <strong>contamination rate</strong> - the expected proportion of anomalies.
+                        Lower rates = stricter detection. Services inherit their category's rate unless overridden.
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body" style="padding: 0;">
+                        <table class="services-table">
+                            <thead>
+                                <tr>
+                                    <th>Category Name</th>
+                                    <th>Description</th>
+                                    <th>Default Contamination</th>
+                                    <th>Services</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="categories-table-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Services Page -->
             <div class="page" id="page-services">
                 <div class="page-header">
@@ -1078,12 +1379,13 @@ DASHBOARD_HTML = """
                     </div>
                 </div>
                 <div class="help-panel">
-                    <div class="help-panel-title">ℹ️ About Contamination Rates</div>
+                    <div class="help-panel-title">ℹ️ About Services</div>
                     <div class="help-panel-text">
-                        <strong>Contamination</strong> is the expected proportion of anomalies in the data. Lower values = stricter detection (fewer false positives).
-                        Critical services typically use 2-3%, standard services 5%, and low-traffic services 8%.
+                        Each service belongs to a <strong>category</strong> which determines its default contamination rate.
+                        You can override the rate per-service, or manage categories on the <a href="#" onclick="navigateTo('categories'); return false;" style="color: var(--accent-blue);">Categories page</a>.
                     </div>
                 </div>
+
                 <div class="search-box">
                     <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="11" cy="11" r="8"></circle>
@@ -1092,12 +1394,7 @@ DASHBOARD_HTML = """
                     <input type="text" id="services-search" placeholder="Search services..." oninput="filterServices()">
                 </div>
                 <div class="tabs" id="services-tabs">
-                    <div class="tab active" data-category="all">All Services</div>
-                    <div class="tab" data-category="critical">Critical</div>
-                    <div class="tab" data-category="standard">Standard</div>
-                    <div class="tab" data-category="core">Core</div>
-                    <div class="tab" data-category="admin">Admin</div>
-                    <div class="tab" data-category="micro">Micro</div>
+                    <!-- Tabs populated dynamically by renderServicesTabs() -->
                 </div>
                 <div class="card">
                     <div class="card-body" style="padding: 0;">
@@ -1131,8 +1428,8 @@ DASHBOARD_HTML = """
                 <div class="help-panel">
                     <div class="help-panel-title">ℹ️ How SLO Evaluation Works</div>
                     <div class="help-panel-text">
-                        SLO evaluation adds operational context to ML-detected anomalies. An anomaly within acceptable thresholds becomes "informational" (logged but not alerted), while SLO breaches are escalated to "critical" regardless of ML severity.
-                        <br><br><strong>Severity Matrix:</strong> Anomaly + OK → informational | Anomaly + Warning → high | SLO Breach → critical
+                        SLO evaluation adds operational context to ML-detected anomalies. An anomaly within acceptable thresholds becomes <strong>low</strong> severity (logged but not urgent), while SLO breaches are escalated to <strong>critical</strong> regardless of ML severity.
+                        <br><br><strong>Severity Matrix:</strong> Anomaly + OK → <span style="color: var(--status-success)">low</span> | Anomaly + Warning → <span style="color: var(--status-warning)">high</span> | SLO Breach → <span style="color: var(--status-critical)">critical</span>
                     </div>
                 </div>
                 <div class="grid-2">
@@ -1146,11 +1443,12 @@ DASHBOARD_HTML = """
                         </div>
                         <div class="card-body">
                             <div class="form-group">
-                                <label class="form-label">Allow Downgrade to Informational</label>
+                                <label class="form-label">Allow Downgrade to Low Severity</label>
                                 <label class="toggle">
                                     <input type="checkbox" id="slo-allow-downgrade" onchange="markUnsaved()">
                                     <span class="toggle-slider"></span>
                                 </label>
+                                <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">When enabled, anomalies within acceptable SLO thresholds are downgraded to "low" severity</p>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Require SLO Breach for Critical</label>
@@ -1158,6 +1456,7 @@ DASHBOARD_HTML = """
                                     <input type="checkbox" id="slo-require-breach" onchange="markUnsaved()">
                                     <span class="toggle-slider"></span>
                                 </label>
+                                <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">When enabled, "critical" severity only assigned when SLO is actually breached</p>
                             </div>
                         </div>
                     </div>
@@ -1185,20 +1484,27 @@ DASHBOARD_HTML = """
                                 <div class="slo-segment slo-segment-warning" style="width: 30%"></div>
                                 <div class="slo-segment slo-segment-critical" style="width: 20%"></div>
                             </div>
-                            <div class="grid-3" style="margin-top: var(--space-md);">
+                            <div class="grid-4" style="margin-top: var(--space-md);">
                                 <div class="form-group">
                                     <label class="form-label">Error OK (%)</label>
-                                    <input type="number" step="0.1" class="form-input" id="slo-default-error-acceptable" oninput="markUnsaved()">
+                                    <input type="number" step="0.01" class="form-input" id="slo-default-error-acceptable" oninput="markUnsaved()">
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Error Warn (%)</label>
-                                    <input type="number" step="0.1" class="form-input" id="slo-default-error-warning" oninput="markUnsaved()">
+                                    <input type="number" step="0.01" class="form-input" id="slo-default-error-warning" oninput="markUnsaved()">
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label">Error Crit (%)</label>
-                                    <input type="number" step="0.1" class="form-input" id="slo-default-error-critical" oninput="markUnsaved()">
+                                    <input type="number" step="0.01" class="form-input" id="slo-default-error-critical" oninput="markUnsaved()">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Error Floor (%)</label>
+                                    <input type="number" step="0.01" class="form-input" id="slo-default-error-floor" oninput="markUnsaved()">
                                 </div>
                             </div>
+                            <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">
+                                <strong>Error Floor:</strong> Suppress error anomalies when rate is below this (0 = use OK threshold). Filters operationally insignificant alerts.
+                            </p>
                             <div class="grid-2" style="margin-top: var(--space-md);">
                                 <div class="form-group">
                                     <label class="form-label">Min Traffic (req/s)</label>
@@ -1257,29 +1563,30 @@ DASHBOARD_HTML = """
                         </div>
                         <div class="card-body">
                             <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: var(--space-md);">
-                                Thresholds are based on ratio to training baseline (floor + ratio × mean)
+                                Severity based on ratio to training baseline. Values below floor are always OK.
                             </p>
-                            <div class="ratio-grid">
-                                <div class="ratio-item">
-                                    <div class="ratio-label">OK</div>
-                                    <div class="ratio-value ok" id="db-ratio-ok">1.5×</div>
+                            <div class="grid-4" style="gap: var(--space-sm);">
+                                <div class="form-group">
+                                    <label class="form-label" style="color: var(--status-success)">Info (×)</label>
+                                    <input type="number" step="0.1" class="form-input" id="db-ratio-info" oninput="markUnsaved()" style="text-align: center;">
                                 </div>
-                                <div class="ratio-item">
-                                    <div class="ratio-label">Warning</div>
-                                    <div class="ratio-value warning" id="db-ratio-warning">2.0×</div>
+                                <div class="form-group">
+                                    <label class="form-label" style="color: var(--status-warning)">Warning (×)</label>
+                                    <input type="number" step="0.1" class="form-input" id="db-ratio-warning" oninput="markUnsaved()" style="text-align: center;">
                                 </div>
-                                <div class="ratio-item">
-                                    <div class="ratio-label">High</div>
-                                    <div class="ratio-value high" id="db-ratio-high">3.0×</div>
+                                <div class="form-group">
+                                    <label class="form-label" style="color: #ff9500">High (×)</label>
+                                    <input type="number" step="0.1" class="form-input" id="db-ratio-high" oninput="markUnsaved()" style="text-align: center;">
                                 </div>
-                                <div class="ratio-item">
-                                    <div class="ratio-label">Critical</div>
-                                    <div class="ratio-value critical" id="db-ratio-critical">5.0×</div>
+                                <div class="form-group">
+                                    <label class="form-label" style="color: var(--status-critical)">Critical (×)</label>
+                                    <input type="number" step="0.1" class="form-input" id="db-ratio-critical" oninput="markUnsaved()" style="text-align: center;">
                                 </div>
                             </div>
                             <div class="form-group" style="margin-top: var(--space-md);">
                                 <label class="form-label">Floor (minimum ms)</label>
-                                <input type="number" class="form-input" id="db-latency-floor" value="5" oninput="markUnsaved()" style="width: 100px;">
+                                <input type="number" step="0.1" class="form-input" id="db-latency-floor" oninput="markUnsaved()" style="width: 100px;">
+                                <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Latency below this value is always considered OK (noise filter)</p>
                             </div>
                         </div>
                     </div>
@@ -1511,6 +1818,9 @@ DASHBOARD_HTML = """
                 <div class="card" style="margin-bottom: var(--space-lg);">
                     <div class="card-header"><div class="card-title">🔮 Inference Pipeline</div></div>
                     <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            The inference pipeline runs every few minutes for each monitored service. Each stage transforms or enriches the detection result.
+                        </p>
                         <div class="code-block" style="font-size: 11px;">┌───────────────┐    ┌────────────────┐    ┌──────────────────┐    ┌────────────────┐    ┌─────────┐
 │   DETECTION   │───►│ SLO EVALUATION │───►│ EXCEPTION ENRICH │───►│ SERVICE GRAPH  │───►│  ALERT  │
 │ (ML Patterns) │    │  (Thresholds)  │    │ (On Error Breach)│    │(On Lat Breach) │    │(Finger) │
@@ -1521,6 +1831,92 @@ DASHBOARD_HTML = """
 • Pattern matching     • Error Rate SLO      • exception_type        • client→server routes
 • Training baselines   • DB Latency Ratios   • Breakdown by rate     • Latency per route
 • Improvement filter   • Request Rate SLO    • API enrichment        • Top traffic routes</div>
+                        <div style="margin-top: var(--space-md); font-size: 12px; color: var(--text-secondary);">
+                            <strong>Stage Details:</strong>
+                            <ul style="margin-top: var(--space-xs); padding-left: 20px;">
+                                <li><strong>Detection:</strong> Isolation Forest ML models + named pattern matching identify anomalies</li>
+                                <li><strong>SLO Evaluation:</strong> Adjusts severity based on operational thresholds (can downgrade or upgrade)</li>
+                                <li><strong>Exception Enrichment:</strong> Queries exception types when error SLO is breached</li>
+                                <li><strong>Service Graph:</strong> Queries downstream dependencies when latency SLO is breached</li>
+                                <li><strong>Fingerprinting:</strong> Tracks incident lifecycle (SUSPECTED → OPEN → RECOVERING → CLOSED)</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Core Metrics -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">📈 Core Metrics</div></div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="services-table">
+                            <thead><tr><th>Metric</th><th>Unit</th><th>Description</th><th>Lower is Better?</th></tr></thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>request_rate</code></td>
+                                    <td>req/s</td>
+                                    <td>Incoming requests per second. Measures traffic volume.</td>
+                                    <td style="color: var(--text-muted)">No</td>
+                                </tr>
+                                <tr>
+                                    <td><code>application_latency</code></td>
+                                    <td>ms</td>
+                                    <td>Server-side processing time. Total time to handle request.</td>
+                                    <td style="color: var(--text-muted)">Context-dependent*</td>
+                                </tr>
+                                <tr>
+                                    <td><code>dependency_latency</code></td>
+                                    <td>ms</td>
+                                    <td>Time spent waiting on external services/dependencies.</td>
+                                    <td style="color: var(--status-success)">Yes</td>
+                                </tr>
+                                <tr>
+                                    <td><code>database_latency</code></td>
+                                    <td>ms</td>
+                                    <td>Time spent on database operations.</td>
+                                    <td style="color: var(--status-success)">Yes</td>
+                                </tr>
+                                <tr>
+                                    <td><code>error_rate</code></td>
+                                    <td>ratio</td>
+                                    <td>Fraction of failed requests (0.05 = 5%).</td>
+                                    <td style="color: var(--status-success)">Yes</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p style="color: var(--text-muted); font-size: 11px; padding: var(--space-sm) var(--space-md);">
+                            * <code>application_latency</code> is not marked "lower is better" because very low latency + high errors indicates fast-fail patterns (circuit breaker, rate limiting).
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Time Periods -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🕐 Time Periods</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            Services behave differently at different times. Yaga2 trains separate ML models for each time period to reduce false positives.
+                        </p>
+                        <div class="grid-2">
+                            <table class="services-table" style="margin: 0;">
+                                <thead><tr><th>Period</th><th>Hours</th><th>Days</th></tr></thead>
+                                <tbody>
+                                    <tr><td><code>business_hours</code></td><td>08:00 - 18:00</td><td>Mon-Fri</td></tr>
+                                    <tr><td><code>evening_hours</code></td><td>18:00 - 22:00</td><td>Mon-Fri</td></tr>
+                                    <tr><td><code>night_hours</code></td><td>22:00 - 06:00</td><td>Mon-Fri</td></tr>
+                                    <tr><td><code>weekend_day</code></td><td>08:00 - 22:00</td><td>Sat-Sun</td></tr>
+                                    <tr><td><code>weekend_night</code></td><td>22:00 - 08:00</td><td>Sat-Sun</td></tr>
+                                </tbody>
+                            </table>
+                            <div style="font-size: 12px; color: var(--text-secondary);">
+                                <strong>Why time-aware models?</strong>
+                                <ul style="margin-top: var(--space-xs); padding-left: 20px;">
+                                    <li>Traffic at 3 AM is naturally lower than 3 PM</li>
+                                    <li>Weekend patterns differ from weekdays</li>
+                                    <li>Prevents false "traffic cliff" alerts at night</li>
+                                    <li>Each period has its own baseline statistics</li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1529,59 +1925,127 @@ DASHBOARD_HTML = """
                     <div class="card-header"><div class="card-title">📊 Training Baselines</div></div>
                     <div class="card-body">
                         <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
-                            Each time-period model stores training statistics that are used for SLO evaluation:
+                            Each time-period model stores training statistics from 30 days of historical data. These baselines are used for anomaly detection and SLO evaluation.
                         </p>
                         <div class="grid-2">
                             <div>
-                                <strong style="font-size: 12px;">Metrics with training means:</strong>
+                                <strong style="font-size: 12px;">Statistics stored per metric:</strong>
                                 <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
-                                    <li><code>application_latency_mean</code></li>
-                                    <li><code>dependency_latency_mean</code></li>
-                                    <li><code>database_latency_mean</code></li>
-                                    <li><code>error_rate_mean</code></li>
-                                    <li><code>request_rate_mean</code></li>
+                                    <li><code>mean</code> - Average value during training</li>
+                                    <li><code>std</code> - Standard deviation</li>
+                                    <li><code>p50, p90, p95, p99</code> - Percentiles</li>
+                                    <li><code>min, max</code> - Range boundaries</li>
                                 </ul>
                             </div>
                             <div>
                                 <strong style="font-size: 12px;">Used for:</strong>
                                 <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
-                                    <li>Database latency ratio thresholds</li>
+                                    <li>Database latency ratio thresholds (current/baseline)</li>
                                     <li>Request rate surge/cliff detection</li>
                                     <li>Contextual severity adjustment</li>
                                     <li>Pattern explanation generation</li>
+                                    <li>Percentile position in alerts</li>
                                 </ul>
                             </div>
                         </div>
                     </div>
                 </div>
 
+                <!-- Service Categories & Contamination -->
                 <div class="grid-2" style="margin-bottom: var(--space-lg);">
                     <div class="card">
-                        <div class="card-header"><div class="card-title">Service Categories</div></div>
+                        <div class="card-header"><div class="card-title">🏷️ Service Categories</div></div>
                         <div class="card-body" style="padding: 0;">
                             <table class="services-table">
                                 <thead><tr><th>Category</th><th>Contamination</th><th>Use For</th></tr></thead>
                                 <tbody>
-                                    <tr><td><span class="category-badge category-critical">Critical</span></td><td><code>3%</code></td><td>Revenue-impacting</td></tr>
+                                    <tr><td><span class="category-badge category-critical">Critical</span></td><td><code>3%</code></td><td>Revenue-impacting (booking, checkout)</td></tr>
                                     <tr><td><span class="category-badge category-standard">Standard</span></td><td><code>5%</code></td><td>Production services</td></tr>
-                                    <tr><td><span class="category-badge category-core">Core</span></td><td><code>4%</code></td><td>Infrastructure</td></tr>
+                                    <tr><td><span class="category-badge category-core">Core</span></td><td><code>4%</code></td><td>Platform infrastructure</td></tr>
                                     <tr><td><span class="category-badge category-admin">Admin</span></td><td><code>6%</code></td><td>Admin interfaces</td></tr>
-                                    <tr><td><span class="category-badge category-micro">Micro</span></td><td><code>8%</code></td><td>Utility services</td></tr>
+                                    <tr><td><span class="category-badge category-micro">Micro</span></td><td><code>8%</code></td><td>Low-traffic utilities</td></tr>
                                 </tbody>
                             </table>
+                        </div>
+                        <div style="padding: var(--space-sm) var(--space-md); font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border-subtle);">
+                            <strong>Contamination</strong> = expected % of anomalies in training data. Lower = stricter detection, fewer false positives. Higher = more tolerant of variance.
                         </div>
                     </div>
                     <div class="card">
-                        <div class="card-header"><div class="card-title">SLO Severity Matrix</div></div>
+                        <div class="card-header"><div class="card-title">⚡ SLO Severity Matrix</div></div>
                         <div class="card-body" style="padding: 0;">
                             <table class="services-table">
-                                <thead><tr><th></th><th>OK</th><th>Warning</th><th>Breach</th></tr></thead>
+                                <thead><tr><th></th><th>SLO OK</th><th>SLO Warning</th><th>SLO Breach</th></tr></thead>
                                 <tbody>
-                                    <tr><td><strong>Anomaly</strong></td><td style="color: var(--status-success)">info</td><td style="color: var(--status-warning)">high</td><td style="color: var(--status-critical)">critical</td></tr>
-                                    <tr><td><strong>No Anomaly</strong></td><td style="color: var(--text-muted)">—</td><td style="color: var(--status-warning)">warn</td><td style="color: var(--status-critical)">critical</td></tr>
+                                    <tr><td><strong>Anomaly Detected</strong></td><td style="color: var(--status-success)">low</td><td style="color: var(--status-warning)">high</td><td style="color: var(--status-critical)">critical</td></tr>
+                                    <tr><td><strong>No Anomaly</strong></td><td style="color: var(--text-muted)">—</td><td style="color: var(--status-warning)">warning</td><td style="color: var(--status-critical)">critical</td></tr>
                                 </tbody>
                             </table>
                         </div>
+                        <div style="padding: var(--space-sm) var(--space-md); font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border-subtle);">
+                            ML detects statistical anomalies. SLO evaluation determines operational impact. An anomaly within acceptable SLO is <strong>low</strong> severity (logged but not urgent).
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SLO Thresholds -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🎯 SLO Thresholds</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            SLO thresholds define operational boundaries. These can be customized per service in the SLOs page.
+                        </p>
+                        <div class="grid-2">
+                            <div>
+                                <strong style="font-size: 12px;">Latency Thresholds (default):</strong>
+                                <table class="services-table" style="margin-top: var(--space-xs);">
+                                    <tbody>
+                                        <tr><td>Acceptable</td><td><code>&lt; 500ms</code></td><td style="color: var(--status-success)">OK</td></tr>
+                                        <tr><td>Warning</td><td><code>500-800ms</code></td><td style="color: var(--status-warning)">Warning</td></tr>
+                                        <tr><td>Critical</td><td><code>&gt; 800ms</code></td><td style="color: var(--status-critical)">Breach</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div>
+                                <strong style="font-size: 12px;">Error Rate Thresholds (default):</strong>
+                                <table class="services-table" style="margin-top: var(--space-xs);">
+                                    <tbody>
+                                        <tr><td>Acceptable</td><td><code>&lt; 0.5%</code></td><td style="color: var(--status-success)">OK</td></tr>
+                                        <tr><td>Warning</td><td><code>0.5-1%</code></td><td style="color: var(--status-warning)">Warning</td></tr>
+                                        <tr><td>Critical</td><td><code>&gt; 1%</code></td><td style="color: var(--status-critical)">Breach</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div style="margin-top: var(--space-md);">
+                            <strong style="font-size: 12px;">Database Latency (ratio-based):</strong>
+                            <p style="font-size: 11px; color: var(--text-muted); margin-top: var(--space-xs);">
+                                Database latency uses ratio thresholds relative to training baseline mean:
+                                <code>1.5x</code> = info, <code>2x</code> = warning, <code>3x</code> = high, <code>5x</code> = critical.
+                                Values below noise floor (default 1ms) are always OK.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Named Patterns -->
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🔍 Named Detection Patterns</div></div>
+                    <div class="card-body" style="padding: 0;">
+                        <table class="services-table">
+                            <thead><tr><th>Pattern</th><th>Severity</th><th>Conditions</th><th>Meaning</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>traffic_surge_failing</code></td><td style="color: var(--status-critical)">critical</td><td>High traffic + high latency + high errors</td><td>Service overwhelmed, users affected</td></tr>
+                                <tr><td><code>traffic_cliff</code></td><td style="color: var(--status-critical)">critical</td><td>Very low traffic (sudden drop)</td><td>Upstream issue or service unreachable</td></tr>
+                                <tr><td><code>error_rate_critical</code></td><td style="color: var(--status-critical)">critical</td><td>Very high errors, normal traffic/latency</td><td>Major failure affecting many requests</td></tr>
+                                <tr><td><code>fast_rejection</code></td><td style="color: var(--status-critical)">critical</td><td>Very low latency + very high errors</td><td>Requests rejected before processing</td></tr>
+                                <tr><td><code>latency_spike_recent</code></td><td style="color: var(--status-warning)">high</td><td>High latency, normal traffic/errors</td><td>Recent change caused slowdown</td></tr>
+                                <tr><td><code>database_bottleneck</code></td><td style="color: var(--status-warning)">high</td><td>High DB latency, DB &gt;70% of total</td><td>Database is primary constraint</td></tr>
+                                <tr><td><code>downstream_cascade</code></td><td style="color: var(--status-warning)">high</td><td>High dependency latency &gt;60% of total</td><td>External dependency is bottleneck</td></tr>
+                                <tr><td><code>internal_latency_issue</code></td><td style="color: var(--status-warning)">high</td><td>High app latency, deps healthy</td><td>Issue is internal to service</td></tr>
+                                <tr><td><code>traffic_surge_healthy</code></td><td style="color: var(--status-success)">low</td><td>High traffic, normal latency/errors</td><td>System handling load well</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -1658,23 +2122,92 @@ Result: service_graph_context added to API payload with:
                     </div>
                 </div>
 
-                <div class="card">
-                    <div class="card-header"><div class="card-title">Incident Lifecycle</div></div>
+                <div class="card" style="margin-bottom: var(--space-lg);">
+                    <div class="card-header"><div class="card-title">🔄 Incident Lifecycle</div></div>
                     <div class="card-body">
-                        <div class="code-block">┌─────────────┐     confirmed     ┌──────────┐
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            Incidents follow a state machine to reduce alert noise. First detection creates a SUSPECTED incident (no alert).
+                            After confirmation, it becomes OPEN (alerts sent). Grace period prevents flapping.
+                        </p>
+                        <div class="code-block" style="font-size: 11px;">┌─────────────┐     confirmed     ┌──────────┐
 │  SUSPECTED  │ ─────────────────►│   OPEN   │
-└─────────────┘   (N cycles)      └──────────┘
+│ (no alert)  │   (2 cycles)      │ (alerts) │
+└─────────────┘                   └──────────┘
       ▲                                 │
-      │                                 │ not detected
+      │                                 │ not detected (1-2 cycles)
       │           ┌─────────────┐       │
       └───────────│ RECOVERING  │◄──────┘
-     re-detected  └─────────────┘
+     re-detected  │  (waiting)  │
+                  └─────────────┘
                         │
-                        │ grace period expired
+                        │ grace period (3 cycles)
                         ▼
                   ┌──────────┐
-                  │  CLOSED  │
+                  │  CLOSED  │ → Resolution sent to API
                   └──────────┘</div>
+                        <div class="grid-2" style="margin-top: var(--space-md);">
+                            <div>
+                                <strong style="font-size: 12px;">State Descriptions:</strong>
+                                <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
+                                    <li><strong>SUSPECTED:</strong> First detection, waiting for confirmation. No alert sent yet.</li>
+                                    <li><strong>OPEN:</strong> Confirmed incident. Alerts are being sent to API.</li>
+                                    <li><strong>RECOVERING:</strong> Not detected recently. May resolve or return.</li>
+                                    <li><strong>CLOSED:</strong> Resolved. Resolution notification sent.</li>
+                                </ul>
+                            </div>
+                            <div>
+                                <strong style="font-size: 12px;">Default Timing:</strong>
+                                <ul style="font-size: 12px; color: var(--text-secondary); margin-top: var(--space-xs); padding-left: 20px;">
+                                    <li><strong>Confirmation:</strong> 2 consecutive detections (~4-6 min)</li>
+                                    <li><strong>Grace period:</strong> 3 cycles without detection (~6-9 min)</li>
+                                    <li><strong>Staleness:</strong> 30 min gap → new incident created</li>
+                                    <li><strong>Cleanup:</strong> Closed incidents removed after 72 hours</li>
+                                </ul>
+                            </div>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 11px; margin-top: var(--space-md);">
+                            <strong>Why confirmation?</strong> Prevents single-point false positives from triggering alerts.
+                            <strong>Why grace period?</strong> Prevents flapping alerts when anomaly is intermittent.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- API Payload Overview -->
+                <div class="card">
+                    <div class="card-header"><div class="card-title">📦 API Payload Structure</div></div>
+                    <div class="card-body">
+                        <p style="color: var(--text-secondary); margin-bottom: var(--space-md);">
+                            Each inference cycle produces a JSON payload for the observability API. Key fields:
+                        </p>
+                        <div class="code-block" style="font-size: 11px;">{
+  "alert_type": "anomaly_detected",     // or "no_anomaly", "incident_resolved"
+  "service_name": "booking",
+  "timestamp": "2026-01-15T10:30:00Z",
+  "time_period": "business_hours",
+  "overall_severity": "high",           // Adjusted by SLO evaluation
+  "anomaly_count": 1,
+
+  "anomalies": {
+    "latency_spike_recent": {           // Named pattern
+      "severity": "high",
+      "confidence": 0.85,
+      "description": "...",
+      "root_metric": "application_latency",
+      "fingerprint_id": "anomaly_abc123",
+      "incident_id": "incident_xyz789",
+      "status": "OPEN"
+    }
+  },
+
+  "current_metrics": { ... },           // Raw metric values
+  "slo_evaluation": { ... },            // SLO thresholds and status
+  "exception_context": { ... },         // Exception breakdown (if error breach)
+  "service_graph_context": { ... },     // Downstream deps (if latency breach)
+  "fingerprinting": { ... }             // Incident lifecycle metadata
+}</div>
+                        <p style="color: var(--text-muted); font-size: 11px; margin-top: var(--space-md);">
+                            Full payload specification: <code>docs/INFERENCE_API_PAYLOAD.md</code>
+                        </p>
                     </div>
                 </div>
             </div>
@@ -1720,10 +2253,31 @@ Result: service_graph_context added to API payload with:
         let originalConfigHash = '';
         let currentCategory = 'all';
         let hasUnsavedChanges = false;
+        const initialPage = '{{INITIAL_PAGE}}';
+
+        // Category constants - must be defined before functions that use them
+        const CATEGORY_DESCRIPTIONS = {
+            critical: 'Revenue-critical, high-traffic services requiring strict detection',
+            standard: 'Normal production services with balanced detection',
+            core: 'Platform infrastructure that other services depend on',
+            admin: 'Administrative and back-office tools',
+            micro: 'Low-traffic microservices and utilities',
+            background: 'Background workers, jobs, and queue processors'
+        };
+
+        const DEFAULT_CONTAMINATION = {
+            critical: 0.03, standard: 0.05, core: 0.04, admin: 0.06, micro: 0.08, background: 0.08
+        };
 
         document.addEventListener('DOMContentLoaded', async () => {
             await loadConfig();
             setupNavigation();
+            // Show the initial page based on URL
+            showPage(initialPage);
+            // Load page-specific data
+            if (initialPage === 'audit') loadAuditLog();
+            if (initialPage === 'training') loadTrainingData();
+
             updateClock();
             setInterval(updateClock, 1000);
             checkHealth();
@@ -1793,6 +2347,7 @@ Result: service_graph_context added to API payload with:
             renderSLOSummary();
             renderOverviewServices();
             renderServicesTable();
+            renderCategories();
             renderSLOConfig();
             renderSettings();
             renderDependencies();
@@ -1900,9 +2455,9 @@ Result: service_graph_context added to API payload with:
             const deps = config.dependencies?.graph || {};
 
             let html = '';
-            for (const category of ['critical', 'standard', 'core', 'admin', 'micro']) {
+            for (const category of getCategories()) {
                 for (const service of (services[category] || [])) {
-                    const cont = contamination[service] || categoryContamination[category] || 0.05;
+                    const cont = contamination[service] || categoryContamination[category] || DEFAULT_CONTAMINATION[category] || 0.05;
                     const hasSlo = service in (slos.services || {});
                     const slo = slos.services?.[service] || slos.defaults || {};
                     const serviceDeps = deps[service] || [];
@@ -1942,17 +2497,37 @@ Result: service_graph_context added to API payload with:
             });
         }
 
-        function renderServicesTable() {
+        function renderServicesTabs() {
+            const categories = getCategories();
+            let html = `<div class="tab ${currentCategory === 'all' ? 'active' : ''}" data-category="all">All Services</div>`;
+            for (const cat of categories) {
+                html += `<div class="tab ${currentCategory === cat ? 'active' : ''}" data-category="${cat}">${cat.charAt(0).toUpperCase() + cat.slice(1)}</div>`;
+            }
+            const container = document.getElementById('services-tabs');
+            container.innerHTML = html;
+
+            // Re-attach tab click handlers
+            container.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', () => {
+                    container.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    currentCategory = tab.dataset.category;
+                    renderServicesTableContent();
+                });
+            });
+        }
+
+        function renderServicesTableContent() {
             const services = config.services || {};
             const slos = config.slos || {};
             const contamination = config.model?.contamination_by_service || {};
             const categoryContamination = config.model?.contamination_by_category || {};
 
             let html = '';
-            for (const category of ['critical', 'standard', 'core', 'admin', 'micro']) {
+            for (const category of getCategories()) {
                 for (const service of (services[category] || [])) {
                     if (currentCategory !== 'all' && currentCategory !== category) continue;
-                    const cont = contamination[service] || categoryContamination[category] || 0.05;
+                    const cont = contamination[service] || categoryContamination[category] || DEFAULT_CONTAMINATION[category] || 0.05;
                     const hasSlo = service in (slos.services || {});
 
                     html += `
@@ -1972,6 +2547,169 @@ Result: service_graph_context added to API payload with:
             document.getElementById('services-table-body').innerHTML = html || '<tr><td colspan="5" class="empty-state">No services in this category</td></tr>';
         }
 
+        function renderServicesTable() {
+            renderServicesTabs();
+            renderServicesTableContent();
+        }
+
+        function getCategories() {
+            // Get all unique categories from services and contamination config
+            // Filter to only include keys that have array values (exclude pattern_detection, etc.)
+            const categories = new Set();
+            const services = config.services || {};
+            Object.keys(services).filter(k => Array.isArray(services[k])).forEach(cat => categories.add(cat));
+            Object.keys(config.model?.contamination_by_category || {}).forEach(cat => categories.add(cat));
+            // Ensure default categories exist
+            ['critical', 'standard', 'core', 'admin', 'micro', 'background'].forEach(cat => categories.add(cat));
+            return Array.from(categories).sort();
+        }
+
+        function renderCategories() {
+            const categories = getCategories();
+            const services = config.services || {};
+            const contamination = config.model?.contamination_by_category || {};
+
+            let html = '';
+            for (const cat of categories) {
+                const serviceCount = (services[cat] || []).length;
+                const cont = contamination[cat] || DEFAULT_CONTAMINATION[cat] || 0.05;
+                const desc = CATEGORY_DESCRIPTIONS[cat] || 'Custom category';
+                const isBuiltIn = ['critical', 'standard', 'core', 'admin', 'micro', 'background'].includes(cat);
+
+                html += `
+                    <tr>
+                        <td>
+                            <span class="category-badge category-${cat}">${cat}</span>
+                            ${isBuiltIn ? '' : '<span style="font-size: 10px; color: var(--text-muted); margin-left: 8px;">custom</span>'}
+                        </td>
+                        <td style="color: var(--text-secondary); font-size: 13px;">${desc}</td>
+                        <td><strong>${(cont * 100).toFixed(1)}%</strong></td>
+                        <td>${serviceCount} service${serviceCount !== 1 ? 's' : ''}</td>
+                        <td>
+                            <button class="btn btn-secondary btn-sm" onclick="editCategory('${cat}')">Edit</button>
+                            ${!isBuiltIn && serviceCount === 0 ? `<button class="btn btn-danger btn-sm" onclick="deleteCategory('${cat}')">Delete</button>` : ''}
+                        </td>
+                    </tr>
+                `;
+            }
+            document.getElementById('categories-table-body').innerHTML = html;
+            document.getElementById('categories-count').textContent = categories.length;
+        }
+
+        function openAddCategoryModal() {
+            const body = `
+                <div class="form-group">
+                    <label class="form-label">Category Name</label>
+                    <input type="text" class="form-input" id="new-category-name" placeholder="e.g., gateway" pattern="^[a-z][a-z0-9_-]*$">
+                    <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Lowercase letters, numbers, hyphens, underscores only</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <input type="text" class="form-input" id="new-category-desc" placeholder="e.g., API gateway services">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Default Contamination Rate (%)</label>
+                    <input type="number" step="0.1" min="0.5" max="20" class="form-input" id="new-category-cont" value="5.0">
+                    <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Lower = stricter detection. Typical: critical 3%, standard 5%, micro 8%</p>
+                </div>
+            `;
+            openModal('Add Category', body, addCategory);
+        }
+
+        async function addCategory() {
+            const name = document.getElementById('new-category-name').value.trim().toLowerCase();
+            const desc = document.getElementById('new-category-desc').value.trim();
+            const cont = parseFloat(document.getElementById('new-category-cont').value) / 100;
+
+            if (!name) { showToast('Category name is required', 'error'); return; }
+            if (!/^[a-z][a-z0-9_-]*$/.test(name)) { showToast('Invalid category name format', 'error'); return; }
+            if (getCategories().includes(name)) { showToast('Category already exists', 'error'); return; }
+
+            // Initialize category
+            if (!config.services) config.services = {};
+            if (!config.services[name]) config.services[name] = [];
+            if (!config.model) config.model = {};
+            if (!config.model.contamination_by_category) config.model.contamination_by_category = {};
+            config.model.contamination_by_category[name] = cont;
+
+            // Store description in a new config section if provided
+            if (desc) {
+                if (!config.category_descriptions) config.category_descriptions = {};
+                config.category_descriptions[name] = desc;
+                CATEGORY_DESCRIPTIONS[name] = desc;
+            }
+
+            await saveFullConfig(`Added category: ${name}`);
+            closeModal();
+            renderAll();
+        }
+
+        function editCategory(name) {
+            const cont = (config.model?.contamination_by_category?.[name] || DEFAULT_CONTAMINATION[name] || 0.05) * 100;
+            const desc = config.category_descriptions?.[name] || CATEGORY_DESCRIPTIONS[name] || '';
+            const isBuiltIn = ['critical', 'standard', 'core', 'admin', 'micro', 'background'].includes(name);
+
+            const body = `
+                <div class="form-group">
+                    <label class="form-label">Category Name</label>
+                    <input type="text" class="form-input" value="${name}" readonly style="opacity: 0.7">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <input type="text" class="form-input" id="edit-category-desc" value="${desc}" ${isBuiltIn ? 'readonly style="opacity: 0.7"' : ''}>
+                    ${isBuiltIn ? '<p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Built-in category description cannot be changed</p>' : ''}
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Default Contamination Rate (%)</label>
+                    <input type="number" step="0.1" min="0.5" max="20" class="form-input" id="edit-category-cont" value="${cont.toFixed(1)}">
+                    <p style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">This affects all services in this category without custom overrides</p>
+                </div>
+            `;
+            openModal(`Edit Category: ${name}`, body, () => updateCategory(name));
+        }
+
+        async function updateCategory(name) {
+            const cont = parseFloat(document.getElementById('edit-category-cont').value) / 100;
+            const desc = document.getElementById('edit-category-desc').value.trim();
+            const isBuiltIn = ['critical', 'standard', 'core', 'admin', 'micro', 'background'].includes(name);
+
+            if (!config.model) config.model = {};
+            if (!config.model.contamination_by_category) config.model.contamination_by_category = {};
+            config.model.contamination_by_category[name] = cont;
+
+            if (!isBuiltIn && desc) {
+                if (!config.category_descriptions) config.category_descriptions = {};
+                config.category_descriptions[name] = desc;
+                CATEGORY_DESCRIPTIONS[name] = desc;
+            }
+
+            await saveFullConfig(`Updated category: ${name}`);
+            closeModal();
+            renderAll();
+        }
+
+        async function deleteCategory(name) {
+            const serviceCount = (config.services?.[name] || []).length;
+            if (serviceCount > 0) {
+                showToast(`Cannot delete category with ${serviceCount} services. Move services first.`, 'error');
+                return;
+            }
+            if (!confirm(`Delete category "${name}"? This cannot be undone.`)) return;
+
+            if (config.services?.[name]) delete config.services[name];
+            if (config.model?.contamination_by_category?.[name]) delete config.model.contamination_by_category[name];
+            if (config.category_descriptions?.[name]) delete config.category_descriptions[name];
+
+            await saveFullConfig(`Deleted category: ${name}`);
+            renderAll();
+        }
+
+        function getCategoryOptions(selected = '') {
+            return getCategories().map(c =>
+                `<option value="${c}" ${c === selected ? 'selected' : ''}>${c.charAt(0).toUpperCase() + c.slice(1)}</option>`
+            ).join('');
+        }
+
         function renderSLOConfig() {
             const slos = config.slos || {};
             document.getElementById('slo-enabled').checked = slos.enabled || false;
@@ -1985,8 +2723,21 @@ Result: service_graph_context added to API payload with:
             document.getElementById('slo-default-error-acceptable').value = (defaults.error_rate_acceptable || 0.005) * 100;
             document.getElementById('slo-default-error-warning').value = (defaults.error_rate_warning || 0.01) * 100;
             document.getElementById('slo-default-error-critical').value = (defaults.error_rate_critical || 0.02) * 100;
+            document.getElementById('slo-default-error-floor').value = (defaults.error_rate_floor || 0) * 100;
             document.getElementById('slo-default-min-traffic').value = defaults.min_traffic_rps || 1.0;
             document.getElementById('slo-default-busy-factor').value = defaults.busy_period_factor || 1.5;
+
+            // Database latency ratios
+            const dbRatios = defaults.database_latency_ratios || {};
+            document.getElementById('db-ratio-info').value = dbRatios.info || 1.5;
+            document.getElementById('db-ratio-warning').value = dbRatios.warning || 2.0;
+            document.getElementById('db-ratio-high').value = dbRatios.high || 3.0;
+            document.getElementById('db-ratio-critical').value = dbRatios.critical || 5.0;
+            document.getElementById('db-latency-floor').value = defaults.database_latency_floor_ms || 1.0;
+
+            // Request rate thresholds
+            document.getElementById('surge-threshold').value = defaults.request_rate_surge_threshold || 2.0;
+            document.getElementById('cliff-threshold').value = defaults.request_rate_cliff_threshold || 0.3;
 
             updateSLOBar();
 
@@ -2135,7 +2886,7 @@ Result: service_graph_context added to API payload with:
 
         function getServiceCategory(service) {
             const services = config.services || {};
-            for (const cat of ['critical', 'standard', 'core', 'admin', 'micro']) {
+            for (const cat of ['critical', 'standard', 'core', 'admin', 'micro', 'background']) {
                 if ((services[cat] || []).includes(service)) return cat;
             }
             return 'standard';
@@ -2143,30 +2894,37 @@ Result: service_graph_context added to API payload with:
 
         function setupNavigation() {
             document.querySelectorAll('.nav-item').forEach(item => {
-                item.addEventListener('click', () => {
+                item.addEventListener('click', (e) => {
+                    e.preventDefault();
                     const page = item.dataset.page;
                     if (page) {
                         navigateTo(page);
-                        if (page === 'audit') loadAuditLog();
                     }
                 });
             });
-
-            document.querySelectorAll('#services-tabs .tab').forEach(tab => {
-                tab.addEventListener('click', () => {
-                    document.querySelectorAll('#services-tabs .tab').forEach(t => t.classList.remove('active'));
-                    tab.classList.add('active');
-                    currentCategory = tab.dataset.category;
-                    renderServicesTable();
-                });
-            });
+            // Services tabs are rendered dynamically by renderServicesTabs()
         }
 
-        function navigateTo(page) {
+        // Show page without URL navigation (used on initial load)
+        function showPage(page) {
             document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
             document.getElementById(`page-${page}`)?.classList.add('active');
+        }
+
+        // Navigate to page via URL (for clicks)
+        function navigateTo(page) {
+            // Map page names to URL paths
+            let url;
+            if (page === 'overview') {
+                url = '/';
+            } else if (page === 'docs') {
+                url = '/documentation';
+            } else {
+                url = '/' + page;
+            }
+            window.location.href = url;
         }
 
         async function loadAuditLog() {
@@ -2200,11 +2958,7 @@ Result: service_graph_context added to API payload with:
                 <div class="form-group">
                     <label class="form-label">Category</label>
                     <select class="form-select" id="new-service-category">
-                        <option value="critical">Critical</option>
-                        <option value="standard" selected>Standard</option>
-                        <option value="core">Core</option>
-                        <option value="admin">Admin</option>
-                        <option value="micro">Micro</option>
+                        ${getCategoryOptions('standard')}
                     </select>
                 </div>
                 <div class="form-group">
@@ -2247,7 +3001,7 @@ Result: service_graph_context added to API payload with:
                 <div class="form-group">
                     <label class="form-label">Category</label>
                     <select class="form-select" id="edit-service-category">
-                        ${['critical', 'standard', 'core', 'admin', 'micro'].map(c => `<option value="${c}" ${c === category ? 'selected' : ''}>${c.charAt(0).toUpperCase() + c.slice(1)}</option>`).join('')}
+                        ${getCategoryOptions(category)}
                     </select>
                 </div>
                 <div class="form-group">
@@ -2412,8 +3166,18 @@ Result: service_graph_context added to API payload with:
                     error_rate_acceptable: parseFloat(document.getElementById('slo-default-error-acceptable').value) / 100,
                     error_rate_warning: parseFloat(document.getElementById('slo-default-error-warning').value) / 100,
                     error_rate_critical: parseFloat(document.getElementById('slo-default-error-critical').value) / 100,
+                    error_rate_floor: parseFloat(document.getElementById('slo-default-error-floor').value) / 100,
                     min_traffic_rps: parseFloat(document.getElementById('slo-default-min-traffic').value),
                     busy_period_factor: parseFloat(document.getElementById('slo-default-busy-factor').value),
+                    database_latency_floor_ms: parseFloat(document.getElementById('db-latency-floor').value),
+                    database_latency_ratios: {
+                        info: parseFloat(document.getElementById('db-ratio-info').value),
+                        warning: parseFloat(document.getElementById('db-ratio-warning').value),
+                        high: parseFloat(document.getElementById('db-ratio-high').value),
+                        critical: parseFloat(document.getElementById('db-ratio-critical').value),
+                    },
+                    request_rate_surge_threshold: parseFloat(document.getElementById('surge-threshold').value),
+                    request_rate_cliff_threshold: parseFloat(document.getElementById('cliff-threshold').value),
                 }
             };
             await saveFullConfig('Updated SLO configuration');
@@ -2500,7 +3264,7 @@ Result: service_graph_context added to API payload with:
         function getAllServices() {
             const services = config.services || {};
             const all = [];
-            for (const cat of ['critical', 'standard', 'core', 'admin', 'micro']) {
+            for (const cat of ['critical', 'standard', 'core', 'admin', 'micro', 'background']) {
                 all.push(...(services[cat] || []));
             }
             return all;
@@ -2519,6 +3283,209 @@ Result: service_graph_context added to API payload with:
             document.getElementById('clock').textContent = new Date().toLocaleTimeString();
         }
 
+        // Training Report Functions
+        async function loadTrainingData() {
+            try {
+                // Load summary stats
+                const summaryResponse = await fetch('/api/training/summary');
+                if (summaryResponse.ok) {
+                    const summary = await summaryResponse.json();
+                    document.getElementById('training-total-runs').textContent = summary.total_runs || 0;
+                    document.getElementById('training-passed').textContent = summary.passed || 0;
+                    document.getElementById('training-warnings').textContent = summary.warnings || 0;
+                    document.getElementById('training-failed').textContent = summary.failed || 0;
+                }
+
+                // Load latest runs per service
+                const latestResponse = await fetch('/api/training/latest');
+                if (latestResponse.ok) {
+                    const latest = await latestResponse.json();
+                    renderLatestTrainingTable(latest.runs || []);
+                    populateServiceFilter(latest.runs || []);
+                }
+
+                // Load recent runs
+                await loadTrainingRuns();
+            } catch (error) {
+                console.error('Failed to load training data:', error);
+                showToast('Failed to load training data', 'error');
+            }
+        }
+
+        function renderLatestTrainingTable(runs) {
+            const tbody = document.getElementById('training-latest-body');
+            if (!tbody) return;
+
+            if (runs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No training runs recorded yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = runs.map(run => {
+                const runStatusClass = getRunStatusClass(run.status);
+                const validationClass = getValidationStatusClass(run.validation_status);
+                const validationIcon = getValidationStatusIcon(run.validation_status);
+                const timePeriods = run.time_periods_trained || 0;
+                const dataPoints = formatNumber(run.total_data_points || 0);
+                const duration = formatDuration(run.duration_seconds);
+                const date = formatDateTime(run.completed_at || run.started_at);
+
+                return `
+                    <tr onclick="showTrainingDetails('${run.run_id}')" style="cursor: pointer;">
+                        <td class="service-name">${escapeHtml(run.service_name)}</td>
+                        <td><span class="status-badge ${runStatusClass}">${run.status || 'UNKNOWN'}</span></td>
+                        <td><span class="status-badge ${validationClass}">${validationIcon} ${run.validation_status || 'N/A'}</span></td>
+                        <td>${dataPoints}</td>
+                        <td>${timePeriods}</td>
+                        <td>${duration}</td>
+                        <td>${date}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function loadTrainingRuns(serviceFilter = null) {
+            try {
+                // Get filter from select element if not provided
+                if (serviceFilter === null) {
+                    const select = document.getElementById('training-filter-service');
+                    serviceFilter = select ? select.value : '';
+                }
+
+                let url = '/api/training/runs?limit=50';
+                if (serviceFilter) {
+                    url += `&service=${encodeURIComponent(serviceFilter)}`;
+                }
+
+                const response = await fetch(url);
+                if (response.ok) {
+                    const data = await response.json();
+                    renderRecentTrainingTable(data.runs || []);
+                }
+            } catch (error) {
+                console.error('Failed to load training runs:', error);
+            }
+        }
+
+        function renderRecentTrainingTable(runs) {
+            const tbody = document.getElementById('training-runs-body');
+            if (!tbody) return;
+
+            if (runs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">No training runs found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = runs.map(run => {
+                const validationClass = getValidationStatusClass(run.validation_status);
+                const validationIcon = getValidationStatusIcon(run.validation_status);
+                const runStatusClass = getRunStatusClass(run.status);
+                const duration = formatDuration(run.duration_seconds);
+                const date = formatDateTime(run.started_at);
+                const passedWarnedFailed = `${run.periods_passed || 0}/${run.periods_warned || 0}/${run.periods_failed || 0}`;
+                const shortRunId = run.run_id ? run.run_id.substring(0, 12) : '—';
+
+                return `
+                    <tr onclick="showTrainingDetails('${run.run_id}')" style="cursor: pointer;">
+                        <td style="font-family: var(--font-mono); font-size: 11px;">${shortRunId}</td>
+                        <td class="service-name">${escapeHtml(run.service_name)}</td>
+                        <td><span class="status-badge ${runStatusClass}">${run.status || 'UNKNOWN'}</span></td>
+                        <td><span class="status-badge ${validationClass}">${validationIcon} ${run.validation_status || 'N/A'}</span></td>
+                        <td style="font-family: var(--font-mono);">${passedWarnedFailed}</td>
+                        <td>${duration}</td>
+                        <td>${date}</td>
+                        <td>
+                            <button class="btn btn-sm" onclick="event.stopPropagation(); showTrainingDetails('${run.run_id}')">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function populateServiceFilter(runs) {
+            const select = document.getElementById('training-filter-service');
+            if (!select) return;
+
+            const services = [...new Set(runs.map(r => r.service_name))].sort();
+            select.innerHTML = '<option value="">All Services</option>' +
+                services.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+        }
+
+        function filterTrainingRuns() {
+            const select = document.getElementById('training-filter-service');
+            const service = select ? select.value : '';
+            loadTrainingRuns(service);
+        }
+
+        function showTrainingDetails(runId) {
+            // Navigate to dedicated training run details page
+            window.location.href = '/training/' + runId;
+        }
+
+        // Training helper functions
+        function getValidationStatusClass(status) {
+            switch (status) {
+                case 'PASSED': return 'status-passed';
+                case 'WARNING': return 'status-warning';
+                case 'FAILED': return 'status-failed';
+                default: return 'status-unknown';
+            }
+        }
+
+        function getValidationStatusIcon(status) {
+            switch (status) {
+                case 'PASSED': return '✓';
+                case 'WARNING': return '⚠';
+                case 'FAILED': return '✗';
+                default: return '?';
+            }
+        }
+
+        function getRunStatusClass(status) {
+            switch (status) {
+                case 'COMPLETED': return 'standard';
+                case 'RUNNING': return 'warning';
+                case 'FAILED': return 'critical';
+                default: return 'standard';
+            }
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return '—';
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+            return `${Math.round(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+        }
+
+        function formatDate(isoString) {
+            if (!isoString) return '—';
+            const date = new Date(isoString);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+
+        function formatDateTime(isoString) {
+            if (!isoString) return '—';
+            const date = new Date(isoString);
+            return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModal();
             if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveFullConfig('Saved via keyboard shortcut'); }
@@ -2529,25 +3496,962 @@ Result: service_graph_context added to API payload with:
 """
 
 
+TRAINING_RUN_PAGE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Training Run Details — Yaga2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e14;
+            --bg-secondary: #0d1117;
+            --bg-tertiary: #161b22;
+            --bg-elevated: #1c2128;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --border-color: #30363d;
+            --status-critical: #f85149;
+            --status-critical-bg: rgba(248, 81, 73, 0.15);
+            --status-warning: #d29922;
+            --status-warning-bg: rgba(210, 153, 34, 0.15);
+            --status-success: #3fb950;
+            --status-success-bg: rgba(63, 185, 80, 0.15);
+            --status-info: #58a6ff;
+            --status-info-bg: rgba(88, 166, 255, 0.15);
+            --accent: #79c0ff;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+
+        /* Back link */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 14px;
+            margin-bottom: 24px;
+            transition: color 0.2s;
+        }
+        .back-link:hover { color: var(--accent); }
+
+        /* Hero section */
+        .hero {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            margin-bottom: 32px;
+        }
+
+        .hero-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+        }
+
+        .hero-title {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .hero-subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 24px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .status-pill.passed {
+            background: var(--status-success-bg);
+            color: var(--status-success);
+            border: 1px solid var(--status-success);
+        }
+
+        .status-pill.warning {
+            background: var(--status-warning-bg);
+            color: var(--status-warning);
+            border: 1px solid var(--status-warning);
+        }
+
+        .status-pill.failed {
+            background: var(--status-critical-bg);
+            color: var(--status-critical);
+            border: 1px solid var(--status-critical);
+        }
+
+        .status-pill.running {
+            background: var(--status-info-bg);
+            color: var(--status-info);
+            border: 1px solid var(--status-info);
+        }
+
+        /* Stats row */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 4px;
+        }
+
+        /* Section */
+        .section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+
+        .section-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .section-badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+        }
+
+        /* Time period rows */
+        .period-row {
+            display: grid;
+            grid-template-columns: 200px 1fr 140px;
+            gap: 24px;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .period-row:last-child { border-bottom: none; }
+        .period-row:hover { background: var(--bg-tertiary); }
+
+        .period-name {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .period-details {
+            display: flex;
+            gap: 32px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .period-detail {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .period-detail-label { color: var(--text-muted); }
+        .period-detail-value { color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+
+        .period-status {
+            text-align: right;
+        }
+
+        .period-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .period-badge.passed {
+            background: var(--status-success-bg);
+            color: var(--status-success);
+        }
+
+        .period-badge.failed {
+            background: var(--status-critical-bg);
+            color: var(--status-critical);
+        }
+
+        .period-badge.warning {
+            background: var(--status-warning-bg);
+            color: var(--status-warning);
+        }
+
+        .period-badge.skipped {
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+        }
+
+        /* Failure details */
+        .failure-details {
+            grid-column: 1 / -1;
+            background: var(--status-critical-bg);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 12px;
+        }
+
+        .failure-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--status-critical);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .failure-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .failure-list li {
+            font-size: 13px;
+            color: var(--text-primary);
+            padding: 6px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .failure-list li::before {
+            content: "×";
+            position: absolute;
+            left: 0;
+            color: var(--status-critical);
+            font-weight: bold;
+        }
+
+        /* Info grid */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+            padding: 24px;
+        }
+
+        .info-item label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .info-item span {
+            font-size: 14px;
+            color: var(--text-primary);
+        }
+
+        /* Error section */
+        .error-section {
+            background: var(--status-critical-bg);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .error-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--status-critical);
+            margin-bottom: 12px;
+        }
+
+        .error-message {
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+
+        .error-traceback {
+            margin-top: 16px;
+        }
+
+        .error-traceback summary {
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .error-traceback pre {
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-muted);
+            white-space: pre-wrap;
+            overflow-x: auto;
+            margin-top: 8px;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 80px 24px;
+            color: var(--text-muted);
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Data quality section */
+        .quality-bar {
+            height: 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .quality-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+
+        .quality-fill.good { background: var(--status-success); }
+        .quality-fill.warning { background: var(--status-warning); }
+        .quality-fill.poor { background: var(--status-critical); }
+
+        /* Timeline */
+        .timeline {
+            padding: 24px;
+        }
+
+        .timeline-item {
+            display: flex;
+            gap: 16px;
+            padding-bottom: 20px;
+            position: relative;
+        }
+
+        .timeline-item:last-child { padding-bottom: 0; }
+
+        .timeline-item::before {
+            content: "";
+            position: absolute;
+            left: 11px;
+            top: 28px;
+            bottom: 0;
+            width: 2px;
+            background: var(--border-color);
+        }
+
+        .timeline-item:last-child::before { display: none; }
+
+        .timeline-dot {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+            z-index: 1;
+        }
+
+        .timeline-dot.success {
+            background: var(--status-success-bg);
+            color: var(--status-success);
+            border: 2px solid var(--status-success);
+        }
+
+        .timeline-dot.info {
+            background: var(--status-info-bg);
+            color: var(--status-info);
+            border: 2px solid var(--status-info);
+        }
+
+        .timeline-content {
+            flex: 1;
+        }
+
+        .timeline-title {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .timeline-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+            .period-row { grid-template-columns: 1fr; gap: 12px; }
+            .period-status { text-align: left; }
+            .info-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/#training" class="back-link">
+            ← Back to Dashboard
+        </a>
+
+        <div id="content">
+            <div class="loading">
+                <div class="loading-spinner"></div>
+                <div>Loading training run details...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const RUN_ID = '{run_id}';
+
+        function formatNumber(n) {
+            if (n === null || n === undefined) return '—';
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+            return n.toLocaleString();
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return '—';
+            if (seconds < 60) return Math.round(seconds) + 's';
+            if (seconds < 3600) return Math.round(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
+            return Math.round(seconds / 3600) + 'h ' + Math.round((seconds % 3600) / 60) + 'm';
+        }
+
+        function formatDateTime(isoStr) {
+            if (!isoStr) return '—';
+            const d = new Date(isoStr);
+            return d.toLocaleString('en-US', {
+                month: 'short', day: 'numeric', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        function getStatusClass(status) {
+            const s = (status || '').toUpperCase();
+            if (s === 'PASSED' || s === 'COMPLETED') return 'passed';
+            if (s === 'WARNING') return 'warning';
+            if (s === 'FAILED') return 'failed';
+            if (s === 'RUNNING') return 'running';
+            return 'skipped';
+        }
+
+        function getStatusIcon(status) {
+            const s = (status || '').toUpperCase();
+            if (s === 'PASSED' || s === 'COMPLETED') return '✓';
+            if (s === 'WARNING') return '⚠';
+            if (s === 'FAILED') return '✗';
+            if (s === 'RUNNING') return '◌';
+            return '—';
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function getFailureReasons(result) {
+            const reasons = [];
+            const checks = result.validation_checks || {};
+
+            if (checks.anomaly_rate_acceptable === false) {
+                const rate = ((result.normal_anomaly_rate || 0) * 100).toFixed(1);
+                const threshold = ((result.threshold_used || 0) * 100).toFixed(1);
+                reasons.push('Anomaly rate ' + rate + '% exceeds threshold ' + threshold + '%');
+            }
+            if (checks.sufficient_tests === false) {
+                reasons.push('Insufficient test samples (minimum 10 required)');
+            }
+            if (checks.low_error_rate === false) {
+                reasons.push('Test errors during validation');
+            }
+            if (checks.model_functional === false) {
+                reasons.push('Model failed basic functionality check');
+            }
+
+            const explainChecks = result.explainability_checks || {};
+            if (!result.explainability_passed) {
+                if (explainChecks.has_training_statistics === false) {
+                    reasons.push('Missing training statistics');
+                }
+                if (explainChecks.has_percentiles === false) {
+                    reasons.push('Missing percentile data');
+                }
+            }
+
+            return reasons;
+        }
+
+        function renderPeriodRow(periodName, result) {
+            const displayName = periodName.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+
+            if (result.status === 'insufficient_data') {
+                return `
+                    <div class="period-row">
+                        <div class="period-name">${displayName}</div>
+                        <div class="period-details">
+                            <div class="period-detail">
+                                <span class="period-detail-label">Samples:</span>
+                                <span class="period-detail-value">${result.samples || 0}</span>
+                            </div>
+                            <div class="period-detail">
+                                <span class="period-detail-label">Required:</span>
+                                <span class="period-detail-value">${result.min_required || 'unknown'}</span>
+                            </div>
+                        </div>
+                        <div class="period-status">
+                            <span class="period-badge warning">⚠ Insufficient Data</span>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const passed = result.enhanced_passed || result.passed;
+            const statusClass = passed ? 'passed' : 'failed';
+            const statusIcon = passed ? '✓' : '✗';
+            const statusText = passed ? 'Passed' : 'Failed';
+
+            const samples = result.samples_tested || 0;
+            const anomalyRate = result.normal_anomaly_rate !== undefined
+                ? (result.normal_anomaly_rate * 100).toFixed(1) + '%'
+                : '—';
+            const threshold = result.threshold_used !== undefined
+                ? (result.threshold_used * 100).toFixed(1) + '%'
+                : '—';
+
+            const failureReasons = !passed ? getFailureReasons(result) : [];
+
+            let failureHtml = '';
+            if (failureReasons.length > 0) {
+                failureHtml = `
+                    <div class="failure-details">
+                        <div class="failure-title">Why it failed</div>
+                        <ul class="failure-list">
+                            ${failureReasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="period-row" style="${failureReasons.length > 0 ? 'flex-wrap: wrap;' : ''}">
+                    <div class="period-name">${displayName}</div>
+                    <div class="period-details">
+                        <div class="period-detail">
+                            <span class="period-detail-label">Samples:</span>
+                            <span class="period-detail-value">${formatNumber(samples)}</span>
+                        </div>
+                        <div class="period-detail">
+                            <span class="period-detail-label">Anomaly Rate:</span>
+                            <span class="period-detail-value">${anomalyRate}</span>
+                        </div>
+                        <div class="period-detail">
+                            <span class="period-detail-label">Threshold:</span>
+                            <span class="period-detail-value">${threshold}</span>
+                        </div>
+                    </div>
+                    <div class="period-status">
+                        <span class="period-badge ${statusClass}">${statusIcon} ${statusText}</span>
+                    </div>
+                    ${failureHtml}
+                </div>
+            `;
+        }
+
+        function renderPage(run) {
+            const statusClass = getStatusClass(run.validation_status || run.status);
+            const statusIcon = getStatusIcon(run.validation_status || run.status);
+            const statusText = run.validation_status || run.status || 'Unknown';
+
+            // Build time period rows
+            const details = run.validation_details || {};
+            const periods = ['business_hours', 'evening_hours', 'night_hours', 'weekend_day', 'weekend_night'];
+            let periodsHtml = '';
+
+            for (const period of periods) {
+                const result = details[period];
+                if (result) {
+                    periodsHtml += renderPeriodRow(period, result);
+                }
+            }
+
+            if (!periodsHtml) {
+                periodsHtml = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">No validation data available</div>';
+            }
+
+            // Error section
+            let errorHtml = '';
+            if (run.error_message) {
+                errorHtml = `
+                    <div class="error-section">
+                        <div class="error-title">⚠ Training Error</div>
+                        <div class="error-message">${escapeHtml(run.error_message)}</div>
+                        ${run.error_traceback ? `
+                            <details class="error-traceback">
+                                <summary>Show stack trace</summary>
+                                <pre>${escapeHtml(run.error_traceback)}</pre>
+                            </details>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            // Data quality section
+            let qualityHtml = '';
+            const quality = run.data_quality_report || {};
+            if (Object.keys(quality).length > 0) {
+                const coverage = quality.coverage_percent || 100;
+                const qualityClass = coverage >= 90 ? 'good' : coverage >= 70 ? 'warning' : 'poor';
+                qualityHtml = `
+                    <div class="section">
+                        <div class="section-header">
+                            <span class="section-title">Data Quality</span>
+                            <span class="section-badge">${coverage.toFixed(0)}% coverage</span>
+                        </div>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <label>Coverage</label>
+                                <div class="quality-bar">
+                                    <div class="quality-fill ${qualityClass}" style="width: ${coverage}%"></div>
+                                </div>
+                            </div>
+                            <div class="info-item">
+                                <label>Data Points</label>
+                                <span>${formatNumber(quality.total_points || run.total_data_points)}</span>
+                            </div>
+                            ${quality.gaps_detected ? `
+                                <div class="info-item">
+                                    <label>Gaps Detected</label>
+                                    <span style="color: var(--status-warning)">${quality.gap_count || 0} gaps</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Timeline
+            const timelineHtml = `
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title">Training Timeline</span>
+                    </div>
+                    <div class="timeline">
+                        <div class="timeline-item">
+                            <div class="timeline-dot info">▸</div>
+                            <div class="timeline-content">
+                                <div class="timeline-title">Training Started</div>
+                                <div class="timeline-desc">${formatDateTime(run.started_at)}</div>
+                            </div>
+                        </div>
+                        ${run.training_start_date ? `
+                            <div class="timeline-item">
+                                <div class="timeline-dot info">◆</div>
+                                <div class="timeline-content">
+                                    <div class="timeline-title">Data Collection Period</div>
+                                    <div class="timeline-desc">${run.training_start_date} to ${run.training_end_date}</div>
+                                </div>
+                            </div>
+                        ` : ''}
+                        ${run.completed_at ? `
+                            <div class="timeline-item">
+                                <div class="timeline-dot ${run.status === 'COMPLETED' ? 'success' : 'info'}">
+                                    ${run.status === 'COMPLETED' ? '✓' : '✗'}
+                                </div>
+                                <div class="timeline-content">
+                                    <div class="timeline-title">${run.status === 'COMPLETED' ? 'Training Completed' : 'Training Failed'}</div>
+                                    <div class="timeline-desc">${formatDateTime(run.completed_at)} (${formatDuration(run.duration_seconds)})</div>
+                                </div>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('content').innerHTML = `
+                <div class="hero">
+                    <div class="hero-header">
+                        <div>
+                            <h1 class="hero-title">${run.service_name}</h1>
+                            <div class="hero-subtitle">${run.model_variant || 'baseline'} model • Run ${run.run_id.substring(0, 8)}</div>
+                        </div>
+                        <span class="status-pill ${statusClass}">${statusIcon} ${statusText}</span>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-item">
+                            <div class="stat-value">${run.time_periods_trained || 0}</div>
+                            <div class="stat-label">Time Periods</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">${formatNumber(run.total_data_points)}</div>
+                            <div class="stat-label">Data Points</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">${formatDuration(run.duration_seconds)}</div>
+                            <div class="stat-label">Duration</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value">${run.explainability_metrics || 0}</div>
+                            <div class="stat-label">Explainability Metrics</div>
+                        </div>
+                    </div>
+                </div>
+
+                ${errorHtml}
+
+                <div class="section">
+                    <div class="section-header">
+                        <span class="section-title">Time Period Models</span>
+                        <span class="section-badge">${run.periods_passed || 0} passed • ${run.periods_warned || 0} warned • ${run.periods_failed || 0} failed</span>
+                    </div>
+                    ${periodsHtml}
+                </div>
+
+                ${qualityHtml}
+                ${timelineHtml}
+            `;
+
+            document.title = run.service_name + ' — Training Run Details — Yaga2';
+        }
+
+        async function loadRun() {
+            try {
+                const response = await fetch('/api/training/runs/' + RUN_ID);
+                if (!response.ok) {
+                    throw new Error('Training run not found');
+                }
+                const run = await response.json();
+                renderPage(run);
+            } catch (error) {
+                document.getElementById('content').innerHTML = `
+                    <div class="error-section">
+                        <div class="error-title">Failed to load training run</div>
+                        <div class="error-message">${error.message}</div>
+                    </div>
+                `;
+            }
+        }
+
+        loadRun();
+    </script>
+</body>
+</html>
+"""
+
+
+@app.get("/training/{run_id}", response_class=HTMLResponse)
+async def training_run_page(run_id: str):
+    """Serve the training run details page."""
+    return TRAINING_RUN_PAGE_HTML.replace("{run_id}", run_id)
+
+
+def serve_dashboard(initial_page: str = "overview") -> str:
+    """Serve the dashboard HTML with the specified initial page."""
+    return DASHBOARD_HTML.replace("{{INITIAL_PAGE}}", initial_page)
+
+
+# Page routes - each serves the same SPA with different initial page
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    """Serve the dashboard HTML."""
-    return DASHBOARD_HTML
+async def dashboard_root():
+    """Serve the dashboard HTML at root (overview page)."""
+    return serve_dashboard("overview")
+
+
+@app.get("/overview", response_class=HTMLResponse)
+async def dashboard_overview():
+    """Serve the dashboard HTML (overview page)."""
+    return serve_dashboard("overview")
+
+
+@app.get("/training", response_class=HTMLResponse)
+async def dashboard_training():
+    """Serve the dashboard HTML (training page)."""
+    return serve_dashboard("training")
+
+
+@app.get("/services", response_class=HTMLResponse)
+async def dashboard_services():
+    """Serve the dashboard HTML (services page)."""
+    return serve_dashboard("services")
+
+
+@app.get("/slos", response_class=HTMLResponse)
+async def dashboard_slos():
+    """Serve the dashboard HTML (SLOs page)."""
+    return serve_dashboard("slos")
+
+
+@app.get("/dependencies", response_class=HTMLResponse)
+async def dashboard_dependencies():
+    """Serve the dashboard HTML (dependencies page)."""
+    return serve_dashboard("dependencies")
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def dashboard_settings():
+    """Serve the dashboard HTML (settings page)."""
+    return serve_dashboard("settings")
+
+
+@app.get("/documentation", response_class=HTMLResponse)
+async def dashboard_docs():
+    """Serve the dashboard HTML (docs page)."""
+    return serve_dashboard("docs")
+
+
+@app.get("/audit", response_class=HTMLResponse)
+async def dashboard_audit():
+    """Serve the dashboard HTML (audit page)."""
+    return serve_dashboard("audit")
+
+
+@app.get("/categories", response_class=HTMLResponse)
+async def dashboard_categories():
+    """Serve the dashboard HTML (categories page)."""
+    return serve_dashboard("categories")
 
 
 if __name__ == "__main__":
-    print("\\n" + "="*60)
-    print("  Smartbox Anomaly Detection - Configuration Dashboard v2.0")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Yaga2 Admin Dashboard")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload on file changes")
+    parser.add_argument("--port", type=int, default=8050, help="Port to run on (default: 8050)")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)")
+    parser.add_argument("--no-access-log", action="store_true", help="Disable request logging")
+    args = parser.parse_args()
+
+    # Set environment variable for access logging (persists through reload)
+    os.environ["YAGA_ACCESS_LOG"] = "0" if args.no_access_log else "1"
+
+    print("\n" + "="*60)
+    print("  Smartbox Anomaly Detection - Configuration Dashboard v2.1")
     print("="*60)
-    print(f"\\n  Dashboard URL: http://localhost:8050")
+    print(f"\n  Dashboard URL: http://localhost:{args.port}")
     print(f"  Config file:   {CONFIG_PATH}")
-    print("\\n  Features:")
+    print("\n  Features:")
     print("    • Service search/filter")
     print("    • Config validation")
     print("    • Export/Import")
     print("    • Audit logging")
     print("    • Unsaved changes tracking")
     print("    • Dependency visualization")
-    print("\\n  Press Ctrl+C to stop\\n")
+    print("    • Training run history")
+    if args.reload:
+        print("\n  🔄 Auto-reload ENABLED - watching for file changes")
+    if not args.no_access_log:
+        print("  📝 Request logging ENABLED")
+    print("\n  Press Ctrl+C to stop\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8050, log_level="warning")
+    # Print separator before request logs
+    if not args.no_access_log:
+        print("─" * 80)
+
+    if args.reload:
+        # For reload to work, we need to pass the app as a string import path
+        uvicorn.run(
+            "admin_dashboard:app",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            reload_dirs=[str(Path(__file__).parent)],
+            log_level="warning",  # Reduce uvicorn noise
+            access_log=False,     # Use our custom logging instead
+        )
+    else:
+        # Need to manually add middleware when not using reload
+        # (since module is already loaded and env var check already ran)
+        if not args.no_access_log and not any(
+            isinstance(m.cls, type) and m.cls.__name__ == "RequestLoggingMiddleware"
+            for m in app.user_middleware
+        ):
+            app.add_middleware(RequestLoggingMiddleware)
+
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+            access_log=False,  # Use our custom logging instead
+        )

@@ -22,16 +22,25 @@ services:
       - CONFIG_PATH=/app/config.json
       # Schedule configuration (cron syntax)
       - TRAIN_SCHEDULE=0 2 * * *         # Daily at 2 AM
-      - INFERENCE_SCHEDULE=*/2 * * * *  # Every 10 minutes
+      - INFERENCE_SCHEDULE=*/2 * * * *  # Every 2 minutes
+      # Staging directory for safe model training/promotion
+      - STAGING_DIR=/app/smartbox_models_staging
+      - MODELS_DIR=/app/smartbox_models
 
     # Bind mounts to host directories (relative to current working dir)
     volumes:
-      # Trained models (persistent)
+      # Configuration (mounted for live updates from dashboard)
+      - ./config.json:/app/config.json
+      # Trained models (persistent, production)
       - ./smartbox_models:/app/smartbox_models
+      # Staging models (trained here, promoted to production on success)
+      - ./smartbox_models_staging:/app/smartbox_models_staging
       # SQLite database for state (persistent)
       - ./data:/app/data
       # Logs
       - ./logs:/app/logs
+      # Metrics cache (persistent)
+      - ./metrics_cache:/app/metrics_cache
 
     # Health check
     healthcheck:
@@ -60,8 +69,8 @@ services:
     container_name: smartbox-admin-dashboard
     restart: unless-stopped
 
-    # Override entrypoint to run the dashboard directly
-    entrypoint: ["python", "admin_dashboard.py"]
+    # Use entrypoint command for dashboard
+    command: ["dashboard"]
 
     # Environment configuration
     environment:
@@ -73,10 +82,14 @@ services:
       - "8050:8050"
 
     # Share the same volumes for config and data access
+    # Note: config.json is mounted to persist changes made via dashboard
     volumes:
       - ./smartbox_models:/app/smartbox_models
+      - ./smartbox_models_staging:/app/smartbox_models_staging
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./metrics_cache:/app/metrics_cache
+      - ./config.json:/app/config.json
 
     # Health check for the web service
     healthcheck:

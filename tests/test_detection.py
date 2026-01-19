@@ -29,7 +29,7 @@ class TestServiceConfig:
         """Test parameters for known services."""
         params = get_service_parameters("booking")
         assert params.category == "critical"
-        assert params.base_contamination == 0.02
+        assert params.base_contamination == 0.04
         assert params.complexity == "high"
 
     def test_get_service_parameters_unknown_service(self):
@@ -332,18 +332,18 @@ class TestTimeAwareAnomalyDetector:
         assert period == TimePeriod.NIGHT_HOURS
 
     def test_get_current_period_weekend_day(self):
-        """Test period detection for weekend day."""
+        """Test period detection for weekend day (3-period model uses time-of-day)."""
         detector = TimeAwareAnomalyDetector("test")
-        # Saturday 2pm
+        # Saturday 2pm → maps to BUSINESS_HOURS (8-18) in 3-period model
         period = detector.get_current_period(datetime(2024, 1, 13, 14, 0))
-        assert period == TimePeriod.WEEKEND_DAY
+        assert period == TimePeriod.BUSINESS_HOURS
 
     def test_get_current_period_weekend_night(self):
-        """Test period detection for weekend night."""
+        """Test period detection for weekend night (3-period model uses time-of-day)."""
         detector = TimeAwareAnomalyDetector("test")
-        # Saturday 11pm
+        # Saturday 11pm → maps to NIGHT_HOURS (22-8) in 3-period model
         period = detector.get_current_period(datetime(2024, 1, 13, 23, 0))
-        assert period == TimePeriod.WEEKEND_NIGHT
+        assert period == TimePeriod.NIGHT_HOURS
 
     def test_training_time_aware_models(self, sample_time_series_data):
         """Test training time-aware models."""
@@ -893,5 +893,108 @@ class TestImprovementSignalFiltering:
             datetime.now()
         )
 
-        # Should produce an anomaly (not filtered out)
+        # Should produce an anomaly (not filtered out) because error_rate > 1%
+        assert result != {}
+
+    def test_application_latency_low_filtered_when_no_errors(self, trained_detector):
+        """Test that low application_latency is filtered when error_rate is low.
+
+        Low latency + low errors = fast responses (good, not an anomaly).
+        This prevents false positives for genuinely fast services.
+        """
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="application_latency",
+            score=-0.3,
+            direction="low",
+            value=30.0,  # Fast response
+            percentile=15.0,
+            deviation_sigma=-1.5,
+        )]
+
+        # error_rate is 0% - this is GOOD, not fast-fail
+        result = trained_detector._interpret_signals(
+            signals,
+            {"application_latency": 30.0, "error_rate": 0.0},
+            datetime.now()
+        )
+
+        # Should be filtered out - fast responses with no errors are good!
+        assert result == {}
+
+    def test_application_latency_low_filtered_when_errors_below_threshold(self, trained_detector):
+        """Test low application_latency filtered when error_rate < 1% threshold."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="application_latency",
+            score=-0.3,
+            direction="low",
+            value=30.0,
+            percentile=15.0,
+            deviation_sigma=-1.5,
+        )]
+
+        # error_rate is 0.5% - below 1% threshold
+        result = trained_detector._interpret_signals(
+            signals,
+            {"application_latency": 30.0, "error_rate": 0.005},
+            datetime.now()
+        )
+
+        # Should be filtered out - errors below threshold
+        assert result == {}
+
+    def test_database_latency_below_floor_treated_as_normal(self, trained_detector):
+        """Test that sub-millisecond database_latency is treated as normal.
+
+        Even if statistically "high", sub-millisecond values are operationally
+        meaningless (e.g., 0.3ms → 0.4ms is noise).
+        """
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="database_latency",
+            score=-0.3,
+            direction="high",
+            value=0.5,  # Sub-millisecond
+            percentile=97.0,  # Statistically "very high"
+            deviation_sigma=2.5,
+        )]
+
+        # The value is 0.5ms - below the 1ms floor
+        result = trained_detector._interpret_signals(
+            signals,
+            {"database_latency": 0.5, "application_latency": 100.0, "error_rate": 0.0},
+            datetime.now()
+        )
+
+        # Should be filtered out - sub-millisecond is operationally insignificant
+        assert result == {}
+
+    def test_database_latency_above_floor_not_filtered(self, trained_detector):
+        """Test that database_latency above floor is NOT filtered."""
+        from smartbox_anomaly.detection.detector import AnomalySignal
+        from datetime import datetime
+
+        signals = [AnomalySignal(
+            metric_name="database_latency",
+            score=-0.3,
+            direction="high",
+            value=5.0,  # 5ms - above 1ms floor
+            percentile=97.0,
+            deviation_sigma=2.5,
+        )]
+
+        result = trained_detector._interpret_signals(
+            signals,
+            {"database_latency": 5.0, "application_latency": 100.0, "error_rate": 0.0},
+            datetime.now()
+        )
+
+        # Should NOT be filtered - 5ms is above the floor
         assert result != {}

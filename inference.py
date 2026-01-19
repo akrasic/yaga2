@@ -382,7 +382,8 @@ def _apply_fingerprinting(
 def _determine_full_service_name(service_name: str, result: Dict) -> str:
     """Determine the full service name including model period"""
     # Check if service_name already includes model info
-    model_periods = ['business_hours', 'evening_hours', 'night_hours', 'weekend_day', 'weekend_night']
+    # Using 3-period model: business_hours, evening_hours, night_hours (all 7 days)
+    model_periods = ['business_hours', 'evening_hours', 'night_hours']
     if '_' in service_name and any(model in service_name for model in model_periods):
         return service_name
 
@@ -402,6 +403,131 @@ def _determine_full_service_name(service_name: str, result: Dict) -> str:
             model_name = 'evening_hours'
 
     return f"{service_name}_{model_name}"
+
+
+def _generate_correlation_id() -> str:
+    """Generate a unique correlation ID for grouped anomalies."""
+    import uuid
+    return f"corr_{uuid.uuid4().hex[:12]}"
+
+
+def _select_primary_anomaly(
+    anomalies: dict[str, dict],
+    selection_strategy: str = "highest_confidence"
+) -> tuple[str, dict]:
+    """Select the primary anomaly from a group based on selection strategy.
+
+    Args:
+        anomalies: Dict of anomaly_name -> anomaly_data
+        selection_strategy: How to select primary:
+            - "highest_confidence": Anomaly with highest confidence score
+            - "highest_severity": Anomaly with highest severity level
+            - "named_pattern_first": Prefer named patterns over generic ML detections
+
+    Returns:
+        Tuple of (primary_name, primary_data)
+    """
+    if not anomalies:
+        return ("", {})
+
+    severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0}
+
+    def get_score(name: str, anomaly: dict) -> tuple:
+        """Return a sort key for anomaly ranking."""
+        confidence = anomaly.get("confidence", anomaly.get("confidence_score", 0.5))
+        severity = anomaly.get("severity", "low")
+        severity_score = severity_order.get(severity.lower(), 0)
+
+        # Named patterns (not ending in _anomaly) are preferred
+        is_named_pattern = not name.endswith("_anomaly") and "_high" not in name and "_low" not in name
+
+        if selection_strategy == "highest_confidence":
+            return (confidence, severity_score, is_named_pattern)
+        elif selection_strategy == "highest_severity":
+            return (severity_score, confidence, is_named_pattern)
+        else:  # named_pattern_first
+            return (is_named_pattern, severity_score, confidence)
+
+    # Sort anomalies by score (highest first)
+    sorted_anomalies = sorted(
+        anomalies.items(),
+        key=lambda x: get_score(x[0], x[1]),
+        reverse=True
+    )
+
+    return sorted_anomalies[0]
+
+
+def _correlate_service_anomalies(
+    anomalies: dict[str, dict],
+    correlation_config: "CorrelationConfig"
+) -> dict[str, dict]:
+    """Correlate multiple anomalies for a single service into a single alert.
+
+    When multiple anomalies are detected for the same service, this function
+    groups them into a single correlated alert with:
+    - A primary anomaly (selected based on configuration)
+    - Contributing anomalies listed for context
+    - A correlation ID for tracking
+
+    Args:
+        anomalies: Dict of anomaly_name -> anomaly_data for a single service
+        correlation_config: Configuration for correlation behavior
+
+    Returns:
+        Dict with single correlated anomaly, or original anomalies if correlation
+        doesn't apply (e.g., only one anomaly, or correlation disabled)
+    """
+    from smartbox_anomaly.core.config import CorrelationConfig
+
+    # Don't correlate if fewer than min_anomalies_to_correlate
+    if len(anomalies) < correlation_config.min_anomalies_to_correlate:
+        return anomalies
+
+    # Select primary anomaly
+    primary_name, primary_data = _select_primary_anomaly(
+        anomalies, correlation_config.primary_selection
+    )
+
+    # Build list of contributing anomalies (excluding primary)
+    contributing = []
+    for name, data in anomalies.items():
+        if name != primary_name:
+            contributing.append({
+                "name": name,
+                "severity": data.get("severity", "unknown"),
+                "confidence": data.get("confidence", data.get("confidence_score", 0.5)),
+                "pattern_name": data.get("pattern_name", name),
+            })
+
+    # Sort contributing by severity then confidence
+    severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0}
+    contributing.sort(
+        key=lambda x: (severity_order.get(x["severity"], 0), x["confidence"]),
+        reverse=True
+    )
+
+    # Build correlated anomaly
+    correlation_id = _generate_correlation_id()
+
+    correlated_anomaly = {
+        **primary_data,
+        "correlation": {
+            "correlation_id": correlation_id,
+            "is_correlated": True,
+            "primary_anomaly": primary_name,
+            "anomaly_count": len(anomalies),
+            "contributing_anomalies": contributing,
+        },
+        # Update description to reflect correlation
+        "description": (
+            f"{primary_data.get('description', 'Multiple anomalies detected')} "
+            f"(correlated with {len(contributing)} other anomalies)"
+        ),
+    }
+
+    # Return with primary anomaly name as key, correlation info embedded
+    return {primary_name: correlated_anomaly}
 
 
 def _update_results_processor(
@@ -455,6 +581,19 @@ def _update_results_processor(
                         )
 
                 if alertable_anomalies:
+                    # Apply correlation if enabled (groups multiple anomalies into single alert)
+                    correlation_config = alerting_config.correlation
+                    if correlation_config.enabled:
+                        original_count = len(alertable_anomalies)
+                        alertable_anomalies = _correlate_service_anomalies(
+                            alertable_anomalies, correlation_config
+                        )
+                        if len(alertable_anomalies) < original_count:
+                            logger.info(
+                                f"[CORRELATED] {service_name}: {original_count} anomalies → "
+                                f"1 correlated alert"
+                            )
+
                     # Create a copy of result with only alertable anomalies
                     filtered_result = {**result, 'anomalies': alertable_anomalies}
                     filtered_result['anomaly_count'] = len(alertable_anomalies)

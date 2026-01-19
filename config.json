@@ -42,7 +42,7 @@
     "contamination_by_service": {
       "booking": 0.02,
       "search": 0.04,
-      "mobile-api": 0.03,
+      "mobile-api": 0.035,
       "shire-api": 0.03,
       "vms": 0.03,
       "friday": 0.05,
@@ -96,7 +96,8 @@
     }
   },
   "training": {
-    "lookback_days": 30,
+    "lookback_days": 60,
+    "_comment_lookback": "Extended from 30 to 60 days to support dual-model training with excluded periods",
     "min_data_points": 2000,
     "validation_fraction": 0.2,
     "contamination_estimation": {
@@ -117,6 +118,22 @@
       "enabled": false,
       "z_score_warning": 3,
       "z_score_critical": 5
+    },
+    "_comment_excluded": "Periods to exclude from baseline training (e.g., holidays with atypical traffic)",
+    "excluded_periods": [
+      {
+        "start": "2025-12-01",
+        "end": "2026-01-10",
+        "reason": "christmas_new_year_holiday",
+        "model_variant": "holiday"
+      }
+    ],
+    "model_variants": {
+      "_comment": "Dual-model architecture: baseline (normal periods) + holiday (excluded periods)",
+      "train_baseline": true,
+      "train_holiday": true,
+      "min_excluded_days_for_variant": 7,
+      "holiday_data_weight": 0.3
     }
   },
   "inference": {
@@ -134,58 +151,39 @@
     "resolution_grace_cycles": 3
   },
   "time_periods": {
+    "_comment": "3-period model: time-of-day buckets covering all 7 days (no weekend split)",
     "business_hours": {
       "start": 8,
       "end": 18,
-      "weekdays_only": true
+      "_comment": "Day hours 8-18, all days"
     },
     "evening_hours": {
       "start": 18,
       "end": 22,
-      "weekdays_only": true
+      "_comment": "Transition period 18-22, all days"
     },
     "night_hours": {
       "start": 22,
-      "end": 6,
-      "weekdays_only": true
-    },
-    "weekend_day": {
-      "start": 8,
-      "end": 22,
-      "weekends_only": true
-    },
-    "weekend_night": {
-      "start": 22,
       "end": 8,
-      "weekends_only": true
+      "_comment": "Overnight 22-8, all days"
     },
     "min_samples": {
-      "weekday": {
-        "critical": 200,
-        "standard": 200,
-        "admin": 150,
-        "micro": 100
-      },
-      "weekend": {
-        "critical": 100,
-        "standard": 100,
-        "admin": 75,
-        "micro": 50
-      }
+      "_comment": "With 3-period model, all periods have similar data volume",
+      "critical": 200,
+      "standard": 200,
+      "admin": 150,
+      "micro": 100
     },
     "confidence_scores": {
       "business_hours": 0.9,
-      "evening_hours": 0.8,
-      "night_hours": 0.95,
-      "weekend_day": 0.7,
-      "weekend_night": 0.6
+      "evening_hours": 0.85,
+      "night_hours": 0.8
     },
     "validation_thresholds": {
-      "business_hours": 0.18,
-      "evening_hours": 0.20,
-      "night_hours": 0.12,
-      "weekend_day": 0.28,
-      "weekend_night": 0.32
+      "_comment": "With more data per period, we can use stricter thresholds",
+      "business_hours": 0.22,
+      "evening_hours": 0.28,
+      "night_hours": 0.4
     }
   },
   "detection_thresholds": {
@@ -197,7 +195,7 @@
     "error_rates": {
       "critical": 0.05,
       "high": 0.02,
-      "very_high": 0.20
+      "very_high": 0.2
     },
     "latency_ms": {
       "critical": 2000,
@@ -213,8 +211,8 @@
       "upper": 0.999
     },
     "validation": {
-      "max_request_rate": 1000000.0,
-      "max_latency_ms": 300000.0,
+      "max_request_rate": 1000000,
+      "max_latency_ms": 300000,
       "constant_value_threshold": 1e-10
     }
   },
@@ -352,16 +350,16 @@
       "error_rate_critical": 0.02,
       "_comment_error_floor": "Error rate floor - below this, suppress anomaly entirely (0 = use acceptable)",
       "error_rate_floor": 0,
-      "min_traffic_rps": 1.0,
+      "min_traffic_rps": 1,
       "busy_period_factor": 1.5,
       "_comment_db_latency": "Database latency evaluation - uses ratio from baseline (training mean)",
-      "database_latency_floor_ms": 1.0,
+      "database_latency_floor_ms": 1,
       "database_latency_ratios": {
         "_comment": "Multipliers of baseline: 1.5x=info, 2x=warning, 3x=high, 5x=critical",
         "info": 1.5,
-        "warning": 2.0,
-        "high": 3.0,
-        "critical": 5.0
+        "warning": 2,
+        "high": 3,
+        "critical": 5
       },
       "_comment_request_rate": "Request rate evaluation - surges vs cliffs with correlation-based severity",
       "request_rate_evaluation": {
@@ -380,13 +378,11 @@
           "peak_hours_severity": "high",
           "with_upstream_errors_severity": "critical"
         },
-        "_comment_min_expected": "Minimum expected traffic by time period (rps)",
+        "_comment_min_expected": "Minimum expected traffic by time period (rps) - 3-period model",
         "min_expected_rps": {
-          "business_hours": 5.0,
-          "evening_hours": 2.0,
-          "night_hours": 0.5,
-          "weekend_day": 2.0,
-          "weekend_night": 0.2
+          "business_hours": 5,
+          "evening_hours": 2,
+          "night_hours": 0.5
         }
       }
     },
@@ -408,9 +404,9 @@
             "peak_hours_severity": "critical"
           },
           "min_expected_rps": {
-            "business_hours": 20.0,
-            "evening_hours": 10.0,
-            "night_hours": 2.0
+            "business_hours": 20,
+            "evening_hours": 10,
+            "night_hours": 2
           }
         }
       },
@@ -426,8 +422,8 @@
         "database_latency_ratios": {
           "info": 1.3,
           "warning": 1.5,
-          "high": 2.0,
-          "critical": 3.0
+          "high": 2,
+          "critical": 3
         }
       },
       "mobile-api": {
@@ -447,14 +443,14 @@
         "error_rate_acceptable": 0.01,
         "error_rate_warning": 0.02,
         "error_rate_critical": 0.05,
-        "database_latency_floor_ms": 5.0
+        "database_latency_floor_ms": 5
       }
     },
     "busy_periods": [
       {
-        "_comment": "Example: Holiday season - thresholds relaxed by busy_period_factor",
-        "start": "2024-12-20T00:00:00",
-        "end": "2025-01-05T23:59:59"
+        "_comment": "Holiday season - thresholds relaxed by busy_period_factor",
+        "start": "2025-12-01T00:00:00",
+        "end": "2026-01-10T23:59:59"
       }
     ]
   },
@@ -479,5 +475,22 @@
   "logging": {
     "level": "INFO",
     "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  },
+  "envoy_enrichment": {
+    "_comment": "Envoy edge/ingress metrics enrichment - adds edge-level context to anomaly alerts",
+    "enabled": true,
+    "mimir_endpoint": "https://mimir.sbxtest.net/prometheus",
+    "lookback_minutes": 5,
+    "timeout_seconds": 10,
+    "_comment_mapping": "OTel service name to Envoy cluster name mapping",
+    "cluster_mapping": {
+      "booking": "booking",
+      "search": "search_k8s",
+      "mobile-api": "mobile-api",
+      "shire-api": "shireapi_cluster",
+      "fa5": "fa5-public",
+      "titan": "titan",
+      "friday": "friday"
+    }
   }
 }
