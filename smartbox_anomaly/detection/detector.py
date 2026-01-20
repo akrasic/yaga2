@@ -37,6 +37,7 @@ from smartbox_anomaly.detection.interpretations import (
 )
 from smartbox_anomaly.detection.service_config import (
     ServiceParameters,
+    get_expected_metrics,
     get_service_parameters,
 )
 
@@ -1721,8 +1722,11 @@ class SmartboxAnomalyDetector:
                 if time_gaps:
                     warnings.append(f"Found {len(significant_gaps)} time gaps > 30 minutes")
 
-        # Analyze each metric
-        for metric_name in self.CORE_METRICS:
+        # Analyze each metric (only those expected for this service)
+        # Use per-service expected metrics - services are only penalized for missing
+        # metrics they should have (e.g., origin services don't need dependency_latency)
+        expected_metrics = get_expected_metrics(self.service_name)
+        for metric_name in expected_metrics:
             if metric_name not in features_df.columns:
                 warnings.append(f"Metric '{metric_name}' not found in training data")
                 continue
@@ -1809,9 +1813,9 @@ class SmartboxAnomalyDetector:
                 warnings=metric_warnings,
             )
 
-        # Calculate usable samples (rows without missing core metrics)
+        # Calculate usable samples (rows without missing expected metrics)
         usable_samples = total_samples
-        for metric_name in self.CORE_METRICS:
+        for metric_name in expected_metrics:
             if metric_name in features_df.columns:
                 usable_samples = min(usable_samples, len(features_df[metric_name].dropna()))
 
@@ -1820,9 +1824,9 @@ class SmartboxAnomalyDetector:
         # Calculate overall quality score (0-100)
         quality_score = 100.0
 
-        # Deduct for missing metrics
-        available_metrics = sum(1 for m in self.CORE_METRICS if m in features_df.columns)
-        missing_metrics_penalty = (5 - available_metrics) * 10  # -10 per missing metric
+        # Deduct for missing metrics (only those expected for this service)
+        available_metrics = sum(1 for m in expected_metrics if m in features_df.columns)
+        missing_metrics_penalty = (len(expected_metrics) - available_metrics) * 10  # -10 per missing metric
         quality_score -= missing_metrics_penalty
 
         # Deduct for sample coverage
@@ -1860,7 +1864,7 @@ class SmartboxAnomalyDetector:
 
         # Generate recommendations
         if missing_metrics_penalty > 0:
-            missing_names = [m for m in self.CORE_METRICS if m not in features_df.columns]
+            missing_names = [m for m in expected_metrics if m not in features_df.columns]
             recommendations.append(f"Add missing metrics: {', '.join(missing_names)}")
 
         unusable_metrics = [m for m, mq in metric_quality.items() if not mq.is_usable]

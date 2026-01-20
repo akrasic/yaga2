@@ -246,6 +246,43 @@ class Thresholds:
 
 
 # =============================================================================
+# Training Validation Constants
+# =============================================================================
+
+
+class TrainingValidation:
+    """Constants for training pipeline validation thresholds."""
+
+    # Minimum samples required for validation split
+    MIN_VALIDATION_SAMPLES: Final[int] = 50
+
+    # Maximum acceptable anomaly rate during validation
+    # If anomaly rate exceeds this, model may be overtrained
+    MAX_ACCEPTABLE_ANOMALY_RATE: Final[float] = 0.6
+
+    # Maximum anomaly rate on known-normal validation data
+    # High values suggest model is too sensitive
+    MAX_NORMAL_ANOMALY_RATE: Final[float] = 0.15
+
+    # Minimum detection rate for synthetic anomalies
+    # Below this, model is too insensitive
+    MIN_SYNTHETIC_DETECTION_RATE: Final[float] = 0.2
+
+    # Default lookback period for training data (days)
+    DEFAULT_LOOKBACK_DAYS: Final[int] = 30
+
+    # Warm-up rows to drop from validation (for rolling features)
+    # At 5-min granularity, 12 rows = 1 hour
+    VALIDATION_WARMUP_ROWS: Final[int] = 12
+
+    # Default validation fraction (temporal split)
+    DEFAULT_VALIDATION_FRACTION: Final[float] = 0.2
+
+    # Minimum points per time period for time-aware training
+    MIN_PERIOD_SAMPLES: Final[int] = 100
+
+
+# =============================================================================
 # Time Period Constants
 # =============================================================================
 

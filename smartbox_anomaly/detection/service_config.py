@@ -53,29 +53,269 @@ class ServiceParameters:
         }
 
 
+# Default expected metrics (minimum all services should have)
+DEFAULT_EXPECTED_METRICS: list[str] = [
+    "request_rate",
+    "application_latency",
+    "error_rate",
+]
+
 # Known service configurations
+# expected_metrics: metrics this service is expected to have (affects quality scoring)
+# - Services with dependencies should have dependency_latency
+# - Services with databases should have database_latency
+# - Origin services (no downstream calls) may not have dependency_latency
 KNOWN_SERVICE_PARAMS: dict[str, dict[str, Any]] = {
     # High-traffic, critical services
-    "booking": {"base_contamination": 0.04, "complexity": "high", "category": "critical"},
-    "search": {"base_contamination": 0.04, "complexity": "high", "category": "critical"},
-    "mobile-api": {"base_contamination": 0.03, "complexity": "high", "category": "critical"},
-    "shire-api": {"base_contamination": 0.03, "complexity": "high", "category": "critical"},
+    "booking": {
+        "base_contamination": 0.04,
+        "complexity": "high",
+        "category": "critical",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "search": {
+        "base_contamination": 0.04,
+        "complexity": "high",
+        "category": "critical",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "mobile-api": {
+        "base_contamination": 0.03,
+        "complexity": "high",
+        "category": "critical",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "shire-api": {
+        "base_contamination": 0.03,
+        "complexity": "high",
+        "category": "critical",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
     # Medium-traffic services
-    "friday": {"base_contamination": 0.05, "complexity": "medium", "category": "standard"},
-    "gambit": {"base_contamination": 0.05, "complexity": "medium", "category": "standard"},
-    "titan": {"base_contamination": 0.05, "complexity": "medium", "category": "standard"},
-    "r2d2": {"base_contamination": 0.05, "complexity": "medium", "category": "standard"},
+    "vms": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "critical",
+        "expected_metrics": ["request_rate", "application_latency", "database_latency", "error_rate"],
+    },
+    "friday": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "gambit": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "titan": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "r2d2": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "catalog": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
+    "tc14": {
+        "base_contamination": 0.05,
+        "complexity": "medium",
+        "category": "standard",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "error_rate"],
+    },
     # Micro-services
-    "fa5": {"base_contamination": 0.08, "complexity": "low", "category": "micro"},
-    # Admin services
-    "m2-fr-adm": {"base_contamination": 0.06, "complexity": "low", "category": "admin"},
-    "m2-it-adm": {"base_contamination": 0.06, "complexity": "low", "category": "admin"},
-    "m2-bb-adm": {"base_contamination": 0.06, "complexity": "low", "category": "admin"},
-    # Core services
-    "m2-bb": {"base_contamination": 0.04, "complexity": "medium", "category": "core"},
-    "m2-fr": {"base_contamination": 0.04, "complexity": "medium", "category": "core"},
-    "m2-it": {"base_contamination": 0.04, "complexity": "medium", "category": "core"},
+    "fa5": {
+        "base_contamination": 0.08,
+        "complexity": "low",
+        "category": "micro",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    # Admin services (have both dependency and database access)
+    "m2-fr-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-it-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-bb-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-bn-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-cb-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-ch-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-es-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-ez-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-lv-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-df-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-dk-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-se-adm": {
+        "base_contamination": 0.06,
+        "complexity": "low",
+        "category": "admin",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    # Core services (have both dependency and database access)
+    "m2-bb": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-bn": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-cb": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-ch": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-ez": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-fr": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-it": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-es": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-df": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-dk": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-ds": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-se": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
+    "m2-lv": {
+        "base_contamination": 0.04,
+        "complexity": "medium",
+        "category": "core",
+        "expected_metrics": ["request_rate", "application_latency", "dependency_latency", "database_latency", "error_rate"],
+    },
 }
+
+
+def get_expected_metrics(service_name: str) -> list[str]:
+    """Get expected metrics for a service for quality scoring.
+
+    Services are only penalized for missing metrics that they are expected to have.
+    Origin services (no downstream dependencies) are not expected to have dependency_latency.
+    Services without databases are not expected to have database_latency.
+
+    Args:
+        service_name: Name of the service.
+
+    Returns:
+        List of metric names this service is expected to have.
+    """
+    if service_name in KNOWN_SERVICE_PARAMS:
+        config = KNOWN_SERVICE_PARAMS[service_name]
+        if "expected_metrics" in config:
+            return config["expected_metrics"]
+
+    # Fall back to default expected metrics for unknown services
+    return DEFAULT_EXPECTED_METRICS.copy()
 
 
 def detect_service_category(service_name: str) -> dict[str, Any]:

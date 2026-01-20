@@ -109,10 +109,18 @@ services:
       # Schedule configuration (cron syntax)
       - TRAIN_SCHEDULE=0 2 * * *         # Daily at 2 AM
       - INFERENCE_SCHEDULE=*/10 * * * *  # Every 10 minutes
+      # Model directories
+      - MODELS_DIR=/app/smartbox_models
+      - STAGING_DIR=/app/smartbox_models_staging
+      - BACKUP_DIR=/app/smartbox_models_backup
 
     volumes:
-      # Trained models (persistent)
+      # Trained models (persistent, production)
       - ./smartbox_models:/app/smartbox_models
+      # Staging models (trained here, promoted on success)
+      - ./smartbox_models_staging:/app/smartbox_models_staging
+      # Backup models (for rollback capability)
+      - ./smartbox_models_backup:/app/smartbox_models_backup
       # SQLite database for state (persistent)
       - ./data:/app/data
       # Logs
@@ -141,6 +149,8 @@ services:
       - "8050:8050"
     volumes:
       - ./smartbox_models:/app/smartbox_models
+      - ./smartbox_models_staging:/app/smartbox_models_staging
+      - ./smartbox_models_backup:/app/smartbox_models_backup
       - ./data:/app/data
       - ./logs:/app/logs
     healthcheck:
@@ -158,6 +168,9 @@ services:
 | `CONFIG_PATH` | `/app/config.json` | Path to configuration file |
 | `TRAIN_SCHEDULE` | `0 2 * * *` | Cron schedule for training (daily 2 AM) |
 | `INFERENCE_SCHEDULE` | `*/10 * * * *` | Cron schedule for inference (every 10 min) |
+| `MODELS_DIR` | `/app/smartbox_models` | Production models directory |
+| `STAGING_DIR` | `/app/smartbox_models_staging` | Staging models directory |
+| `BACKUP_DIR` | `/app/smartbox_models_backup` | Backup models directory (for rollback) |
 | `VM_ENDPOINT` | from config | VictoriaMetrics URL |
 | `OBSERVABILITY_URL` | from config | Observability API URL |
 | `OBSERVABILITY_ENABLED` | `true` | Enable/disable API reporting |
@@ -218,19 +231,29 @@ docker compose up -d admin-dashboard
 
 | Host Path | Container Path | Purpose |
 |-----------|----------------|---------|
-| `./smartbox_models` | `/app/smartbox_models` | Trained ML models |
+| `./smartbox_models` | `/app/smartbox_models` | Production ML models |
+| `./smartbox_models_staging` | `/app/smartbox_models_staging` | Staging models (trained here first) |
+| `./smartbox_models_backup` | `/app/smartbox_models_backup` | Backup models (for rollback) |
 | `./data` | `/app/data` | SQLite state database |
 | `./logs` | `/app/logs` | Application logs |
 
 ### Backup Strategy
 
+The training pipeline automatically manages backups:
+- Before training: Creates backup of production models to `./smartbox_models_backup/`
+- On success: Backup is cleaned up (unless `--keep-backup`)
+- On failure: Backup preserved for manual rollback
+
 ```bash
-# Backup models and state
+# Manual rollback to previous production models
+docker compose run --rm yaga python main.py --rollback
+
+# External backup (for disaster recovery)
 tar -czvf smartbox-backup-$(date +%Y%m%d).tar.gz \
     smartbox_models/ \
     data/
 
-# Restore from backup
+# Restore from external backup
 tar -xzvf smartbox-backup-20240115.tar.gz
 ```
 
@@ -238,10 +261,14 @@ tar -xzvf smartbox-backup-20240115.tar.gz
 
 | Component | Size Estimate |
 |-----------|---------------|
-| Models (per service) | 5-15 MB |
+| Production models (per service) | 5-15 MB |
+| Staging models (temporary) | 5-15 MB per service |
+| Backup models (temporary) | 5-15 MB per service |
 | SQLite database | 50-500 MB (depends on incident volume) |
 | Logs (with rotation) | 100 MB max |
-| **Total (20 services)** | ~500 MB - 1 GB |
+| **Total (20 services)** | ~500 MB - 1.5 GB |
+
+**Note:** Staging and backup directories are temporary - they are cleaned up after successful training/promotion. Peak disk usage occurs during training when all three directories may exist simultaneously.
 
 ---
 
