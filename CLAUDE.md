@@ -46,6 +46,18 @@ uv run python prefetch_metrics.py --status
 
 # Clear metrics cache
 uv run python prefetch_metrics.py --clear
+
+# Run model training
+uv run python main.py --verbose
+
+# Run training for specific service
+uv run python main.py --service booking --verbose
+
+# Promote models from staging to production
+uv run python main.py --promote
+
+# Rollback to previous models
+uv run python main.py --rollback
 ```
 
 ## Project Structure
@@ -74,9 +86,17 @@ yaga2/
 │   │   └── cache.py          # Polars-based parquet cache for metrics
 │   ├── api/                  # Pydantic models for API payloads
 │   └── core/                 # Config, logging, constants
+│   └── training/             # Training module (refactored from main.py)
+│       ├── __init__.py       # Public exports
+│       ├── storage.py        # TrainingRunStorage for run tracking
+│       ├── pipeline.py       # Training pipelines (SmartboxTrainingPipeline)
+│       ├── feature_engineering.py # Feature engineering with temporal splits
+│       ├── validators.py     # Model validation logic
+│       └── utils.py          # Disk/backup utilities
+├── main.py                   # Training CLI - model training and promotion
 ├── smartbox_models/          # Trained ML models per service/time-period
 ├── metrics_cache/            # Cached metrics in parquet format (per service)
-├── tests/                    # Pytest test suite (439 tests)
+├── tests/                    # Pytest test suite (500 tests)
 ├── docs/                     # Technical documentation
 │   ├── book/                 # mdBook user documentation
 │   │   └── src/              # mdBook source files
@@ -248,6 +268,7 @@ cd docs/book && mdbook serve
 | File | Purpose |
 |------|---------|
 | `inference.py` | Main entry point - orchestrates batch inference |
+| `main.py` | Training CLI - model training, promotion, rollback |
 | `prefetch_metrics.py` | Prefetch metrics into local parquet cache |
 | `smartbox_anomaly/inference/pipeline.py` | Pipeline orchestrator - composes detection and enrichment |
 | `smartbox_anomaly/inference/detection_runner.py` | Two-pass detection logic with dependency context |
@@ -257,9 +278,70 @@ cd docs/book && mdbook serve
 | `smartbox_anomaly/detection/interpretations.py` | Pattern definitions and recommendations |
 | `smartbox_anomaly/fingerprinting/fingerprinter.py` | Incident lifecycle state machine |
 | `smartbox_anomaly/metrics/cache.py` | Polars-based metrics cache with parquet storage |
+| `smartbox_anomaly/training/pipeline.py` | Training pipelines for model training |
+| `smartbox_anomaly/training/feature_engineering.py` | Feature engineering with temporal splits |
+| `smartbox_anomaly/training/utils.py` | Disk/backup/promotion utilities |
+| `smartbox_anomaly/detection/service_config.py` | Per-service parameters (expected_metrics, contamination, complexity) |
 | `config.json` | All configuration (SLOs, services, thresholds) |
 
 ## Recent Changes
+
+### v2.1.1 - Service Expected Metrics Configuration Update (January 2026)
+
+Updated `KNOWN_SERVICE_PARAMS` in `smartbox_anomaly/detection/service_config.py` to reflect actual metric availability discovered from training analysis.
+
+**Key findings:**
+- No "origin" services exist - all services have at least `dependency_latency`
+- `fa5` (micro category) has full 5-metric coverage including `database_latency`
+- All `m2-*` services (admin and core) have both `dependency_latency` and `database_latency`
+
+**Services updated (30 total):**
+
+| Service(s) | Previous | Updated | Change |
+|------------|----------|---------|--------|
+| titan, catalog | 3 metrics | 4 metrics | + dependency_latency |
+| fa5 | 3 metrics | 5 metrics | + dependency_latency, database_latency |
+| shire-api, r2d2 | 4 metrics | 5 metrics | + database_latency |
+| m2-*-adm (12 services) | 4 metrics | 5 metrics | + dependency_latency |
+| m2-* core (13 services) | 4 metrics | 5 metrics | + dependency_latency |
+
+**Service metric categories (corrected):**
+- **DB-only** (4 metrics): vms
+- **Dependency-only** (4 metrics): booking, search, mobile-api, friday, gambit, titan, catalog, tc14
+- **Full coverage** (5 metrics): fa5, shire-api, r2d2, all m2-* services
+
+This ensures data quality scoring accurately reflects each service's expected metric coverage.
+
+### v2.1.0 - Training CLI Refactoring (January 2026)
+
+Refactored `main.py` from ~3230 lines to ~695 lines (CLI-focused):
+- Extracted training utilities to `smartbox_anomaly/training/` module
+- Added comprehensive test coverage with 41 new tests in `tests/test_main.py`
+- Total test count: 500 tests (up from 459)
+
+**Training module components:**
+| File | Purpose |
+|------|---------|
+| `training/storage.py` | TrainingRunStorage for run tracking and status |
+| `training/pipeline.py` | SmartboxTrainingPipeline and EnhancedSmartboxTrainingPipeline |
+| `training/feature_engineering.py` | SmartboxFeatureEngineer with temporal split support |
+| `training/validators.py` | Model validation with leakage prevention |
+| `training/utils.py` | Disk space, backup, rollback, promotion utilities |
+
+**Test coverage for main.py (`tests/test_main.py`):**
+- Exit code constants verification
+- Path validation function (security: null byte injection prevention)
+- Handler functions: rollback, promote, training results, auto-promotion
+- Preflight checks (disk space, backup creation)
+- End-to-end integration scenarios
+
+```bash
+# Run main.py training CLI tests
+uv run pytest tests/test_main.py -v
+
+# Run training with verbose output
+uv run python main.py --verbose
+```
 
 ### v2.0.0 - Metrics Cache Module (January 2026)
 

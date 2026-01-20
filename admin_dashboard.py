@@ -31,6 +31,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 
+from smartbox_anomaly.detection.service_config import get_expected_metrics
+
 # Configuration
 CONFIG_PATH = Path(__file__).parent / "config.json"
 AUDIT_LOG_PATH = Path(__file__).parent / ".config_audit.log"
@@ -315,6 +317,29 @@ async def get_services_summary():
             })
 
     return summary
+
+
+@app.get("/api/services/expected-metrics")
+async def get_services_expected_metrics():
+    """Get expected metrics for all services.
+
+    Returns a mapping of service names to their expected metrics.
+    Services are only penalized for missing metrics they're expected to have.
+    For example:
+    - Origin services (titan, fa5) don't need dependency_latency or database_latency
+    - DB services without dependencies (vms) don't need dependency_latency
+    """
+    config = load_config()
+    services = config.get("services", {})
+
+    result = {}
+    for category in services.keys():
+        if not isinstance(services[category], list):
+            continue
+        for service in services[category]:
+            result[service] = get_expected_metrics(service)
+
+    return result
 
 
 @app.get("/api/dependencies/graph")
@@ -646,6 +671,15 @@ DASHBOARD_HTML = """
         .category-core { background: rgba(163, 113, 247, 0.15); color: #a371f7; }
         .category-background { background: rgba(110, 118, 129, 0.15); color: #6e7681; }
         .category-warning { background: var(--status-warning-bg); color: var(--status-warning); }
+
+        .metric-badge {
+            display: inline-block; padding: 2px 6px; border-radius: 3px;
+            font-size: 10px; font-weight: 500; font-family: 'JetBrains Mono', monospace;
+            background: var(--bg-tertiary); color: var(--text-secondary);
+            margin-right: 2px;
+        }
+        .expected-metrics { white-space: nowrap; }
+        .metric-count { font-size: 11px; color: var(--text-muted); }
 
         .status-badge {
             display: inline-flex; align-items: center; gap: 4px;
@@ -1404,6 +1438,7 @@ DASHBOARD_HTML = """
                                     <th>Service Name</th>
                                     <th>Category</th>
                                     <th>Contamination Rate</th>
+                                    <th>Expected Metrics</th>
                                     <th>Custom SLO</th>
                                     <th>Actions</th>
                                 </tr>
@@ -2250,6 +2285,7 @@ Result: service_graph_context added to API payload with:
 
     <script>
         let config = {};
+        let expectedMetrics = {};  // Per-service expected metrics for quality scoring
         let originalConfigHash = '';
         let currentCategory = 'all';
         let hasUnsavedChanges = false;
@@ -2271,6 +2307,7 @@ Result: service_graph_context added to API payload with:
 
         document.addEventListener('DOMContentLoaded', async () => {
             await loadConfig();
+            await loadExpectedMetrics();
             setupNavigation();
             // Show the initial page based on URL
             showPage(initialPage);
@@ -2309,6 +2346,16 @@ Result: service_graph_context added to API payload with:
                 showToast('Failed to load configuration', 'error');
             } finally {
                 hideLoading();
+            }
+        }
+
+        async function loadExpectedMetrics() {
+            try {
+                const response = await fetch('/api/services/expected-metrics');
+                expectedMetrics = await response.json();
+            } catch (error) {
+                console.warn('Failed to load expected metrics:', error);
+                expectedMetrics = {};
             }
         }
 
@@ -2530,11 +2577,20 @@ Result: service_graph_context added to API payload with:
                     const cont = contamination[service] || categoryContamination[category] || DEFAULT_CONTAMINATION[category] || 0.05;
                     const hasSlo = service in (slos.services || {});
 
+                    // Get expected metrics for this service (for quality scoring)
+                    const metrics = expectedMetrics[service] || ['request_rate', 'application_latency', 'dependency_latency', 'error_rate'];
+                    const metricCount = metrics.length;
+                    const metricBadges = metrics.map(m => {
+                        const shortName = m.replace('_latency', '').replace('_rate', '').replace('application', 'app').replace('dependency', 'dep').replace('database', 'db');
+                        return `<span class="metric-badge">${shortName}</span>`;
+                    }).join(' ');
+
                     html += `
                         <tr data-service="${service.toLowerCase()}">
                             <td class="service-name">${service}</td>
                             <td><span class="category-badge category-${category}">${category}</span></td>
                             <td>${(cont * 100).toFixed(1)}%</td>
+                            <td class="expected-metrics" title="${metrics.join(', ')}">${metricBadges} <span class="metric-count">(${metricCount})</span></td>
                             <td>${hasSlo ? '<span style="color: var(--status-success)">✓</span>' : '—'}</td>
                             <td>
                                 <button class="btn btn-secondary btn-sm" onclick="editService('${service}', '${category}')">Edit</button>
@@ -2544,7 +2600,7 @@ Result: service_graph_context added to API payload with:
                     `;
                 }
             }
-            document.getElementById('services-table-body').innerHTML = html || '<tr><td colspan="5" class="empty-state">No services in this category</td></tr>';
+            document.getElementById('services-table-body').innerHTML = html || '<tr><td colspan="6" class="empty-state">No services in this category</td></tr>';
         }
 
         function renderServicesTable() {

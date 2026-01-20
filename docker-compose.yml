@@ -26,6 +26,8 @@ services:
       # Staging directory for safe model training/promotion
       - STAGING_DIR=/app/smartbox_models_staging
       - MODELS_DIR=/app/smartbox_models
+      # Backup directory for rollback capability
+      - BACKUP_DIR=/app/smartbox_models_backup
 
     # Bind mounts to host directories (relative to current working dir)
     volumes:
@@ -35,6 +37,8 @@ services:
       - ./smartbox_models:/app/smartbox_models
       # Staging models (trained here, promoted to production on success)
       - ./smartbox_models_staging:/app/smartbox_models_staging
+      # Backup models (for rollback capability)
+      - ./smartbox_models_backup:/app/smartbox_models_backup
       # SQLite database for state (persistent)
       - ./data:/app/data
       # Logs
@@ -86,6 +90,7 @@ services:
     volumes:
       - ./smartbox_models:/app/smartbox_models
       - ./smartbox_models_staging:/app/smartbox_models_staging
+      - ./smartbox_models_backup:/app/smartbox_models_backup
       - ./data:/app/data
       - ./logs:/app/logs
       - ./metrics_cache:/app/metrics_cache

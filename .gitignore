@@ -21,6 +21,7 @@ bak-*
 backup_files/
 
 smartbox_models/
+smartbox_models_backups/
 smartbox_models_staging/
 smartbox_training_data/
 metrics_cache/*
